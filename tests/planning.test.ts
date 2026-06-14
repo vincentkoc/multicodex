@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { Participant } from "../src/domain.ts";
-import { planForParticipants, taskPrompt } from "../src/planning.ts";
+import type { Participant, RoomBrief } from "../src/domain.ts";
+import { planForBrief, planForParticipants, taskPrompt } from "../src/planning.ts";
 
 const participants: Participant[] = ["Vincent", "Queenie", "AI QA"].map((displayName, index) => ({
 	id: `p${index + 1}`,
@@ -38,4 +38,41 @@ test("task prompts keep the participant scope explicit", () => {
 	assert.match(prompt, /Own only:/);
 	assert.match(prompt, /Commit and push/);
 	assert.match(prompt, /Do not change unrelated work/);
+});
+
+test("planning by selected idea id keeps that idea and its task criteria", () => {
+	const plan = planForParticipants("latency-race", participants);
+	assert.equal(plan.brief.ideaId, "latency-race");
+	assert.match(plan.brief.productGoal ?? "", /public APIs/);
+	assert.match(plan.tasks[0]?.acceptanceCriteria.join(" ") ?? "", /leaderboard animates/);
+	assert.ok(
+		plan.tasks
+			.slice(1)
+			.every((task) =>
+				task.acceptanceCriteria.every((criterion) =>
+					plan.brief.acceptanceCriteria?.includes(criterion),
+				),
+			),
+	);
+});
+
+test("planning from a stored brief preserves it and derives tasks from it", () => {
+	const brief: RoomBrief = {
+		ideaId: "stored-idea",
+		productGoal: "Build the selected stored idea.",
+		demoMoment: "The selected idea wins the demo.",
+		constraints: ["keep the selected idea"],
+		acceptanceCriteria: ["selected criterion one", "selected criterion two"],
+		planApproved: false,
+	};
+	const plan = planForBrief(brief, participants);
+	assert.equal(plan.brief, brief);
+	assert.match(plan.tasks[0]?.acceptanceCriteria.join(" ") ?? "", /selected idea wins/);
+	assert.ok(
+		plan.tasks
+			.slice(1)
+			.every((task) =>
+				task.acceptanceCriteria.every((criterion) => brief.acceptanceCriteria?.includes(criterion)),
+			),
+	);
 });

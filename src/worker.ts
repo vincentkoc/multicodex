@@ -17,7 +17,7 @@ import {
 	participantToken,
 	readJson,
 } from "./http.ts";
-import { planForParticipants, shuffledBrief } from "./planning.ts";
+import { planForBrief, planForParticipants } from "./planning.ts";
 import { repoAllowed } from "./repos.ts";
 import {
 	roomAllowsPlanning,
@@ -31,17 +31,13 @@ import {
 	addMessage,
 	addParticipant,
 	approveRoomPlan,
-	clearRoomPlan,
-	countActiveRooms,
 	createRoom,
 	endRoom,
 	readRoomSnapshot,
 	replacePlan,
 	requireRoomParticipant,
 	resetRoomProvisioning,
-	setParticipantRoles,
 	updateParticipantRuntime,
-	updateRoomBrief,
 	updateRoomRuntime,
 	updateTaskState,
 } from "./store.ts";
@@ -80,12 +76,6 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		) {
 			throw new HttpError(401, "valid event code required");
 		}
-		if (
-			(await countActiveRooms(env.DB, Date.now() - 6 * 60 * 60 * 1000)) >=
-			activeRoomLimit(env.MAX_ACTIVE_ROOMS)
-		) {
-			throw new HttpError(429, "active room limit reached");
-		}
 		const body = await readJson<{
 			title?: string;
 			hostName?: string;
@@ -104,6 +94,8 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			hostName,
 			repo,
 			durationMinutes,
+			activeRoomLimit: activeRoomLimit(env.MAX_ACTIVE_ROOMS),
+			activeUpdatedSince: Date.now() - 6 * 60 * 60 * 1000,
 		});
 		context.waitUntil(broadcastSnapshot(env, created.snapshot));
 		return json(
@@ -192,7 +184,17 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			replyToId: clean(body.replyToId, 100) || null,
 		});
 		if (targetKind === "conductor" || text.includes("@conductor")) {
-			await conductorTurn(env, roomId, `${author.displayName}: ${text}`, author.id);
+			try {
+				await conductorTurn(env, roomId, `${author.displayName}: ${text}`, author.id);
+			} catch (error) {
+				console.error(
+					JSON.stringify({
+						event: "conductor_turn_failed",
+						roomId,
+						message: error instanceof Error ? error.message : "unknown error",
+					}),
+				);
+			}
 		}
 		const snapshot = await readRoomSnapshot(env.DB, roomId);
 		context.waitUntil(broadcastSnapshot(env, snapshot));
@@ -208,17 +210,17 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			throw new HttpError(409, "room is no longer accepting planning changes");
 		}
 		const active = snapshot.participants.filter((participant) => participant.kind !== "observer");
-		const brief = shuffledBrief(`${roomId}:${snapshot.room.briefRevision + 1}`, active.length);
 		const plan = planForParticipants(`${roomId}:${snapshot.room.briefRevision + 1}`, active);
-		await setParticipantRoles(env.DB, plan.assignments);
-		await clearRoomPlan(env.DB, roomId);
-		await updateRoomBrief(env.DB, roomId, brief, "planning");
+		const participants = participantsWithAssignments(snapshot.participants, plan.assignments);
+		if (!(await replacePlan(env.DB, roomId, plan.brief, participants, []))) {
+			throw new HttpError(409, "room is no longer accepting planning changes");
+		}
 		await addMessage(env.DB, roomId, {
 			authorKind: "conductor",
 			authorId: "conductor",
 			targetKind: "room",
 			targetId: null,
-			body: `Shuffled: ${brief.productGoal} Demo moment: ${brief.demoMoment}`,
+			body: `Shuffled: ${plan.brief.productGoal} Demo moment: ${plan.brief.demoMoment}`,
 			replyToId: null,
 		});
 		const updated = await readRoomSnapshot(env.DB, roomId);
@@ -230,21 +232,16 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 	if (request.method === "POST" && planMatch) {
 		const roomId = decodeURIComponent(planMatch[1] ?? "");
 		const host = await requireHost(env.DB, roomId, participantToken(request));
-		let snapshot = await readRoomSnapshot(env.DB, roomId);
+		const snapshot = await readRoomSnapshot(env.DB, roomId);
 		if (!roomAllowsPlanning(snapshot.room.status)) {
 			throw new HttpError(409, "room is no longer accepting planning changes");
 		}
 		const active = snapshot.participants.filter((participant) => participant.kind !== "observer");
-		const plan = planForParticipants(snapshot.room.brief.ideaId || roomId, active);
-		await setParticipantRoles(env.DB, plan.assignments);
-		snapshot = await readRoomSnapshot(env.DB, roomId);
-		await replacePlan(
-			env.DB,
-			roomId,
-			{ ...plan.brief, ...snapshot.room.brief },
-			snapshot.participants,
-			plan.tasks,
-		);
+		const plan = planForBrief(snapshot.room.brief, active);
+		const participants = participantsWithAssignments(snapshot.participants, plan.assignments);
+		if (!(await replacePlan(env.DB, roomId, plan.brief, participants, plan.tasks))) {
+			throw new HttpError(409, "room is no longer accepting planning changes");
+		}
 		await addMessage(env.DB, roomId, {
 			authorKind: "conductor",
 			authorId: "conductor",
@@ -293,7 +290,9 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			}
 			const rootSessionId =
 				bindings[0]?.binding.session.rootSessionId || bindings[0]?.binding.session.id || null;
-			await updateRoomRuntime(env.DB, roomId, rootSessionId, "building");
+			if (!(await updateRoomRuntime(env.DB, roomId, rootSessionId, "building", ["provisioning"]))) {
+				throw new HttpError(409, "room launch was cancelled");
+			}
 			await addMessage(env.DB, roomId, {
 				authorKind: "system",
 				authorId: "system",
@@ -396,12 +395,17 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		if (!roomAllowsPresentation(snapshot.room.status)) {
 			throw new HttpError(409, "room is not ready to present");
 		}
-		await updateRoomRuntime(
-			env.DB,
-			roomId,
-			(await readRoomSnapshot(env.DB, roomId)).room.crabfleetRootSessionId,
-			"presenting",
-		);
+		if (
+			!(await updateRoomRuntime(
+				env.DB,
+				roomId,
+				snapshot.room.crabfleetRootSessionId,
+				"presenting",
+				["building", "integrating"],
+			))
+		) {
+			throw new HttpError(409, "room state changed before presentation");
+		}
 		const updated = await readRoomSnapshot(env.DB, roomId);
 		context.waitUntil(broadcastSnapshot(env, updated));
 		return json(snapshotForViewer(updated, host.id));
@@ -411,6 +415,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 	if (request.method === "POST" && endMatch) {
 		const roomId = decodeURIComponent(endMatch[1] ?? "");
 		const host = await requireHost(env.DB, roomId, participantToken(request));
+		await endRoom(env.DB, roomId);
 		const snapshot = await readRoomSnapshot(env.DB, roomId);
 		if (snapshot.room.crabfleetRootSessionId) {
 			await stopRoomCrabboxes(
@@ -421,7 +426,6 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 				),
 			);
 		}
-		await endRoom(env.DB, roomId);
 		await addMessage(env.DB, roomId, {
 			authorKind: "conductor",
 			authorId: "conductor",
@@ -437,6 +441,19 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 
 	if (url.pathname.startsWith("/api/")) throw new HttpError(404, "not found");
 	return env.ASSETS.fetch(request);
+}
+
+function participantsWithAssignments(
+	participants: Participant[],
+	assignments: Array<{ participantId: string; roleId: string }>,
+): Participant[] {
+	const roles = new Map(
+		assignments.map((assignment) => [assignment.participantId, assignment.roleId]),
+	);
+	return participants.map((participant) => ({
+		...participant,
+		roleId: roles.get(participant.id) ?? participant.roleId,
+	}));
 }
 
 async function requireHost(db: D1Database, roomId: string, token: string): Promise<Participant> {

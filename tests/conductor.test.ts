@@ -1,14 +1,161 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { conductorCanNudge } from "../src/conductor.ts";
+import { conductorCanNudge, runConductorTurn } from "../src/conductor.ts";
 import type { RoomSnapshot } from "../src/domain.ts";
 
-const snapshot = {
-	room: { hostParticipantId: "host" },
-} as RoomSnapshot;
+const snapshot = conductorSnapshot();
 
 test("only the host can authorize conductor workspace nudges", () => {
 	assert.equal(conductorCanNudge(snapshot, "host"), true);
 	assert.equal(conductorCanNudge(snapshot, "guest"), false);
 });
+
+test("conductor redacts Crabfleet runtime identifiers from model input and published output", async () => {
+	const originalFetch = globalThis.fetch;
+	const requests: string[] = [];
+	const messages: string[] = [];
+	const decisions: Array<{ title: string; decision: string; reason: string }> = [];
+	const nudges: Array<{ participantId: string; message: string; reason: string }> = [];
+	let response = 0;
+	globalThis.fetch = async (_input, init) => {
+		requests.push(String(init?.body ?? ""));
+		response += 1;
+		return Response.json(
+			response === 1
+				? {
+						id: "response-1",
+						output: [
+							{
+								type: "function_call",
+								name: "post_room_message",
+								call_id: "call-message",
+								arguments: JSON.stringify({ body: "workspace opaque-child-token is ready" }),
+							},
+							{
+								type: "function_call",
+								name: "record_decision",
+								call_id: "call-decision",
+								arguments: JSON.stringify({
+									title: "Use IS-902",
+									decision: "Open https://runtime.example/opaque-child-token",
+									reason: "Root is opaque-root-token",
+								}),
+							},
+							{
+								type: "function_call",
+								name: "send_session_nudge",
+								call_id: "call-nudge",
+								arguments: JSON.stringify({
+									participantId: "opaque-child-token",
+									message: "Inspect IS-903",
+									reason: "opaque-root-token is blocked",
+								}),
+							},
+						],
+					}
+				: {
+						id: "response-2",
+						output: [
+							{
+								type: "message",
+								content: [{ type: "output_text", text: "Published IS-904" }],
+							},
+						],
+					},
+		);
+	};
+	try {
+		await runConductorTurn(
+			{ OPENAI_API_KEY: "test" } as Env,
+			snapshot,
+			"check IS-999 and opaque-root-token",
+			{
+				postMessage: async (body) => {
+					messages.push(body);
+				},
+				recordDecision: async (input) => {
+					decisions.push(input);
+				},
+				nudge: async (input) => {
+					nudges.push(input);
+				},
+			},
+		);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+
+	const published = JSON.stringify({ messages, decisions, nudges });
+	for (const identifier of [
+		"opaque-root-token",
+		"opaque-child-token",
+		"IS-902",
+		"IS-903",
+		"IS-904",
+		"IS-999",
+	]) {
+		assert.doesNotMatch(requests.join("\n"), new RegExp(identifier));
+		assert.doesNotMatch(published, new RegExp(identifier));
+	}
+	assert.doesNotMatch(requests[0]!, /crabfleetRootSessionId|crabfleetSessionId|browserUrl/);
+	assert.match(published, /redacted Crabfleet runtime identifier/);
+});
+
+function conductorSnapshot(): RoomSnapshot {
+	return {
+		room: {
+			id: "room",
+			slug: "room",
+			title: "Room",
+			status: "building",
+			hostParticipantId: "host",
+			repo: "example/repo",
+			baseBranch: "main",
+			integrationBranch: "multicodex/room/integration",
+			crabfleetRootSessionId: "opaque-root-token",
+			brief: { productGoal: "Ship a demo" },
+			briefRevision: 1,
+			durationMinutes: 30,
+			startedAt: 1,
+			endsAt: 2,
+			createdAt: 1,
+			updatedAt: 1,
+		},
+		participants: [
+			{
+				id: "host",
+				roomId: "room",
+				kind: "human",
+				displayName: "Host",
+				githubLogin: null,
+				roleId: "product-integration",
+				taskId: "task",
+				crabfleetSessionId: "opaque-child-token",
+				browserUrl: "https://runtime.example/opaque-child-token",
+				runtimeSummary: "workspace opaque-child-token is ready",
+				branch: "multicodex/room/host",
+				state: "working",
+				joinedAt: 1,
+				createdAt: 1,
+				updatedAt: 1,
+			},
+		],
+		messages: [
+			{
+				id: "message",
+				roomId: "room",
+				authorKind: "human",
+				authorId: "host",
+				targetKind: "conductor",
+				targetId: null,
+				body: "What is happening with IS-999?",
+				replyToId: null,
+				createdAt: 1,
+			},
+		],
+		tasks: [],
+		decisions: [],
+		conductorActions: [],
+	};
+}

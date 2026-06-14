@@ -1,9 +1,13 @@
-import { chooseIdea, rolesForSeats } from "./catalog.ts";
+import { chooseIdea, ideas, rolesForSeats } from "./catalog.ts";
+import type { IdeaCard } from "./catalog.ts";
 import type { Participant, RoomBrief, Task } from "./domain.ts";
 import { newId } from "./http.ts";
 
 export function shuffledBrief(seed: string, people: number): RoomBrief {
-	const idea = chooseIdea(seed, people);
+	return briefForIdea(chooseIdea(seed, people));
+}
+
+function briefForIdea(idea: IdeaCard): RoomBrief {
 	return {
 		ideaId: idea.id,
 		productGoal: idea.pitch,
@@ -23,7 +27,20 @@ export function planForParticipants(
 	tasks: Array<Omit<Task, "roomId" | "createdAt" | "updatedAt">>;
 } {
 	const active = participants.filter((participant) => participant.kind !== "observer");
-	const brief = shuffledBrief(seed, active.length);
+	const selectedIdea = ideas.find((idea) => idea.id === seed);
+	const brief = selectedIdea ? briefForIdea(selectedIdea) : shuffledBrief(seed, active.length);
+	return planForBrief(brief, active);
+}
+
+export function planForBrief(
+	brief: RoomBrief,
+	participants: Participant[],
+): {
+	brief: RoomBrief;
+	assignments: Array<{ participantId: string; roleId: string }>;
+	tasks: Array<Omit<Task, "roomId" | "createdAt" | "updatedAt">>;
+} {
+	const active = participants.filter((participant) => participant.kind !== "observer");
 	const roles = rolesForSeats(active.length);
 	const taskIds = active.map(() => newId("task"));
 	const assignments = active.map((participant, index) => ({
@@ -42,7 +59,10 @@ export function planForParticipants(
 			ownsPaths: role.owns,
 			acceptanceCriteria:
 				index === 0
-					? ["integrated branch runs", "demo moment is visible"]
+					? [
+							"integrated branch runs",
+							brief.demoMoment ? `demo moment: ${brief.demoMoment}` : "demo moment is visible",
+						]
 					: [
 							brief.acceptanceCriteria?.[index % (brief.acceptanceCriteria?.length || 1)] ??
 								"task works",
