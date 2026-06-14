@@ -77,7 +77,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const created = await createRoom(env.DB, {
 			title,
 			hostName,
-			repo: clean(body.repo, 160) || env.DEFAULT_REPO || "openclaw/crabfleet",
+			repo: clean(body.repo, 160) || env.DEFAULT_REPO || "vincentkoc/multicodex",
 			durationMinutes,
 		});
 		context.waitUntil(broadcastSnapshot(env, created.snapshot));

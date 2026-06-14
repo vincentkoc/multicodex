@@ -164,7 +164,7 @@ function CreateRoom({
 			const result = await createRoom({
 				title: String(data.get("title") || "OpenAI event build"),
 				hostName: String(data.get("hostName") || "Host"),
-				repo: String(data.get("repo") || "openclaw/crabfleet"),
+				repo: String(data.get("repo") || "vincentkoc/multicodex"),
 				durationMinutes: Number(data.get("durationMinutes") || 30),
 			});
 			onEnter(result.snapshot, result);
@@ -212,7 +212,7 @@ function CreateRoom({
 					</label>
 					<label>
 						GitHub repo
-						<input name="repo" defaultValue="openclaw/crabfleet" required maxLength={160} />
+						<input name="repo" defaultValue="vincentkoc/multicodex" required maxLength={160} />
 					</label>
 					<label>
 						Sprint

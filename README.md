@@ -46,11 +46,9 @@ pnpm check
 
 ## Deploy
 
-Create the D1 database once, replace the `database_id` in `wrangler.jsonc`, and
-configure secrets:
+Configure secrets before the first production deploy:
 
 ```bash
-pnpm exec wrangler d1 create multicodex
 pnpm exec wrangler secret put OPENAI_API_KEY
 pnpm exec wrangler secret put CRABFLEET_SERVICE_TOKEN
 pnpm exec wrangler secret put GITHUB_TOKEN
