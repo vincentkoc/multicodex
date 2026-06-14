@@ -17,6 +17,8 @@ type OpenAIOutput = {
 	}>;
 };
 
+export const conductorTurnTimeoutMilliseconds = 20_000;
+
 export async function runConductorTurn(
 	env: Env,
 	snapshot: RoomSnapshot,
@@ -38,7 +40,7 @@ export async function runConductorTurn(
 			["body"],
 		),
 	];
-	const signal = AbortSignal.timeout(45_000);
+	const signal = AbortSignal.timeout(conductorTurnTimeoutMilliseconds);
 	let previousResponseId: string | undefined;
 	let input: unknown = [
 		{

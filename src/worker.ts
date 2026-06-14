@@ -424,7 +424,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			throw new HttpError(409, "room is not ready to launch");
 		}
 		snapshot = await readRoomSnapshot(env.DB, roomId);
-		await broadcastSnapshot(env, snapshot);
+		context.waitUntil(broadcastSnapshot(env, snapshot));
 		let bindings: Awaited<ReturnType<typeof provisionRoomCrabboxes>> = [];
 		try {
 			await ensureRoomBranches(env, snapshot.room, snapshot.participants, async () => {

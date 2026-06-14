@@ -241,6 +241,8 @@ test("plan approval revalidates the current repository allowlist", async () => {
 	const approvalSource = source.slice(start, end);
 
 	assert.ok(approvalSource.indexOf("repoAllowed") < approvalSource.indexOf("approveRoomPlan"));
+	assert.match(approvalSource, /context\.waitUntil\(broadcastSnapshot\(env, snapshot\)\)/);
+	assert.doesNotMatch(approvalSource, /await broadcastSnapshot\(env, snapshot\)/);
 	assert.match(approvalSource, /room repository is no longer enabled/);
 	assert.match(approvalSource, /recordProvisioningBinding/);
 });
@@ -352,7 +354,7 @@ test("launch preparation renews provisioning while GitHub branches are created",
 		/ensureRoomBranches\(env, snapshot\.room, snapshot\.participants, async \(\) =>/,
 	);
 	assert.match(launchSource, /renewProvisioningLease\(env\.DB, roomId\)/);
-	assert.match(launchSource, /await broadcastSnapshot\(env, snapshot\)/);
+	assert.match(launchSource, /context\.waitUntil\(broadcastSnapshot\(env, snapshot\)\)/);
 	assert.ok(
 		launchSource.indexOf("markRootProvisioningAttempt") <
 			launchSource.indexOf("bindings = await provisionRoomCrabboxes"),

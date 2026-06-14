@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runConductorTurn } from "../src/conductor.ts";
+import { conductorTurnTimeoutMilliseconds, runConductorTurn } from "../src/conductor.ts";
 import type { RoomSnapshot } from "../src/domain.ts";
 
 const snapshot = conductorSnapshot();
+
+test("conductor work finishes within the Worker waitUntil window", () => {
+	assert.equal(conductorTurnTimeoutMilliseconds, 20_000);
+	assert.ok(conductorTurnTimeoutMilliseconds < 30_000);
+});
 
 test("conductor turns expose only the visible room-message tool", async () => {
 	const originalFetch = globalThis.fetch;

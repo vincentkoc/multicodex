@@ -21,6 +21,8 @@ export type ProvisioningBindingObserver = (
 	bindings: ParticipantCrabboxBinding[],
 ) => Promise<void>;
 
+export const readinessPollDelays = [1_000, 2_000, 4_000, 8_000, 12_000] as const;
+
 export class PartialProvisioningError extends Error {
 	readonly bindings: ParticipantCrabboxBinding[];
 
@@ -259,23 +261,16 @@ async function waitForUsableRoomCrabboxes(
 ): Promise<ParticipantCrabboxBinding[]> {
 	const deadline = Date.now() + 30_000;
 	let bindings = initial;
-	while (Date.now() < deadline) {
-		const failed = bindings.find(({ binding }) =>
-			terminalCrabfleetStatuses.has(binding.session.status),
-		);
-		if (failed) {
-			throw new PartialProvisioningError(
-				new HttpError(502, `Crabfleet session ${failed.binding.session.status} before launch`),
-				bindings,
-			);
-		}
-		if (bindings.every(({ binding }) => usableCrabfleetStatuses.has(binding.session.status))) {
-			return bindings;
-		}
+	for (const pollDelay of readinessPollDelays) {
+		const ready = usableRoomCrabboxes(bindings);
+		if (ready) return ready;
 		const rootSessionId =
 			bindings[0]?.binding.session.rootSessionId || bindings[0]?.binding.session.id;
 		if (!rootSessionId) break;
-		await delay(250);
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) break;
+		// Keep launch comfortably below the Workers free-tier subrequest cap.
+		await delay(Math.min(pollDelay, remaining));
 		const refreshed = new Map(
 			(await readRoomCrabboxes(env, rootSessionId)).map((binding) => [binding.session.id, binding]),
 		);
@@ -284,10 +279,29 @@ async function waitForUsableRoomCrabboxes(
 			binding: refreshed.get(item.binding.session.id) ?? item.binding,
 		}));
 	}
+	const ready = usableRoomCrabboxes(bindings);
+	if (ready) return ready;
 	throw new PartialProvisioningError(
 		new HttpError(502, "Crabfleet sessions did not become ready before launch"),
 		bindings,
 	);
+}
+
+function usableRoomCrabboxes(
+	bindings: ParticipantCrabboxBinding[],
+): ParticipantCrabboxBinding[] | null {
+	const failed = bindings.find(({ binding }) =>
+		terminalCrabfleetStatuses.has(binding.session.status),
+	);
+	if (failed) {
+		throw new PartialProvisioningError(
+			new HttpError(502, `Crabfleet session ${failed.binding.session.status} before launch`),
+			bindings,
+		);
+	}
+	return bindings.every(({ binding }) => usableCrabfleetStatuses.has(binding.session.status))
+		? bindings
+		: null;
 }
 
 function delay(milliseconds: number): Promise<void> {

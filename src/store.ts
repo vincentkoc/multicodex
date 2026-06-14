@@ -1041,19 +1041,31 @@ export async function updateTaskState(
 	expectedStatuses: RoomStatus[],
 ): Promise<boolean> {
 	if (!expectedStatuses.length) return false;
-	const result = await db
-		.prepare(
-			`UPDATE tasks SET state = ?, updated_at = ?
-       WHERE id = ? AND room_id = ? AND state = ?
-         AND EXISTS (
-           SELECT 1 FROM rooms WHERE id = ? AND status IN (${expectedStatuses
-							.map(() => "?")
-							.join(", ")})
-         )`,
-		)
-		.bind(state, Date.now(), taskId, roomId, expectedState, roomId, ...expectedStatuses)
-		.run();
-	return result.meta.changes === 1;
+	const now = Date.now();
+	const [taskResult] = await db.batch([
+		db
+			.prepare(
+				`UPDATE tasks SET state = ?, updated_at = ?
+	       WHERE id = ? AND room_id = ? AND state = ?
+	         AND EXISTS (
+	           SELECT 1 FROM rooms WHERE id = ? AND status IN (${expectedStatuses
+								.map(() => "?")
+								.join(", ")})
+	         )`,
+			)
+			.bind(state, now, taskId, roomId, expectedState, roomId, ...expectedStatuses),
+		db
+			.prepare(
+				`UPDATE rooms SET updated_at = ?
+         WHERE id = ? AND status IN ('setup', 'planning')
+           AND EXISTS (
+             SELECT 1 FROM tasks
+             WHERE id = ? AND room_id = ? AND state = ? AND updated_at = ?
+           )`,
+			)
+			.bind(now, roomId, taskId, roomId, state, now),
+	]);
+	return taskResult?.meta.changes === 1;
 }
 
 export async function updateTaskStateWithDecision(
@@ -1108,6 +1120,13 @@ export async function updateTaskStateWithDecision(
            AND EXISTS (SELECT 1 FROM decisions WHERE id = ? AND room_id = ?)`,
 			)
 			.bind(state, now, taskId, roomId, expectedState, decisionId, roomId),
+		db
+			.prepare(
+				`UPDATE rooms SET updated_at = ?
+         WHERE id = ? AND status IN ('setup', 'planning')
+           AND EXISTS (SELECT 1 FROM decisions WHERE id = ? AND room_id = ?)`,
+			)
+			.bind(now, roomId, decisionId, roomId),
 	]);
 	return decisionResult?.meta.changes === 1 && taskResult?.meta.changes === 1;
 }

@@ -172,7 +172,9 @@ test("task updates are atomically fenced against terminal rooms", async () => {
 	assert.match(taskSource, /status IN/);
 	assert.match(taskSource, /AND state = \?/);
 	assert.match(taskSource, /expectedState/);
-	assert.match(taskSource, /return result\.meta\.changes === 1/);
+	assert.match(taskSource, /UPDATE rooms SET updated_at = \?/);
+	assert.match(taskSource, /status IN \('setup', 'planning'\)/);
+	assert.match(taskSource, /return taskResult\?\.meta\.changes === 1/);
 });
 
 test("scope-changing task updates atomically record their decision", async () => {
@@ -184,6 +186,8 @@ test("scope-changing task updates atomically record their decision", async () =>
 	assert.match(taskSource, /const \[decisionResult, taskResult\] = await db\.batch/);
 	assert.ok(taskSource.indexOf("INSERT INTO decisions") < taskSource.indexOf("UPDATE tasks"));
 	assert.match(taskSource, /EXISTS \(SELECT 1 FROM decisions WHERE id = \? AND room_id = \?\)/);
+	assert.match(taskSource, /UPDATE rooms SET updated_at = \?/);
+	assert.match(taskSource, /status IN \('setup', 'planning'\)/);
 	assert.match(
 		taskSource,
 		/decisionResult\?\.meta\.changes === 1 && taskResult\?\.meta\.changes === 1/,
