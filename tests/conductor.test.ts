@@ -11,6 +11,47 @@ test("only the host can authorize conductor workspace nudges", () => {
 	assert.equal(conductorCanNudge(snapshot, "guest"), false);
 });
 
+test("a participant conductor turn cannot record decisions or nudge sessions", async () => {
+	const originalFetch = globalThis.fetch;
+	const requests: Array<{ tools?: Array<{ name?: string }> }> = [];
+	let response = 0;
+	globalThis.fetch = async (_input, init) => {
+		requests.push(JSON.parse(String(init?.body ?? "{}")) as { tools?: Array<{ name?: string }> });
+		response += 1;
+		return Response.json(
+			response === 1
+				? {
+						id: "response-1",
+						output: [
+							{
+								type: "function_call",
+								name: "record_decision",
+								call_id: "call-decision",
+								arguments: JSON.stringify({
+									title: "unauthorized",
+									decision: "change scope",
+									reason: "participant requested it",
+								}),
+							},
+						],
+					}
+				: { id: "response-2", output: [] },
+		);
+	};
+	try {
+		await runConductorTurn({ OPENAI_API_KEY: "test" } as Env, snapshot, "change scope", {
+			postMessage: async () => undefined,
+		});
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+
+	assert.deepEqual(
+		requests[0]?.tools?.map((tool) => tool.name),
+		["post_room_message"],
+	);
+});
+
 test("conductor redacts Crabfleet runtime identifiers from model input and published output", async () => {
 	const originalFetch = globalThis.fetch;
 	const requests: string[] = [];

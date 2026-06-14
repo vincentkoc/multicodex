@@ -31,6 +31,10 @@ export function crabfleetRuntime(value: string | undefined): "container" | "crab
 	return value === "container" ? "container" : "crabbox";
 }
 
+export function crabfleetOwner(value: string | undefined): string {
+	return slugify(value || "multicodex", "multicodex");
+}
+
 export async function provisionRoomCrabboxes(
 	env: Env,
 	room: Room,
@@ -41,9 +45,10 @@ export async function provisionRoomCrabboxes(
 	const host = active.find((participant) => participant.id === room.hostParticipantId) ?? active[0];
 	if (!host) throw new HttpError(400, "room has no active participant");
 	if (!env.CRABFLEET_SERVICE_TOKEN) return simulatedBindings(room, active);
+	const owner = crabfleetOwner(env.CRABFLEET_OWNER);
 	const hostTask = tasks.find((task) => task.ownerParticipantId === host.id);
 	const root = await createCrabbox(env, {
-		owner: host.githubLogin || slugify(host.displayName, "host"),
+		owner,
 		repo: room.repo,
 		branch: host.branch || room.integrationBranch,
 		baseBranch: room.baseBranch,
@@ -58,7 +63,7 @@ export async function provisionRoomCrabboxes(
 			bindings.push({
 				participantId: participant.id,
 				binding: await createCrabbox(env, {
-					owner: participant.githubLogin || slugify(participant.displayName, "participant"),
+					owner,
 					repo: room.repo,
 					branch: participant.branch || room.integrationBranch,
 					baseBranch: room.baseBranch,
@@ -116,20 +121,49 @@ export async function stopRoomCrabboxes(
 	sessionIds: string[],
 ): Promise<void> {
 	if (!env.CRABFLEET_SERVICE_TOKEN) return;
-	await Promise.all(
-		sessionIds.map(async (sessionId) => {
-			const response = await crabfleetFetch(
-				env,
-				`/api/openclaw/crabboxes/${encodeURIComponent(sessionId)}/actions`,
-				{
-					method: "POST",
-					body: JSON.stringify({ rootSessionId, action: "stop" }),
-					headers: { "content-type": "application/json" },
-				},
+	const deadline = Date.now() + 30_000;
+	const known = new Map<string, CrabfleetSession | null>(sessionIds.map((id) => [id, null]));
+	const stopRequested = new Set<string>();
+	let terminalReads = 0;
+	while (Date.now() < deadline) {
+		const bindings = await readRoomCrabboxes(env, rootSessionId);
+		for (const binding of bindings) known.set(binding.session.id, binding.session);
+		const activeIds = [...known.entries()]
+			.filter(([, session]) => !session || !terminalCrabfleetStatuses.has(session.status))
+			.map(([id]) => id);
+		const newStops = activeIds.filter((id) => !stopRequested.has(id));
+		await Promise.all(
+			newStops.map(async (sessionId) => {
+				stopRequested.add(sessionId);
+				const response = await crabfleetFetch(
+					env,
+					`/api/openclaw/crabboxes/${encodeURIComponent(sessionId)}/actions`,
+					{
+						method: "POST",
+						body: JSON.stringify({ rootSessionId, action: "stop" }),
+						headers: { "content-type": "application/json" },
+					},
+				);
+				const binding = await responseJson<CrabboxBinding>(response);
+				known.set(binding.session.id, binding.session);
+			}),
+		);
+		const allTerminal =
+			known.size > 0 &&
+			[...known.values()].every(
+				(session) => session && terminalCrabfleetStatuses.has(session.status),
 			);
-			await responseJson(response);
-		}),
-	);
+		terminalReads = allTerminal && newStops.length === 0 ? terminalReads + 1 : 0;
+		if (terminalReads >= 2) return;
+		await delay(250);
+	}
+	throw new HttpError(502, "Crabfleet cleanup did not reach a terminal state");
+}
+
+const terminalCrabfleetStatuses = new Set(["stopped", "expired", "failed"]);
+
+function delay(milliseconds: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function createCrabbox(

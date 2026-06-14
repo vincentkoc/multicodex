@@ -36,7 +36,7 @@ closed without it.
 - An authenticated participant only receives the URL for their own workspace.
 - Only the host capability can approve a plan, provision workspaces, nudge a
   session, present, or end a room.
-- Active builder seats are capped at six. The Worker is the only component that
+- Active builder seats are capped at five. The Worker is the only component that
   holds OpenAI, GitHub, and Crabfleet service credentials.
 - Room repositories must appear in the deployment's `ALLOWED_REPOS` list.
   This fences both GitHub branch creation and Crabfleet provisioning.
@@ -67,6 +67,9 @@ create branches only in the intended event repo.
 `CRABFLEET_RUNTIME` selects `container` or `crabbox`. The event deployment uses
 the built-in `container` runtime for reliable terminal nudges; switch to
 `crabbox` when the external adapter exposes a healthy terminal route.
+`CRABFLEET_OWNER` is the trusted service-owned Crabfleet identity applied to
+every room session; participant-supplied names and GitHub logins are never used
+as Crabfleet owners.
 
 `ALLOWED_REPOS` is a comma-separated deployment allowlist. Keep it narrower
 than the GitHub token's repository access.

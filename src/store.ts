@@ -222,15 +222,16 @@ export async function addParticipant(
 	if (input.kind !== "observer" && !roomAllowsPlanning(room.status)) {
 		throw new HttpError(409, "only observers can join after launch");
 	}
-	const limit = input.kind === "observer" ? 24 : 6;
+	const limit = input.kind === "observer" ? 24 : 5;
 	const id = newId("person");
 	const participantToken = newId("seat");
 	const now = Date.now();
 	const branch =
 		input.kind === "observer" ? null : participantBranch(room.slug, input.displayName, id);
-	const result = await db
-		.prepare(
-			`INSERT INTO participants
+	const statements: D1PreparedStatement[] = [
+		db
+			.prepare(
+				`INSERT INTO participants
         (id, room_id, kind, display_name, github_login, access_token, branch, state, joined_at, created_at, updated_at)
        SELECT ?, ?, ?, ?, ?, ?, ?, 'joined', ?, ?, ?
        WHERE EXISTS (
@@ -243,24 +244,52 @@ export async function addParticipant(
          SELECT COUNT(*) FROM participants
          WHERE room_id = ? ${input.kind === "observer" ? "" : "AND kind != 'observer'"}
        ) < ?`,
-		)
-		.bind(
-			id,
-			roomId,
-			input.kind,
-			input.displayName,
-			input.githubLogin ?? null,
-			participantToken,
-			branch,
-			now,
-			now,
-			now,
-			roomId,
-			roomId,
-			limit,
-		)
-		.run();
-	if (result.meta.changes !== 1) {
+			)
+			.bind(
+				id,
+				roomId,
+				input.kind,
+				input.displayName,
+				input.githubLogin ?? null,
+				participantToken,
+				branch,
+				now,
+				now,
+				now,
+				roomId,
+				roomId,
+				limit,
+			),
+	];
+	if (input.kind !== "observer") {
+		statements.push(
+			db
+				.prepare(
+					`DELETE FROM tasks
+           WHERE room_id = ?
+             AND EXISTS (SELECT 1 FROM participants WHERE id = ? AND room_id = ?)`,
+				)
+				.bind(roomId, id, roomId),
+			db
+				.prepare(
+					`UPDATE participants SET task_id = NULL, updated_at = ?
+           WHERE room_id = ?
+             AND EXISTS (SELECT 1 FROM participants WHERE id = ? AND room_id = ?)`,
+				)
+				.bind(now, roomId, id, roomId),
+			db
+				.prepare(
+					`UPDATE rooms
+           SET brief_json = json_set(brief_json, '$.planApproved', json('false')),
+               brief_revision = brief_revision + 1, updated_at = ?
+           WHERE id = ? AND status IN ('setup', 'planning')
+             AND EXISTS (SELECT 1 FROM participants WHERE id = ? AND room_id = ?)`,
+				)
+				.bind(now, roomId, id, roomId),
+		);
+	}
+	const [result] = await db.batch(statements);
+	if (result?.meta.changes !== 1) {
 		throw new HttpError(409, "room is no longer accepting this seat");
 	}
 	return {

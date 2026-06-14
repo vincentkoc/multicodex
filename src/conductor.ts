@@ -4,7 +4,7 @@ import { redactRuntimeValue, runtimeRedactor } from "./runtime-redaction.ts";
 
 type ConductorTools = {
 	postMessage(body: string): Promise<void>;
-	recordDecision(input: { title: string; decision: string; reason: string }): Promise<void>;
+	recordDecision?(input: { title: string; decision: string; reason: string }): Promise<void>;
 	nudge?(input: { participantId: string; message: string; reason: string }): Promise<void>;
 };
 
@@ -43,16 +43,20 @@ export async function runConductorTurn(
 			},
 			["body"],
 		),
-		functionTool(
-			"record_decision",
-			"Record a durable room decision.",
-			{
-				title: { type: "string" },
-				decision: { type: "string" },
-				reason: { type: "string" },
-			},
-			["title", "decision", "reason"],
-		),
+		...(tools.recordDecision
+			? [
+					functionTool(
+						"record_decision",
+						"Record a durable room decision.",
+						{
+							title: { type: "string" },
+							decision: { type: "string" },
+							reason: { type: "string" },
+						},
+						["title", "decision", "reason"],
+					),
+				]
+			: []),
 		...(tools.nudge
 			? [
 					functionTool(
@@ -124,7 +128,7 @@ export async function runConductorTurn(
 const conductorInstructions = `You are the visible conductor of a small MultiCodex hackathon room.
 Be concise, practical, and calm. Help humans coordinate; do not act like their boss.
 Every intervention must be attributable and based on current room evidence.
-Use tools to post messages, record decisions, or nudge a participant workspace.
+Use only the tools made available for this turn.
 Never request, repeat, or publish Crabfleet runtime identifiers.
 Do not create scope after plan approval. Do not nudge without a specific reason.
 Ask the host before destructive actions or material goal changes.`;
@@ -155,6 +159,7 @@ async function executeTool(
 		return { posted: true };
 	}
 	if (name === "record_decision") {
+		if (!tools.recordDecision) return { error: "host approval required" };
 		await tools.recordDecision({
 			title: redactOutput(args.title, 120, redact),
 			decision: redactOutput(args.decision, 500, redact),

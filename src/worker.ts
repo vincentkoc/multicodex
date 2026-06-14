@@ -24,6 +24,7 @@ import {
 	roomAllowsPlanning,
 	roomAllowsPresentation,
 	roomAllowsRuntimeNudge,
+	roomPlanCoversActiveParticipants,
 } from "./room-state.ts";
 import { RoomHub } from "./room-hub.ts";
 import {
@@ -259,6 +260,9 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			throw new HttpError(409, "room provisioning is already in progress");
 		}
 		if (!snapshot.tasks.length) throw new HttpError(409, "draft a plan before launching");
+		if (!roomPlanCoversActiveParticipants(snapshot)) {
+			throw new HttpError(409, "draft a current role and task for every active participant");
+		}
 		if (!(await approveRoomPlan(env.DB, roomId))) {
 			throw new HttpError(409, "room is not ready to launch");
 		}
@@ -492,16 +496,16 @@ async function conductorTurn(
 				replyToId: null,
 			});
 		},
-		recordDecision: async (input) => {
+	};
+	if (conductorCanNudge(snapshot, actorParticipantId)) {
+		tools.recordDecision = async (input) => {
 			await addDecision(env.DB, roomId, {
 				...input,
 				authorKind: "conductor",
 				authorId: "conductor",
 				affectedTaskIds: [],
 			});
-		},
-	};
-	if (conductorCanNudge(snapshot, actorParticipantId)) {
+		};
 		tools.nudge = async (input) =>
 			nudgeParticipant(env, roomId, input.participantId, input.message, input.reason);
 	}
