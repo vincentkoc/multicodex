@@ -28,6 +28,8 @@ test("planning assigns one bounded task and distinct role per active participant
 	assert.equal(plan.tasks.length, 3);
 	assert.equal(new Set(plan.assignments.map((assignment) => assignment.roleId)).size, 3);
 	assert.ok(plan.tasks.every((task) => task.acceptanceCriteria.length > 0));
+	const taskIds = new Set(plan.tasks.map((task) => task.id));
+	assert.ok(plan.tasks.flatMap((task) => task.dependsOn).every((id) => taskIds.has(id)));
 });
 
 test("task prompts keep the participant scope explicit", () => {

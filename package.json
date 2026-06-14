@@ -4,7 +4,7 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"build": "vite build && tsc --noEmit",
+		"build": "wrangler types && vite build && tsc --noEmit",
 		"check": "pnpm typecheck && pnpm test && pnpm lint && pnpm format",
 		"db:local": "wrangler d1 migrations apply DB --local",
 		"deploy": "pnpm build && wrangler d1 migrations apply DB --remote && wrangler deploy",

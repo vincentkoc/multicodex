@@ -39,6 +39,7 @@
 		"CRABFLEET_API_URL": "https://crabfleet.openclaw.ai",
 		"CRABFLEET_RUNTIME": "container",
 		"DEFAULT_REPO": "vincentkoc/multicodex",
+		"MAX_ACTIVE_ROOMS": "20",
 		"OPENAI_MODEL": "gpt-5.4-mini",
 	},
 }

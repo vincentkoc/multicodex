@@ -1,4 +1,5 @@
 import { ideas, roles } from "./catalog.ts";
+import { activeRoomLimit, eventAccessAuthorized } from "./access.ts";
 import { conductorCanNudge, runConductorTurn } from "./conductor.ts";
 import {
 	provisionRoomCrabboxes,
@@ -18,6 +19,11 @@ import {
 } from "./http.ts";
 import { planForParticipants, shuffledBrief } from "./planning.ts";
 import { repoAllowed } from "./repos.ts";
+import {
+	roomAllowsPlanning,
+	roomAllowsPresentation,
+	roomAllowsRuntimeNudge,
+} from "./room-state.ts";
 import { RoomHub } from "./room-hub.ts";
 import {
 	addConductorAction,
@@ -26,11 +32,13 @@ import {
 	addParticipant,
 	approveRoomPlan,
 	clearRoomPlan,
+	countActiveRooms,
 	createRoom,
 	endRoom,
 	readRoomSnapshot,
 	replacePlan,
 	requireRoomParticipant,
+	resetRoomProvisioning,
 	setParticipantRoles,
 	updateParticipantRuntime,
 	updateRoomBrief,
@@ -67,6 +75,17 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 	if (request.method === "GET" && url.pathname === "/api/catalog") return json({ ideas, roles });
 
 	if (request.method === "POST" && url.pathname === "/api/rooms") {
+		if (
+			!eventAccessAuthorized(request.headers.get("x-multicodex-event-code"), env.EVENT_ACCESS_CODE)
+		) {
+			throw new HttpError(401, "valid event code required");
+		}
+		if (
+			(await countActiveRooms(env.DB, Date.now() - 6 * 60 * 60 * 1000)) >=
+			activeRoomLimit(env.MAX_ACTIVE_ROOMS)
+		) {
+			throw new HttpError(429, "active room limit reached");
+		}
 		const body = await readJson<{
 			title?: string;
 			hostName?: string;
@@ -185,6 +204,9 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const roomId = decodeURIComponent(shuffleMatch[1] ?? "");
 		const host = await requireHost(env.DB, roomId, participantToken(request));
 		const snapshot = await readRoomSnapshot(env.DB, roomId);
+		if (!roomAllowsPlanning(snapshot.room.status)) {
+			throw new HttpError(409, "room is no longer accepting planning changes");
+		}
 		const active = snapshot.participants.filter((participant) => participant.kind !== "observer");
 		const brief = shuffledBrief(`${roomId}:${snapshot.room.briefRevision + 1}`, active.length);
 		const plan = planForParticipants(`${roomId}:${snapshot.room.briefRevision + 1}`, active);
@@ -209,6 +231,9 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const roomId = decodeURIComponent(planMatch[1] ?? "");
 		const host = await requireHost(env.DB, roomId, participantToken(request));
 		let snapshot = await readRoomSnapshot(env.DB, roomId);
+		if (!roomAllowsPlanning(snapshot.room.status)) {
+			throw new HttpError(409, "room is no longer accepting planning changes");
+		}
 		const active = snapshot.participants.filter((participant) => participant.kind !== "observer");
 		const plan = planForParticipants(snapshot.room.brief.ideaId || roomId, active);
 		await setParticipantRoles(env.DB, plan.assignments);
@@ -249,32 +274,47 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			throw new HttpError(409, "room is not ready to launch");
 		}
 		snapshot = await readRoomSnapshot(env.DB, roomId);
-		await ensureRoomBranches(env, snapshot.room, snapshot.participants);
-		const bindings = await provisionRoomCrabboxes(
-			env,
-			snapshot.room,
-			snapshot.participants,
-			snapshot.tasks,
-		);
-		for (const { participantId: id, binding } of bindings) {
-			await updateParticipantRuntime(env.DB, id, {
-				sessionId: binding.session.id,
-				browserUrl: binding.browserUrl,
-				summary: binding.session.summary,
-				state: binding.session.status === "ready" ? "ready" : "working",
+		let bindings: Awaited<ReturnType<typeof provisionRoomCrabboxes>> = [];
+		try {
+			await ensureRoomBranches(env, snapshot.room, snapshot.participants);
+			bindings = await provisionRoomCrabboxes(
+				env,
+				snapshot.room,
+				snapshot.participants,
+				snapshot.tasks,
+			);
+			for (const { participantId: id, binding } of bindings) {
+				await updateParticipantRuntime(env.DB, id, {
+					sessionId: binding.session.id,
+					browserUrl: binding.browserUrl,
+					summary: binding.session.summary,
+					state: binding.session.status === "ready" ? "ready" : "working",
+				});
+			}
+			const rootSessionId =
+				bindings[0]?.binding.session.rootSessionId || bindings[0]?.binding.session.id || null;
+			await updateRoomRuntime(env.DB, roomId, rootSessionId, "building");
+			await addMessage(env.DB, roomId, {
+				authorKind: "system",
+				authorId: "system",
+				targetKind: "system",
+				targetId: null,
+				body: `${bindings.length} Codex workspace${bindings.length === 1 ? "" : "s"} launched.`,
+				replyToId: null,
 			});
+		} catch (error) {
+			const rootSessionId =
+				bindings[0]?.binding.session.rootSessionId || bindings[0]?.binding.session.id;
+			if (rootSessionId) {
+				await stopRoomCrabboxes(
+					env,
+					rootSessionId,
+					bindings.map(({ binding }) => binding.session.id),
+				).catch(() => undefined);
+			}
+			await resetRoomProvisioning(env.DB, roomId);
+			throw error;
 		}
-		const rootSessionId =
-			bindings[0]?.binding.session.rootSessionId || bindings[0]?.binding.session.id || null;
-		await updateRoomRuntime(env.DB, roomId, rootSessionId, "building");
-		await addMessage(env.DB, roomId, {
-			authorKind: "system",
-			authorId: "system",
-			targetKind: "system",
-			targetId: null,
-			body: `${bindings.length} Codex workspace${bindings.length === 1 ? "" : "s"} launched.`,
-			replyToId: null,
-		});
 		snapshot = await readRoomSnapshot(env.DB, roomId);
 		context.waitUntil(broadcastSnapshot(env, snapshot));
 		return json(snapshotForViewer(snapshot, host.id));
@@ -328,6 +368,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const snapshot = await readRoomSnapshot(env.DB, roomId);
 		const task = snapshot.tasks.find((item) => item.id === taskId);
 		if (!task) throw new HttpError(404, "task not found");
+		if (snapshot.room.status === "ended") throw new HttpError(409, "room has ended");
 		if (actor.id !== snapshot.room.hostParticipantId && actor.id !== task.ownerParticipantId) {
 			throw new HttpError(403, "only the task owner or host can update this task");
 		}
@@ -351,15 +392,19 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 	if (request.method === "POST" && presentMatch) {
 		const roomId = decodeURIComponent(presentMatch[1] ?? "");
 		const host = await requireHost(env.DB, roomId, participantToken(request));
+		const snapshot = await readRoomSnapshot(env.DB, roomId);
+		if (!roomAllowsPresentation(snapshot.room.status)) {
+			throw new HttpError(409, "room is not ready to present");
+		}
 		await updateRoomRuntime(
 			env.DB,
 			roomId,
 			(await readRoomSnapshot(env.DB, roomId)).room.crabfleetRootSessionId,
 			"presenting",
 		);
-		const snapshot = await readRoomSnapshot(env.DB, roomId);
-		context.waitUntil(broadcastSnapshot(env, snapshot));
-		return json(snapshotForViewer(snapshot, host.id));
+		const updated = await readRoomSnapshot(env.DB, roomId);
+		context.waitUntil(broadcastSnapshot(env, updated));
+		return json(snapshotForViewer(updated, host.id));
 	}
 
 	const endMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/end$/);
@@ -446,6 +491,9 @@ async function nudgeParticipant(
 	if (!targetParticipantId || !message || !reason)
 		throw new HttpError(400, "participant, message, and reason are required");
 	const snapshot = await readRoomSnapshot(env.DB, roomId);
+	if (!roomAllowsRuntimeNudge(snapshot.room.status)) {
+		throw new HttpError(409, "room runtime is not active");
+	}
 	const target = snapshot.participants.find(
 		(participant) => participant.id === targetParticipantId,
 	);

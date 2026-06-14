@@ -39,30 +39,36 @@ export async function provisionRoomCrabboxes(
 		summary: "starting room integration",
 		prompt: hostTask ? taskPrompt(room.brief, host, hostTask) : "Coordinate the room integration.",
 	});
-	const children = await Promise.all(
-		active
-			.filter((participant) => participant.id !== host.id)
-			.map(async (participant) => {
-				const task = tasks.find((item) => item.ownerParticipantId === participant.id);
-				return {
-					participantId: participant.id,
-					binding: await createCrabbox(env, {
-						owner: participant.githubLogin || slugify(participant.displayName, "participant"),
-						repo: room.repo,
-						branch: participant.branch || room.integrationBranch,
-						baseBranch: room.baseBranch,
-						parentSessionId: root.session.id,
-						rootSessionId: root.session.id,
-						purpose: task?.title || participant.roleId || "room task",
-						summary: "starting assigned task",
-						prompt: task
-							? taskPrompt(room.brief, participant, task)
-							: "Complete your assigned room task.",
-					}),
-				};
-			}),
-	);
-	return [{ participantId: host.id, binding: root }, ...children];
+	const bindings = [{ participantId: host.id, binding: root }];
+	try {
+		for (const participant of active.filter((item) => item.id !== host.id)) {
+			const task = tasks.find((item) => item.ownerParticipantId === participant.id);
+			bindings.push({
+				participantId: participant.id,
+				binding: await createCrabbox(env, {
+					owner: participant.githubLogin || slugify(participant.displayName, "participant"),
+					repo: room.repo,
+					branch: participant.branch || room.integrationBranch,
+					baseBranch: room.baseBranch,
+					parentSessionId: root.session.id,
+					rootSessionId: root.session.id,
+					purpose: task?.title || participant.roleId || "room task",
+					summary: "starting assigned task",
+					prompt: task
+						? taskPrompt(room.brief, participant, task)
+						: "Complete your assigned room task.",
+				}),
+			});
+		}
+		return bindings;
+	} catch (error) {
+		await stopRoomCrabboxes(
+			env,
+			root.session.rootSessionId || root.session.id,
+			bindings.map(({ binding }) => binding.session.id),
+		).catch(() => undefined);
+		throw error;
+	}
 }
 
 export async function readRoomCrabboxes(

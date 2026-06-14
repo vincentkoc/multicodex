@@ -166,6 +166,7 @@ function CreateRoom({
 				hostName: String(data.get("hostName") || "Host"),
 				repo: String(data.get("repo") || "vincentkoc/multicodex"),
 				durationMinutes: Number(data.get("durationMinutes") || 30),
+				eventCode: String(data.get("eventCode") || "").trim(),
 			});
 			onEnter(result.snapshot, result);
 		} catch (cause) {
@@ -209,6 +210,10 @@ function CreateRoom({
 					<label>
 						Your name
 						<input name="hostName" placeholder="Vincent" required maxLength={80} />
+					</label>
+					<label>
+						Event code
+						<input name="eventCode" type="password" required maxLength={200} autoComplete="off" />
 					</label>
 					<label>
 						GitHub repo

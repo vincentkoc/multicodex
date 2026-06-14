@@ -13,6 +13,7 @@ import type {
 	TaskState,
 } from "./domain.ts";
 import { encodeJson, HttpError, newId, parseJson, slugify } from "./http.ts";
+import { roomAllowsPlanning } from "./room-state.ts";
 
 type RoomRow = {
 	id: string;
@@ -101,6 +102,14 @@ type ActionRow = {
 	approval_state: ConductorAction["approvalState"];
 	created_at: number;
 };
+
+export async function countActiveRooms(db: D1Database, updatedSince: number): Promise<number> {
+	const row = await db
+		.prepare("SELECT COUNT(*) AS count FROM rooms WHERE status != 'ended' AND updated_at >= ?")
+		.bind(updatedSince)
+		.first<{ count: number }>();
+	return row?.count ?? 0;
+}
 
 export async function createRoom(
 	db: D1Database,
@@ -206,6 +215,9 @@ export async function addParticipant(
 		.first<{ slug: string; status: RoomStatus }>();
 	if (!room) throw new HttpError(404, "room not found");
 	if (room.status === "ended") throw new HttpError(409, "room has ended");
+	if (input.kind !== "observer" && !roomAllowsPlanning(room.status)) {
+		throw new HttpError(409, "only observers can join after launch");
+	}
 	const count = await db
 		.prepare(
 			input.kind === "observer"
@@ -316,7 +328,7 @@ export async function replacePlan(
 	roomId: string,
 	brief: RoomBrief,
 	participants: Participant[],
-	tasks: Array<Omit<Task, "id" | "roomId" | "createdAt" | "updatedAt">>,
+	tasks: Array<Omit<Task, "roomId" | "createdAt" | "updatedAt">>,
 ): Promise<void> {
 	const now = Date.now();
 	const statements: D1PreparedStatement[] = [
@@ -330,7 +342,7 @@ export async function replacePlan(
 			.bind(encodeJson(brief), now, roomId),
 	];
 	for (const task of tasks) {
-		const id = newId("task");
+		const id = task.id;
 		const owner = participantForTask(participants, task.ownerParticipantId);
 		statements.push(
 			db
@@ -403,6 +415,28 @@ export async function approveRoomPlan(db: D1Database, roomId: string): Promise<b
 		.bind(now, now, now, roomId)
 		.run();
 	return result.meta.changes === 1;
+}
+
+export async function resetRoomProvisioning(db: D1Database, roomId: string): Promise<void> {
+	const now = Date.now();
+	await db.batch([
+		db
+			.prepare(
+				`UPDATE rooms
+         SET status = 'planning', started_at = NULL, ends_at = NULL, crabfleet_root_session_id = NULL,
+             brief_json = json_set(brief_json, '$.planApproved', json('false')), updated_at = ?
+         WHERE id = ? AND status IN ('provisioning', 'building')`,
+			)
+			.bind(now, roomId),
+		db
+			.prepare(
+				`UPDATE participants
+         SET crabfleet_session_id = NULL, browser_url = NULL, runtime_summary = '', state = 'joined',
+             updated_at = ?
+         WHERE room_id = ?`,
+			)
+			.bind(now, roomId),
+	]);
 }
 
 export async function updateRoomRuntime(

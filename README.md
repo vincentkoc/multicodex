@@ -24,7 +24,8 @@ Open <http://localhost:8787>.
 
 Without `OPENAI_API_KEY` or Crabfleet service credentials, the local app uses a
 deterministic conductor and simulated workspaces so the complete room flow is
-still testable.
+still testable. Set `EVENT_ACCESS_CODE` in `.dev.vars`; room creation fails
+closed without it.
 
 ## Room security
 
@@ -53,6 +54,7 @@ Configure secrets before the first production deploy:
 ```bash
 pnpm exec wrangler secret put OPENAI_API_KEY
 pnpm exec wrangler secret put CRABFLEET_SERVICE_TOKEN
+pnpm exec wrangler secret put EVENT_ACCESS_CODE
 pnpm exec wrangler secret put GITHUB_TOKEN
 pnpm deploy
 ```

@@ -1,5 +1,6 @@
 import { chooseIdea, rolesForSeats } from "./catalog.ts";
 import type { Participant, RoomBrief, Task } from "./domain.ts";
+import { newId } from "./http.ts";
 
 export function shuffledBrief(seed: string, people: number): RoomBrief {
 	const idea = chooseIdea(seed, people);
@@ -19,11 +20,12 @@ export function planForParticipants(
 ): {
 	brief: RoomBrief;
 	assignments: Array<{ participantId: string; roleId: string }>;
-	tasks: Array<Omit<Task, "id" | "roomId" | "createdAt" | "updatedAt">>;
+	tasks: Array<Omit<Task, "roomId" | "createdAt" | "updatedAt">>;
 } {
 	const active = participants.filter((participant) => participant.kind !== "observer");
 	const brief = shuffledBrief(seed, active.length);
 	const roles = rolesForSeats(active.length);
+	const taskIds = active.map(() => newId("task"));
 	const assignments = active.map((participant, index) => ({
 		participantId: participant.id,
 		roleId: roles[index]!.id,
@@ -31,11 +33,12 @@ export function planForParticipants(
 	const tasks = active.map((participant, index) => {
 		const role = roles[index]!;
 		return {
+			id: taskIds[index]!,
 			title: role.label,
 			description: role.mission,
 			ownerParticipantId: participant.id,
 			state: "ready" as const,
-			dependsOn: index === 0 ? active.slice(1).map((item) => item.id) : [],
+			dependsOn: index === 0 ? taskIds.slice(1) : [],
 			ownsPaths: role.owns,
 			acceptanceCriteria:
 				index === 0
