@@ -82,6 +82,3 @@ Browsers -> MultiCodex Worker -> D1 + RoomHub Durable Object
                                -> Crabfleet service API -> Crabboxes
                                -> GitHub API
 ```
-
-The originating product and implementation spec is written to
-`~/.spec/2026-06-14_multicodex.md` in the local project workspace.
