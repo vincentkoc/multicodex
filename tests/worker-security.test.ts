@@ -31,6 +31,12 @@ test("cleanup retry preserves failed launches while end excludes unsafe lifecycl
 	assert.match(retrySource, /snapshot\.room\.status !== "cleanup-planning"/);
 	assert.match(retrySource, /resetRoomProvisioning/);
 	assert.match(retrySource, /claimStaleProvisioningCleanup/);
+	assert.match(retrySource, /recoverRoomRootCrabbox/);
+	assert.match(retrySource, /claimRoomRuntimeLease/);
+	assert.match(retrySource, /finally \{\s*await releaseRoomRuntimeLease/);
+	assert.ok(
+		retrySource.indexOf("recoverRoomRootCrabbox") < retrySource.indexOf("resetRoomProvisioning"),
+	);
 	assert.match(retrySource, /room provisioning is still active/);
 	assert.doesNotMatch(endSource, /"cleanup-planning"/);
 	assert.match(endSource, /snapshot\.room\.status === "provisioning"/);
@@ -40,6 +46,9 @@ test("cleanup retry preserves failed launches while end excludes unsafe lifecycl
 		/"provisioning"/,
 	);
 	assert.match(endSource, /beginRoomCleanup/);
+	assert.match(endSource, /cleanupActionLeaseMilliseconds/);
+	assert.match(endSource, /if \(await endRoom\(env\.DB, roomId\)\)/);
+	assert.match(endSource, /finally \{\s*await releaseRoomRuntimeLease/);
 });
 
 test("failed launch cleanup always broadcasts its durable recovery state", async () => {
@@ -48,8 +57,9 @@ test("failed launch cleanup always broadcasts its durable recovery state", async
 	const end = source.indexOf("const refreshMatch", start);
 	const failureSource = source.slice(start, end);
 
-	assert.match(failureSource, /try \{\s*await cleanupFailedLaunch/);
+	assert.match(failureSource, /try \{[\s\S]*await cleanupFailedLaunch/);
 	assert.match(failureSource, /finally \{/);
+	assert.match(failureSource, /error instanceof AmbiguousRootProvisioningError/);
 	assert.match(failureSource, /context\.waitUntil\(broadcastSnapshot\(env, failed\)\)/);
 });
 
@@ -62,6 +72,16 @@ test("WebSocket reconnects resync the current room snapshot", async () => {
 	assert.match(socketSource, /socket\.onopen = syncRoom/);
 	assert.match(socketSource, /if \(payload\.type === "changed"\) syncRoom\(\)/);
 	assert.match(socketSource, /sequence === syncSequence/);
+});
+
+test("browser history navigation resynchronizes room state", async () => {
+	const source = await readFile(new URL("../src/client/App.tsx", import.meta.url), "utf8");
+
+	assert.match(source, /addEventListener\("popstate", synchronizeHistory\)/);
+	assert.match(source, /removeEventListener\("popstate", synchronizeHistory\)/);
+	assert.match(source, /const nextRoomId = roomIdFromPath\(\)/);
+	assert.match(source, /setIdentity\(nextRoomId \? loadIdentity\(nextRoomId\) : null\)/);
+	assert.match(source, /setSnapshot\(null\)/);
 });
 
 test("conductor turns are claimed before model execution and cannot nudge workspaces", async () => {
@@ -111,6 +131,11 @@ test("failed launch cleanup must claim lifecycle ownership before stopping works
 	assert.ok(
 		cleanupSource.indexOf("if (!claimed) return") < cleanupSource.indexOf("stopRoomCrabboxes"),
 	);
+	assert.match(cleanupSource, /const cleanupLeaseId = await claimRoomRuntimeLease/);
+	assert.ok(
+		cleanupSource.indexOf("claimRoomRuntimeLease") < cleanupSource.indexOf("stopRoomCrabboxes"),
+	);
+	assert.match(cleanupSource, /finally \{\s*await releaseRoomRuntimeLease/);
 	assert.doesNotMatch(cleanupSource, /\["provisioning", "building"/);
 });
 

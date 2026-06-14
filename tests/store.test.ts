@@ -100,11 +100,26 @@ test("runtime leases fence cleanup and stale provisioning can be claimed", async
 	const staleStart = source.indexOf("export async function claimStaleProvisioningCleanup");
 	const cleanupEnd = source.indexOf("export async function updateParticipantRuntime", staleStart);
 	const lifecycleSource = source.slice(staleStart, cleanupEnd);
+	const runtimeStart = source.indexOf("export async function updateRoomRuntime");
+	const runtimeEnd = source.indexOf("export async function claimRoomRuntimeLease", runtimeStart);
+	const runtimeSource = source.slice(runtimeStart, runtimeEnd);
 
 	assert.match(lifecycleSource, /status = 'provisioning' AND updated_at <= \?/);
 	assert.match(lifecycleSource, /INSERT OR IGNORE INTO room_runtime_leases/);
 	assert.match(lifecycleSource, /NOT EXISTS \(\s*SELECT 1 FROM room_runtime_leases/);
 	assert.match(lifecycleSource, /expires_at > \?/);
+	assert.match(lifecycleSource, /SELECT \?, \?, 'room_end', \?/);
+	assert.match(lifecycleSource, /lease_id = \?/);
+	assert.match(runtimeSource, /NOT EXISTS \(\s*SELECT 1 FROM room_runtime_leases/);
+});
+
+test("failed launch reset rotates the provisioning replay generation", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function resetRoomProvisioning");
+	const end = source.indexOf("export async function recordProvisioningBinding", start);
+	const resetSource = source.slice(start, end);
+
+	assert.match(resetSource, /brief_revision = brief_revision \+ 1/);
 });
 
 test("conductor claims atomically enforce room cooldown and hourly budget", async () => {

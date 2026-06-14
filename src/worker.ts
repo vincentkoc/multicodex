@@ -2,10 +2,12 @@ import { ideas, roles } from "./catalog.ts";
 import { activeRoomLimit, eventAccessAuthorized } from "./access.ts";
 import { runConductorTurn } from "./conductor.ts";
 import {
+	AmbiguousRootProvisioningError,
 	PartialProvisioningError,
 	participantStateForCrabfleetStatus,
 	provisionRoomCrabboxes,
 	readRoomCrabboxes,
+	recoverRoomRootCrabbox,
 	sendCrabboxNudge,
 	stopRoomCrabboxes,
 } from "./crabfleet.ts";
@@ -77,6 +79,7 @@ const runtimeRefreshStatuses: RoomStatus[] = ["building", "integrating", "presen
 const runtimeNudgeStatuses: RoomStatus[] = ["building", "integrating"];
 const provisioningLeaseMilliseconds = 2 * 60 * 1000;
 const runtimeActionLeaseMilliseconds = 30_000;
+const cleanupActionLeaseMilliseconds = 2 * 60 * 1000;
 
 export default {
 	async fetch(request, env, context): Promise<Response> {
@@ -382,7 +385,9 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		} catch (error) {
 			if (error instanceof PartialProvisioningError) bindings = error.bindings;
 			try {
-				await cleanupFailedLaunch(env, roomId, bindings);
+				if (!(error instanceof AmbiguousRootProvisioningError)) {
+					await cleanupFailedLaunch(env, roomId, bindings);
+				}
 			} finally {
 				const failed = await readRoomSnapshot(env.DB, roomId);
 				context.waitUntil(broadcastSnapshot(env, failed));
@@ -534,19 +539,61 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		if (snapshot.room.status !== "cleanup-planning") {
 			throw new HttpError(409, "room is not waiting for launch cleanup");
 		}
-		if (snapshot.room.crabfleetRootSessionId) {
-			await stopRoomCrabboxes(
-				env,
-				snapshot.room.crabfleetRootSessionId,
-				snapshot.participants.flatMap((item) =>
-					item.crabfleetSessionId ? [item.crabfleetSessionId] : [],
-				),
-			);
+		const cleanupLeaseId = await claimRoomRuntimeLease(
+			env.DB,
+			roomId,
+			"launch_cleanup",
+			["cleanup-planning"],
+			cleanupActionLeaseMilliseconds,
+		);
+		if (!cleanupLeaseId) throw new HttpError(409, "room cleanup is already active");
+		try {
+			if (!snapshot.room.crabfleetRootSessionId) {
+				const root = await recoverRoomRootCrabbox(
+					env,
+					snapshot.room,
+					snapshot.participants,
+					snapshot.tasks,
+				);
+				if (
+					!(await markRoomCleanup(
+						env.DB,
+						roomId,
+						root.binding.session.rootSessionId || root.binding.session.id,
+						"cleanup-planning",
+						["cleanup-planning"],
+						[
+							{
+								participantId: root.participantId,
+								sessionId: root.binding.session.id,
+								browserUrl: root.binding.browserUrl,
+								summary: root.binding.session.summary,
+								state: participantStateForCrabfleetStatus(root.binding.session.status, "joined"),
+							},
+						],
+					))
+				) {
+					throw new HttpError(409, "room cleanup state changed during root recovery");
+				}
+				snapshot = await readRoomSnapshot(env.DB, roomId);
+				context.waitUntil(broadcastSnapshot(env, snapshot));
+			}
+			if (snapshot.room.crabfleetRootSessionId) {
+				await stopRoomCrabboxes(
+					env,
+					snapshot.room.crabfleetRootSessionId,
+					snapshot.participants.flatMap((item) =>
+						item.crabfleetSessionId ? [item.crabfleetSessionId] : [],
+					),
+				);
+			}
+			await resetRoomProvisioning(env.DB, roomId);
+			snapshot = await readRoomSnapshot(env.DB, roomId);
+			context.waitUntil(broadcastSnapshot(env, snapshot));
+			return json(snapshotForViewer(snapshot, host.id));
+		} finally {
+			await releaseRoomRuntimeLease(env.DB, roomId, cleanupLeaseId);
 		}
-		await resetRoomProvisioning(env.DB, roomId);
-		snapshot = await readRoomSnapshot(env.DB, roomId);
-		context.waitUntil(broadcastSnapshot(env, snapshot));
-		return json(snapshotForViewer(snapshot, host.id));
 	}
 
 	const endMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/end$/);
@@ -566,36 +613,44 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			"presenting",
 			"cleanup-ending",
 		] as const;
-		if (
-			!(await beginRoomCleanup(env.DB, roomId, snapshot.room.crabfleetRootSessionId, [
-				...endableStatuses,
-			]))
-		) {
+		const cleanupLeaseId = await beginRoomCleanup(
+			env.DB,
+			roomId,
+			snapshot.room.crabfleetRootSessionId,
+			[...endableStatuses],
+			cleanupActionLeaseMilliseconds,
+		);
+		if (!cleanupLeaseId) {
 			throw new HttpError(409, "room state changed before cleanup");
 		}
-		snapshot = await readRoomSnapshot(env.DB, roomId);
-		context.waitUntil(broadcastSnapshot(env, snapshot));
-		if (snapshot.room.crabfleetRootSessionId) {
-			await stopRoomCrabboxes(
-				env,
-				snapshot.room.crabfleetRootSessionId,
-				snapshot.participants.flatMap((item) =>
-					item.crabfleetSessionId ? [item.crabfleetSessionId] : [],
-				),
-			);
+		try {
+			snapshot = await readRoomSnapshot(env.DB, roomId);
+			context.waitUntil(broadcastSnapshot(env, snapshot));
+			if (snapshot.room.crabfleetRootSessionId) {
+				await stopRoomCrabboxes(
+					env,
+					snapshot.room.crabfleetRootSessionId,
+					snapshot.participants.flatMap((item) =>
+						item.crabfleetSessionId ? [item.crabfleetSessionId] : [],
+					),
+				);
+			}
+			if (await endRoom(env.DB, roomId)) {
+				await addMessage(env.DB, roomId, {
+					authorKind: "conductor",
+					authorId: "conductor",
+					targetKind: "room",
+					targetId: null,
+					body: "Room ended. The contribution timeline and final state are preserved for the recap.",
+					replyToId: null,
+				});
+			}
+			const updated = await readRoomSnapshot(env.DB, roomId);
+			context.waitUntil(broadcastSnapshot(env, updated));
+			return json(snapshotForViewer(updated, host.id));
+		} finally {
+			await releaseRoomRuntimeLease(env.DB, roomId, cleanupLeaseId);
 		}
-		await endRoom(env.DB, roomId);
-		await addMessage(env.DB, roomId, {
-			authorKind: "conductor",
-			authorId: "conductor",
-			targetKind: "room",
-			targetId: null,
-			body: "Room ended. The contribution timeline and final state are preserved for the recap.",
-			replyToId: null,
-		});
-		const updated = await readRoomSnapshot(env.DB, roomId);
-		context.waitUntil(broadcastSnapshot(env, updated));
-		return json(snapshotForViewer(updated, host.id));
 	}
 
 	if (url.pathname.startsWith("/api/")) throw new HttpError(404, "not found");
@@ -698,12 +753,26 @@ async function cleanupFailedLaunch(
 		cleanupBindings,
 	);
 	if (!claimed) return;
+	const cleanupLeaseId = await claimRoomRuntimeLease(
+		env.DB,
+		roomId,
+		"launch_cleanup",
+		["cleanup-planning"],
+		cleanupActionLeaseMilliseconds,
+	);
+	if (!cleanupLeaseId) return;
 	try {
 		await stopRoomCrabboxes(
 			env,
 			rootSessionId,
 			bindings.map(({ binding }) => binding.session.id),
 		);
+		const snapshot = await readRoomSnapshot(env.DB, roomId);
+		if (snapshot.room.status === "cleanup-ending") {
+			await endRoom(env.DB, roomId);
+		} else if (snapshot.room.status !== "ended") {
+			await resetRoomProvisioning(env.DB, roomId);
+		}
 	} catch (error) {
 		const snapshot = await readRoomSnapshot(env.DB, roomId);
 		if (snapshot.room.status === "ended" || snapshot.room.status === "cleanup-ending") {
@@ -717,12 +786,8 @@ async function cleanupFailedLaunch(
 			);
 		}
 		throw error;
-	}
-	const snapshot = await readRoomSnapshot(env.DB, roomId);
-	if (snapshot.room.status === "cleanup-ending") {
-		await endRoom(env.DB, roomId);
-	} else if (snapshot.room.status !== "ended") {
-		await resetRoomProvisioning(env.DB, roomId);
+	} finally {
+		await releaseRoomRuntimeLease(env.DB, roomId, cleanupLeaseId);
 	}
 }
 

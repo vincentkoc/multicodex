@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+	AmbiguousRootProvisioningError,
 	crabfleetOwner,
 	crabfleetRuntime,
 	crabfleetSimulationEnabled,
@@ -9,6 +10,7 @@ import {
 	PartialProvisioningError,
 	provisionRoomCrabboxes,
 	readRoomCrabboxes,
+	recoverRoomRootCrabbox,
 	stopRoomCrabboxes,
 } from "../src/crabfleet.ts";
 import type { Participant, Room } from "../src/domain.ts";
@@ -93,6 +95,39 @@ test("partial room provisioning returns every created session for durable cleanu
 		"multicodex:room:1:failure",
 	]);
 	assert.deepEqual(persisted, ["root", "child"]);
+});
+
+test("ambiguous root provisioning remains replayable after a stale cleanup claim", async () => {
+	const originalFetch = globalThis.fetch;
+	const requestIds: string[] = [];
+	let attempts = 0;
+	globalThis.fetch = async (_input, init) => {
+		attempts += 1;
+		requestIds.push((JSON.parse(String(init?.body)) as { requestId: string }).requestId);
+		if (attempts === 1) throw new Error("response lost");
+		return Response.json(crabbox("root", "ready"));
+	};
+	try {
+		await assert.rejects(
+			provisionRoomCrabboxes(
+				{ CRABFLEET_SERVICE_TOKEN: "test" } as Env,
+				room,
+				[participant("host")],
+				[],
+			),
+			(error) => error instanceof AmbiguousRootProvisioningError,
+		);
+		const recovered = await recoverRoomRootCrabbox(
+			{ CRABFLEET_SERVICE_TOKEN: "test" } as Env,
+			{ ...room, updatedAt: 999 },
+			[participant("host")],
+			[],
+		);
+		assert.equal(recovered.binding.session.id, "root");
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+	assert.deepEqual(requestIds, ["multicodex:room:1:host", "multicodex:room:1:host"]);
 });
 
 test("room cleanup delegates admission freeze and recursive stop to the root action", async () => {

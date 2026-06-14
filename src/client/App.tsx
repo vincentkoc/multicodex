@@ -63,6 +63,19 @@ export function App() {
 	const [loading, setLoading] = useState(Boolean(roomId));
 
 	useEffect(() => {
+		const synchronizeHistory = () => {
+			const nextRoomId = roomIdFromPath();
+			setRoomId(nextRoomId);
+			setIdentity(nextRoomId ? loadIdentity(nextRoomId) : null);
+			setSnapshot(null);
+			setError("");
+			setLoading(Boolean(nextRoomId));
+		};
+		window.addEventListener("popstate", synchronizeHistory);
+		return () => window.removeEventListener("popstate", synchronizeHistory);
+	}, []);
+
+	useEffect(() => {
 		catalog()
 			.then((value) => setRoleCatalog(value.roles))
 			.catch(() => setRoleCatalog([]));
@@ -125,7 +138,7 @@ export function App() {
 
 	function enterRoom(next: RoomSnapshot, nextIdentity: RoomIdentity) {
 		localStorage.setItem(identityKey(next.room.id), JSON.stringify(nextIdentity));
-		history.pushState({}, "", `/rooms/${next.room.id}`);
+		history.pushState({ roomId: next.room.id }, "", `/rooms/${next.room.id}`);
 		setRoomId(next.room.id);
 		setIdentity(nextIdentity);
 		setSnapshot(next);

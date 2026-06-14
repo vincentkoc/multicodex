@@ -31,6 +31,26 @@ export class PartialProvisioningError extends Error {
 	}
 }
 
+export class AmbiguousRootProvisioningError extends HttpError {
+	constructor() {
+		super(502, "root Crabfleet provisioning is still reconciling");
+		this.name = "AmbiguousRootProvisioningError";
+	}
+}
+
+class CrabfleetRequestError extends HttpError {
+	readonly upstreamStatus: number | null;
+
+	constructor(upstreamStatus: number | null) {
+		super(
+			502,
+			upstreamStatus ? `Crabfleet request failed (${upstreamStatus})` : "Crabfleet request failed",
+		);
+		this.name = "CrabfleetRequestError";
+		this.upstreamStatus = upstreamStatus;
+	}
+}
+
 export function crabfleetRuntime(value: string | undefined): "container" | "crabbox" {
 	return value === "container" ? "container" : "crabbox";
 }
@@ -73,20 +93,11 @@ export async function provisionRoomCrabboxes(
 	}
 	const owner = crabfleetOwner(env.CRABFLEET_OWNER);
 	const requestId = (participantId: string) =>
-		`multicodex:${room.id}:${room.updatedAt}:${participantId}`;
-	const hostTask = tasks.find((task) => task.ownerParticipantId === host.id);
-	const root = await createCrabbox(env, {
-		owner,
-		repo: room.repo,
-		branch: host.branch || room.integrationBranch,
-		baseBranch: room.baseBranch,
-		requestId: requestId(host.id),
-		purpose: hostTask?.title || "room integration",
-		summary: "starting room integration",
-		prompt: hostTask ? taskPrompt(room.brief, host, hostTask) : "Coordinate the room integration.",
-	});
-	const bindings = [{ participantId: host.id, binding: root }];
+		`multicodex:${room.id}:${room.briefRevision}:${participantId}`;
+	const bindings: ParticipantCrabboxBinding[] = [];
 	try {
+		const root = await recoverRoomRootCrabbox(env, room, active, tasks);
+		bindings.push(root);
 		await onBinding?.(bindings[0]!, bindings);
 		for (const participant of active.filter((item) => item.id !== host.id)) {
 			const task = tasks.find((item) => item.ownerParticipantId === participant.id);
@@ -98,8 +109,8 @@ export async function provisionRoomCrabboxes(
 					branch: participant.branch || room.integrationBranch,
 					baseBranch: room.baseBranch,
 					requestId: requestId(participant.id),
-					parentSessionId: root.session.id,
-					rootSessionId: root.session.id,
+					parentSessionId: root.binding.session.id,
+					rootSessionId: root.binding.session.id,
 					purpose: task?.title || participant.roleId || "room task",
 					summary: "starting assigned task",
 					prompt: task
@@ -115,8 +126,44 @@ export async function provisionRoomCrabboxes(
 		return ready;
 	} catch (error) {
 		if (error instanceof PartialProvisioningError) throw error;
+		if (!bindings.length && ambiguousCrabfleetCreate(error)) {
+			throw new AmbiguousRootProvisioningError();
+		}
 		throw new PartialProvisioningError(error, bindings);
 	}
+}
+
+export async function recoverRoomRootCrabbox(
+	env: Env,
+	room: Room,
+	participants: Participant[],
+	tasks: Task[],
+): Promise<ParticipantCrabboxBinding> {
+	const active = participants.filter((participant) => participant.kind !== "observer");
+	const host = active.find((participant) => participant.id === room.hostParticipantId) ?? active[0];
+	if (!host) throw new HttpError(400, "room has no active participant");
+	if (!env.CRABFLEET_SERVICE_TOKEN) {
+		if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) {
+			return simulatedBindings(room, [host])[0]!;
+		}
+		throw new HttpError(503, "Crabfleet service token is not configured");
+	}
+	const hostTask = tasks.find((task) => task.ownerParticipantId === host.id);
+	return {
+		participantId: host.id,
+		binding: await createCrabbox(env, {
+			owner: crabfleetOwner(env.CRABFLEET_OWNER),
+			repo: room.repo,
+			branch: host.branch || room.integrationBranch,
+			baseBranch: room.baseBranch,
+			requestId: `multicodex:${room.id}:${room.briefRevision}:${host.id}`,
+			purpose: hostTask?.title || "room integration",
+			summary: "starting room integration",
+			prompt: hostTask
+				? taskPrompt(room.brief, host, hostTask)
+				: "Coordinate the room integration.",
+		}),
+	};
 }
 
 export async function readRoomCrabboxes(
@@ -264,22 +311,38 @@ async function createCrabbox(
 }
 
 async function crabfleetFetch(env: Env, path: string, init: RequestInit = {}): Promise<Response> {
-	const response = await fetch(
-		new URL(path, env.CRABFLEET_API_URL || "https://crabfleet.openclaw.ai"),
-		{
-			...init,
-			signal: init.signal ?? AbortSignal.timeout(20_000),
-			headers: {
-				authorization: `Bearer ${env.CRABFLEET_SERVICE_TOKEN}`,
-				...init.headers,
+	let response: Response;
+	try {
+		response = await fetch(
+			new URL(path, env.CRABFLEET_API_URL || "https://crabfleet.openclaw.ai"),
+			{
+				...init,
+				signal: init.signal ?? AbortSignal.timeout(20_000),
+				headers: {
+					authorization: `Bearer ${env.CRABFLEET_SERVICE_TOKEN}`,
+					...init.headers,
+				},
 			},
-		},
-	);
+		);
+	} catch {
+		throw new CrabfleetRequestError(null);
+	}
 	if (!response.ok) {
 		console.error(JSON.stringify({ event: "crabfleet_request_failed", status: response.status }));
-		throw new HttpError(502, `Crabfleet request failed (${response.status})`);
+		throw new CrabfleetRequestError(response.status);
 	}
 	return response;
+}
+
+function ambiguousCrabfleetCreate(error: unknown): boolean {
+	if (!(error instanceof CrabfleetRequestError)) return true;
+	return (
+		error.upstreamStatus === null ||
+		error.upstreamStatus === 408 ||
+		error.upstreamStatus === 409 ||
+		error.upstreamStatus === 429 ||
+		error.upstreamStatus >= 500
+	);
 }
 
 async function responseJson<T = unknown>(response: Response): Promise<T> {

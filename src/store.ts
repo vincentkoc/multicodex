@@ -509,7 +509,8 @@ export async function resetRoomProvisioning(db: D1Database, roomId: string): Pro
 			.prepare(
 				`UPDATE rooms
          SET status = 'planning', started_at = NULL, ends_at = NULL, crabfleet_root_session_id = NULL,
-             brief_json = json_set(brief_json, '$.planApproved', json('false')), updated_at = ?
+             brief_json = json_set(brief_json, '$.planApproved', json('false')),
+             brief_revision = brief_revision + 1, updated_at = ?
          WHERE id = ? AND status IN ('provisioning', 'building', 'cleanup-planning')`,
 			)
 			.bind(now, roomId),
@@ -653,12 +654,17 @@ export async function updateRoomRuntime(
 	expectedStatuses: RoomStatus[],
 ): Promise<boolean> {
 	if (!expectedStatuses.length) return false;
+	const now = Date.now();
 	const result = await db
 		.prepare(
 			`UPDATE rooms SET crabfleet_root_session_id = ?, status = ?, updated_at = ?
-       WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})`,
+       WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})
+         AND NOT EXISTS (
+           SELECT 1 FROM room_runtime_leases
+           WHERE room_id = rooms.id AND expires_at > ?
+         )`,
 		)
-		.bind(rootSessionId, status, Date.now(), roomId, ...expectedStatuses)
+		.bind(rootSessionId, status, now, roomId, ...expectedStatuses, now)
 		.run();
 	return result.meta.changes === 1;
 }
@@ -708,21 +714,40 @@ export async function beginRoomCleanup(
 	roomId: string,
 	rootSessionId: string | null,
 	expectedStatuses: RoomStatus[],
-): Promise<boolean> {
-	if (!expectedStatuses.length) return false;
+	ttlMilliseconds: number,
+): Promise<string | null> {
+	if (!expectedStatuses.length) return null;
 	const now = Date.now();
-	const result = await db
-		.prepare(
-			`UPDATE rooms SET crabfleet_root_session_id = ?, status = 'cleanup-ending', updated_at = ?
-       WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})
-         AND NOT EXISTS (
-           SELECT 1 FROM room_runtime_leases
-           WHERE room_id = rooms.id AND expires_at > ?
+	const leaseId = newId("lease");
+	const [, claim, transition] = await db.batch([
+		db
+			.prepare("DELETE FROM room_runtime_leases WHERE room_id = ? AND expires_at <= ?")
+			.bind(roomId, now),
+		db
+			.prepare(
+				`INSERT OR IGNORE INTO room_runtime_leases (room_id, lease_id, kind, expires_at)
+         SELECT ?, ?, 'room_end', ?
+         WHERE EXISTS (
+           SELECT 1 FROM rooms WHERE id = ? AND status IN (${expectedStatuses
+							.map(() => "?")
+							.join(", ")})
          )`,
-		)
-		.bind(rootSessionId, now, roomId, ...expectedStatuses, now)
-		.run();
-	return result.meta.changes === 1;
+			)
+			.bind(roomId, leaseId, now + ttlMilliseconds, roomId, ...expectedStatuses),
+		db
+			.prepare(
+				`UPDATE rooms SET crabfleet_root_session_id = ?, status = 'cleanup-ending', updated_at = ?
+       WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})
+         AND EXISTS (
+           SELECT 1 FROM room_runtime_leases
+           WHERE room_id = rooms.id AND lease_id = ? AND expires_at > ?
+         )`,
+			)
+			.bind(rootSessionId, now, roomId, ...expectedStatuses, leaseId, now),
+	]);
+	if (claim?.meta.changes === 1 && transition?.meta.changes === 1) return leaseId;
+	if (claim?.meta.changes === 1) await releaseRoomRuntimeLease(db, roomId, leaseId);
+	return null;
 }
 
 export async function updateParticipantRuntime(
