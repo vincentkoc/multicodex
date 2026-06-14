@@ -42,3 +42,14 @@ test("room creation capabilities can be recovered idempotently", async () => {
 	assert.match(migration, /creation_request_id TEXT/);
 	assert.match(migration, /UNIQUE INDEX idx_rooms_creation_request_id/);
 });
+
+test("room-owned GitHub refs are recorded durably", async () => {
+	const migration = await readFile(
+		new URL("../migrations/0007_room_branch_refs.sql", import.meta.url),
+		"utf8",
+	);
+
+	assert.match(migration, /CREATE TABLE room_branch_refs/);
+	assert.match(migration, /PRIMARY KEY \(room_id, branch\)/);
+	assert.match(migration, /UNIQUE \(branch\)/);
+});

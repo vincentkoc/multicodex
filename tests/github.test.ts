@@ -5,10 +5,45 @@ import type { Room } from "../src/domain.ts";
 import { ensureRoomBranches, resolveRepoDefaultBranch } from "../src/github.ts";
 
 const room = {
+	id: "room-1",
 	repo: "example/repo",
 	baseBranch: "main",
 	integrationBranch: "multicodex/room/integration",
 } as Room;
+
+type BranchOwnership = { room_id: string; initial_sha: string };
+
+function branchDb(initialOwnership: BranchOwnership | null = null): D1Database {
+	let ownership = initialOwnership;
+	return {
+		prepare(sql: string) {
+			let values: unknown[] = [];
+			const statement = {
+				bind(...next: unknown[]) {
+					values = next;
+					return statement;
+				},
+				async first() {
+					return ownership;
+				},
+				async run() {
+					if (sql.startsWith("INSERT OR IGNORE") && !ownership) {
+						ownership = {
+							room_id: String(values[0]),
+							initial_sha: String(values[2]),
+						};
+					}
+					return { success: true, meta: { changes: 1 } };
+				},
+			};
+			return statement;
+		},
+	} as unknown as D1Database;
+}
+
+function githubEnv(db = branchDb()): Env {
+	return { GITHUB_TOKEN: "token", DB: db } as Env;
+}
 
 test("room creation resolves the repository default branch", async () => {
 	const originalFetch = globalThis.fetch;
@@ -43,7 +78,41 @@ test("branch provisioning safely reuses a room-owned ref after work advances it"
 	];
 	globalThis.fetch = async () => responses.shift()!;
 	try {
-		await ensureRoomBranches({ GITHUB_TOKEN: "token" } as Env, room, []);
+		await ensureRoomBranches(
+			githubEnv(branchDb({ room_id: room.id, initial_sha: "base-sha" })),
+			room,
+			[],
+		);
+		assert.equal(responses.length, 0);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test("branch provisioning rejects an advanced ref without durable room ownership", async () => {
+	const originalFetch = globalThis.fetch;
+	const responses = [
+		Response.json({ object: { sha: "base-sha" } }),
+		Response.json({ object: { sha: "advanced-unowned-sha" } }),
+	];
+	globalThis.fetch = async () => responses.shift()!;
+	try {
+		await assert.rejects(ensureRoomBranches(githubEnv(), room, []), /not owned by this room/);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test("branch provisioning claims an unowned ref only at the exact selected base", async () => {
+	const originalFetch = globalThis.fetch;
+	const responses = [
+		Response.json({ object: { sha: "base-sha" } }),
+		Response.json({ object: { sha: "base-sha" } }),
+		Response.json({ object: { sha: "base-sha" } }),
+	];
+	globalThis.fetch = async () => responses.shift()!;
+	try {
+		await ensureRoomBranches(githubEnv(), room, []);
 		assert.equal(responses.length, 0);
 	} finally {
 		globalThis.fetch = originalFetch;
@@ -60,7 +129,7 @@ test("branch provisioning accepts a creation race only after exact ref verificat
 	];
 	globalThis.fetch = async () => responses.shift()!;
 	try {
-		await ensureRoomBranches({ GITHUB_TOKEN: "token" } as Env, room, []);
+		await ensureRoomBranches(githubEnv(), room, []);
 		assert.equal(responses.length, 0);
 	} finally {
 		globalThis.fetch = originalFetch;

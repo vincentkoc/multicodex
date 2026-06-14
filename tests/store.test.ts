@@ -76,6 +76,9 @@ test("room creation persists the resolved repository base branch", async () => {
 	assert.match(createSource, /replayCreatedRoom/);
 	assert.match(createSource, /creation_request_id/);
 	assert.match(createSource, /INSERT OR IGNORE INTO rooms/);
+	assert.match(createSource, /status IN \('setup', 'planning'\) AND updated_at < \?/);
+	assert.match(createSource, /SELECT COUNT\(\*\) FROM rooms WHERE status != 'ended'/);
+	assert.doesNotMatch(createSource, /status != 'ended' AND updated_at/);
 	assert.doesNotMatch(createSource, /'main'/);
 });
 

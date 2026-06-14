@@ -115,7 +115,7 @@ export async function createRoom(
 		baseBranch: string;
 		durationMinutes: number;
 		activeRoomLimit: number;
-		activeUpdatedSince: number;
+		staleBefore: number;
 		requestId: string;
 	},
 ): Promise<{ snapshot: RoomSnapshot; participantToken: string }> {
@@ -127,7 +127,13 @@ export async function createRoom(
 	const participantToken = newId("seat");
 	const slug = `${slugify(input.title).slice(0, 40)}-${roomId.slice(-6)}`;
 	const integrationBranch = `multicodex/${slug}/integration`;
-	const [roomResult] = await db.batch([
+	const [, roomResult] = await db.batch([
+		db
+			.prepare(
+				`UPDATE rooms SET status = 'ended', updated_at = ?
+         WHERE status IN ('setup', 'planning') AND updated_at < ?`,
+			)
+			.bind(now, input.staleBefore),
 		db
 			.prepare(
 				`INSERT OR IGNORE INTO rooms
@@ -135,7 +141,7 @@ export async function createRoom(
            creation_request_id, duration_minutes, created_at, updated_at)
          SELECT ?, ?, ?, 'setup', ?, ?, ?, ?, ?, ?, ?, ?
          WHERE (
-           SELECT COUNT(*) FROM rooms WHERE status != 'ended' AND updated_at >= ?
+           SELECT COUNT(*) FROM rooms WHERE status != 'ended'
          ) < ?`,
 			)
 			.bind(
@@ -150,7 +156,6 @@ export async function createRoom(
 				input.durationMinutes,
 				now,
 				now,
-				input.activeUpdatedSince,
 				input.activeRoomLimit,
 			),
 		db

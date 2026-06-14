@@ -36,8 +36,22 @@ export async function ensureRoomBranches(
 		...participants.flatMap((participant) => (participant.branch ? [participant.branch] : [])),
 	];
 	for (const branch of new Set(branches)) {
+		const ownership = await readBranchOwnership(env.DB, branch);
 		const existingSha = await readBranchSha(env, owner, repo, branch);
-		if (existingSha) continue;
+		if (ownership) {
+			if (ownership.room_id !== room.id) {
+				throw new HttpError(409, `GitHub branch ${branch} belongs to another room`);
+			}
+			if (!existingSha) throw new HttpError(409, `GitHub branch ${branch} was deleted`);
+			continue;
+		}
+		if (existingSha) {
+			if (existingSha !== baseSha) {
+				throw new HttpError(409, `GitHub branch ${branch} is not owned by this room`);
+			}
+			await claimBranchOwnership(env, room.id, owner, repo, branch, baseSha);
+			continue;
+		}
 		try {
 			const created = await githubJson<unknown>(env, `/repos/${owner}/${repo}/git/refs`, {
 				method: "POST",
@@ -49,9 +63,41 @@ export async function ensureRoomBranches(
 			}
 		} catch (error) {
 			if (!(error instanceof GitHubRequestError) || error.upstreamStatus !== 422) throw error;
-			if ((await readBranchSha(env, owner, repo, branch)) !== baseSha) throw error;
 		}
+		await claimBranchOwnership(env, room.id, owner, repo, branch, baseSha);
 	}
+}
+
+async function claimBranchOwnership(
+	env: Env,
+	roomId: string,
+	owner: string,
+	repo: string,
+	branch: string,
+	baseSha: string,
+): Promise<void> {
+	if ((await readBranchSha(env, owner, repo, branch)) !== baseSha) {
+		throw new HttpError(409, `GitHub branch ${branch} changed before ownership was recorded`);
+	}
+	await env.DB.prepare(
+		"INSERT OR IGNORE INTO room_branch_refs (room_id, branch, initial_sha, created_at) VALUES (?, ?, ?, ?)",
+	)
+		.bind(roomId, branch, baseSha, Date.now())
+		.run();
+	const ownership = await readBranchOwnership(env.DB, branch);
+	if (ownership?.room_id !== roomId) {
+		throw new HttpError(409, `GitHub branch ${branch} belongs to another room`);
+	}
+}
+
+async function readBranchOwnership(
+	db: D1Database,
+	branch: string,
+): Promise<{ room_id: string; initial_sha: string } | null> {
+	return db
+		.prepare("SELECT room_id, initial_sha FROM room_branch_refs WHERE branch = ?")
+		.bind(branch)
+		.first<{ room_id: string; initial_sha: string }>();
 }
 
 async function readBranchSha(

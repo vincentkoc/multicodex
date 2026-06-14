@@ -153,7 +153,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			baseBranch,
 			durationMinutes,
 			activeRoomLimit: activeRoomLimit(env.MAX_ACTIVE_ROOMS),
-			activeUpdatedSince: Date.now() - 6 * 60 * 60 * 1000,
+			staleBefore: Date.now() - 6 * 60 * 60 * 1000,
 			requestId,
 		});
 		context.waitUntil(broadcastSnapshot(env, created.snapshot));
