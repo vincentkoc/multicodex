@@ -455,16 +455,20 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const body = await readJson<{ participantId?: string; message?: string; reason?: string }>(
 			request,
 		);
-		await nudgeParticipant(
-			env,
-			roomId,
-			clean(body.participantId, 100),
-			clean(body.message, 2000),
-			clean(body.reason, 500),
-		);
-		const snapshot = await readRoomSnapshot(env.DB, roomId);
-		context.waitUntil(broadcastSnapshot(env, snapshot));
-		return json(snapshotForViewer(snapshot, host.id));
+		let durableSnapshot: RoomSnapshot | null = null;
+		try {
+			await nudgeParticipant(
+				env,
+				roomId,
+				clean(body.participantId, 100),
+				clean(body.message, 2000),
+				clean(body.reason, 500),
+			);
+		} finally {
+			durableSnapshot = await readRoomSnapshot(env.DB, roomId);
+			context.waitUntil(broadcastSnapshot(env, durableSnapshot));
+		}
+		return json(snapshotForViewer(durableSnapshot, host.id));
 	}
 
 	const taskMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/tasks\/([^/]+)$/);
@@ -745,7 +749,6 @@ async function conductorTurnBestEffort(
 ): Promise<void> {
 	try {
 		await conductorTurn(env, roomId, trigger, actorParticipantId);
-		await broadcastSnapshot(env, await readRoomSnapshot(env.DB, roomId));
 	} catch (error) {
 		console.error(
 			JSON.stringify({
@@ -754,6 +757,18 @@ async function conductorTurnBestEffort(
 				message: error instanceof Error ? error.message : "unknown error",
 			}),
 		);
+	} finally {
+		try {
+			await broadcastSnapshot(env, await readRoomSnapshot(env.DB, roomId));
+		} catch (error) {
+			console.error(
+				JSON.stringify({
+					event: "conductor_broadcast_failed",
+					roomId,
+					message: error instanceof Error ? error.message : "unknown error",
+				}),
+			);
+		}
 	}
 }
 

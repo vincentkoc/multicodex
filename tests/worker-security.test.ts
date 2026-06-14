@@ -164,6 +164,20 @@ test("conductor turns are claimed before model execution and cannot nudge worksp
 	assert.doesNotMatch(conductorSource, /tools\.nudge|nudgeParticipant/);
 });
 
+test("conductor and nudge audit state broadcast on failure paths", async () => {
+	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
+	const nudgeStart = source.indexOf("const nudgeMatch");
+	const nudgeEnd = source.indexOf("const taskMatch", nudgeStart);
+	const nudgeRoute = source.slice(nudgeStart, nudgeEnd);
+	const conductorStart = source.indexOf("async function conductorTurnBestEffort");
+	const conductorEnd = source.indexOf("async function cleanupFailedLaunch", conductorStart);
+	const conductorSource = source.slice(conductorStart, conductorEnd);
+
+	assert.match(nudgeRoute, /try \{[\s\S]*await nudgeParticipant/);
+	assert.match(nudgeRoute, /finally \{[\s\S]*context\.waitUntil\(broadcastSnapshot/);
+	assert.match(conductorSource, /finally \{[\s\S]*await broadcastSnapshot/);
+});
+
 test("only the host can cut an approved task and the cut is recorded", async () => {
 	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
 	const start = source.indexOf("const taskMatch");
