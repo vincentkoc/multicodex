@@ -270,6 +270,7 @@ function JoinRoom({
 }) {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
+	const joinRequestId = useMemo(() => loadJoinRequestId(snapshot.room.id), [snapshot.room.id]);
 
 	async function submit(event: SubmitEvent) {
 		event.preventDefault();
@@ -281,8 +282,10 @@ function JoinRoom({
 				displayName: String(data.get("displayName") || ""),
 				githubLogin: String(data.get("githubLogin") || ""),
 				kind: data.get("kind") === "observer" ? "observer" : "human",
+				requestId: joinRequestId,
 			});
 			onEnter(result.snapshot, result);
+			clearJoinRequestId(snapshot.room.id);
 		} catch (cause) {
 			setError(errorMessage(cause));
 		} finally {
@@ -1289,6 +1292,31 @@ function roomIdFromPath(): string | null {
 
 function identityKey(roomId: string): string {
 	return `multicodex.identity.${roomId}`;
+}
+
+function joinRequestKey(roomId: string): string {
+	return `multicodex.join-request.${roomId}`;
+}
+
+function loadJoinRequestId(roomId: string): string {
+	const requestId = crypto.randomUUID();
+	try {
+		const key = joinRequestKey(roomId);
+		const existing = sessionStorage.getItem(key);
+		if (existing) return existing;
+		sessionStorage.setItem(key, requestId);
+	} catch {
+		// The in-memory value still makes retries idempotent while this view remains mounted.
+	}
+	return requestId;
+}
+
+function clearJoinRequestId(roomId: string): void {
+	try {
+		sessionStorage.removeItem(joinRequestKey(roomId));
+	} catch {
+		// Storage may be unavailable in hardened browser contexts.
+	}
 }
 
 function loadIdentity(roomId: string): RoomIdentity | null {

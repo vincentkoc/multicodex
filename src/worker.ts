@@ -18,7 +18,7 @@ import type {
 	RoomStatus,
 	TaskState,
 } from "./domain.ts";
-import { ensureRoomBranches } from "./github.ts";
+import { ensureRoomBranches, resolveRepoDefaultBranch } from "./github.ts";
 import {
 	clean,
 	HttpError,
@@ -125,10 +125,12 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		if (!repoAllowed(repo, env.ALLOWED_REPOS, env.DEFAULT_REPO)) {
 			throw new HttpError(400, "repo is not enabled for this MultiCodex deployment");
 		}
+		const baseBranch = await resolveRepoDefaultBranch(env, repo);
 		const created = await createRoom(env.DB, {
 			title,
 			hostName,
 			repo,
+			baseBranch,
 			durationMinutes,
 			activeRoomLimit: activeRoomLimit(env.MAX_ACTIVE_ROOMS),
 			activeUpdatedSince: Date.now() - 6 * 60 * 60 * 1000,
@@ -170,21 +172,18 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			displayName?: string;
 			githubLogin?: string;
 			kind?: "human" | "ai" | "observer";
+			requestId?: string;
 		}>(request);
 		const displayName = clean(body.displayName, 80);
 		if (!displayName) throw new HttpError(400, "display name is required");
+		const requestId = clean(body.requestId, 100);
+		if (requestId.length < 20) throw new HttpError(400, "join request id is required");
 		const joined = await addParticipant(env.DB, roomId, {
 			displayName,
 			githubLogin: clean(body.githubLogin, 80) || null,
 			kind: body.kind === "observer" || body.kind === "ai" ? body.kind : "human",
-		});
-		await addMessage(env.DB, roomId, {
-			authorKind: "system",
-			authorId: "system",
-			targetKind: "system",
-			targetId: null,
-			body: `${joined.participant.displayName} joined the room.`,
-			replyToId: null,
+			requestId,
+			maxAiSeats: roles.filter((role) => role.suitableForAISeat).length,
 		});
 		const snapshot = await readRoomSnapshot(env.DB, roomId);
 		context.waitUntil(broadcastSnapshot(env, snapshot));

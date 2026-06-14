@@ -50,6 +50,18 @@ test("planning gives AI seats only suitable roles and keeps human integration ow
 	assert.equal(roleByParticipant.get("p1"), "product-integration");
 });
 
+test("planning rejects more AI seats than unique suitable roles", () => {
+	const aiSeats = Array.from({ length: 4 }, (_, index) => ({
+		...participants[2]!,
+		id: `ai-${index}`,
+		displayName: `AI ${index}`,
+	}));
+	assert.throws(
+		() => planForParticipants("room", [participants[0]!, ...aiSeats]),
+		/unique suitable/,
+	);
+});
+
 test("task prompts keep the participant scope explicit", () => {
 	const plan = planForParticipants("room", participants);
 	const prompt = taskPrompt(plan.brief, participants[1]!, plan.tasks[1]!);

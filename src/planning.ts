@@ -111,9 +111,8 @@ function rolesForParticipants(participants: Participant[]): RoleCard[] {
 		const index = available.findIndex(
 			(role) => participant.kind !== "ai" || role.suitableForAISeat,
 		);
-		const role =
-			(index >= 0 ? available.splice(index, 1)[0] : undefined) ??
-			roles.find((candidate) => participant.kind !== "ai" || candidate.suitableForAISeat)!;
+		if (index < 0) throw new RangeError("not enough unique suitable roles for this team");
+		const role = available.splice(index, 1)[0]!;
 		assignments.set(participant.id, role);
 	}
 	return participants.map((participant) => assignments.get(participant.id)!);

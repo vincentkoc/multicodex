@@ -59,7 +59,12 @@ export function readRoom(roomId: string, participantToken?: string | null): Prom
 
 export function joinRoom(
 	roomId: string,
-	input: { displayName: string; githubLogin: string; kind: "human" | "observer" },
+	input: {
+		displayName: string;
+		githubLogin: string;
+		kind: "human" | "observer";
+		requestId: string;
+	},
 ): Promise<{ snapshot: RoomSnapshot } & RoomIdentity> {
 	return request(`/api/rooms/${encodeURIComponent(roomId)}/join`, { method: "POST", body: input });
 }

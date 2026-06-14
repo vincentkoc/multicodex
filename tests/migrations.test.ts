@@ -22,3 +22,13 @@ test("retired runtime identifiers remain available for redaction", async () => {
 	assert.match(migration, /PRIMARY KEY \(room_id, identifier\)/);
 	assert.match(migration, /identifier TEXT NOT NULL/);
 });
+
+test("join request capabilities can be recovered idempotently", async () => {
+	const migration = await readFile(
+		new URL("../migrations/0005_participant_join_requests.sql", import.meta.url),
+		"utf8",
+	);
+
+	assert.match(migration, /join_request_id TEXT/);
+	assert.match(migration, /UNIQUE INDEX idx_participants_room_join_request/);
+});

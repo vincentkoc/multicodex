@@ -18,6 +18,26 @@ test("worker mutation routes keep terminal rooms immutable", async () => {
 	assert.match(refreshSource, /expectedStatuses: runtimeRefreshStatuses/);
 });
 
+test("room creation resolves base branches and joins are recoverable", async () => {
+	const [worker, client] = await Promise.all([
+		readFile(new URL("../src/worker.ts", import.meta.url), "utf8"),
+		readFile(new URL("../src/client/App.tsx", import.meta.url), "utf8"),
+	]);
+	const createStart = worker.indexOf('url.pathname === "/api/rooms"');
+	const joinStart = worker.indexOf("const joinMatch", createStart);
+	const createSource = worker.slice(createStart, joinStart);
+	const joinEnd = worker.indexOf("const messagesMatch", joinStart);
+	const joinSource = worker.slice(joinStart, joinEnd);
+
+	assert.match(createSource, /resolveRepoDefaultBranch/);
+	assert.match(createSource, /baseBranch/);
+	assert.match(joinSource, /requestId/);
+	assert.match(joinSource, /maxAiSeats/);
+	assert.doesNotMatch(joinSource, /await addMessage/);
+	assert.match(client, /loadJoinRequestId/);
+	assert.match(client, /clearJoinRequestId/);
+});
+
 test("participant messages fan out before asynchronous conductor work", async () => {
 	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
 	const start = source.indexOf("const messagesMatch");

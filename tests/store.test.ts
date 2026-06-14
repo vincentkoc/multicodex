@@ -54,7 +54,26 @@ test("builder joins atomically invalidate stale plans and enforce the five-seat 
 	assert.match(addParticipantSource, /DELETE FROM tasks/);
 	assert.match(addParticipantSource, /SET task_id = NULL/);
 	assert.match(addParticipantSource, /brief_revision = brief_revision \+ 1/);
+	assert.match(addParticipantSource, /join_request_id = \?/);
+	assert.match(addParticipantSource, /INSERT OR IGNORE INTO participants/);
+	assert.match(
+		addParticipantSource,
+		/COUNT\(\*\) FROM participants WHERE room_id = \? AND kind = 'ai'/,
+	);
+	assert.match(addParticipantSource, /INSERT INTO room_messages/);
+	assert.match(addParticipantSource, /replay\?\.access_token/);
 	assert.match(addParticipantSource, /const \[result\] = await db\.batch\(statements\)/);
+});
+
+test("room creation persists the resolved repository base branch", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function createRoom");
+	const end = source.indexOf("export async function readRoomSnapshot", start);
+	const createSource = source.slice(start, end);
+
+	assert.match(createSource, /baseBranch: string/);
+	assert.match(createSource, /input\.baseBranch/);
+	assert.doesNotMatch(createSource, /'main'/);
 });
 
 test("task updates are atomically fenced against terminal rooms", async () => {

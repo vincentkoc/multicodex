@@ -1,6 +1,16 @@
 import type { Participant, Room } from "./domain.ts";
 import { HttpError, readBoundedText } from "./http.ts";
 
+export async function resolveRepoDefaultBranch(env: Env, repository: string): Promise<string> {
+	const [owner, repo] = repository.split("/");
+	if (!owner || !repo) throw new HttpError(400, "repo must be owner/name");
+	const result = await githubJson<{ default_branch?: unknown }>(env, `/repos/${owner}/${repo}`);
+	if (typeof result.default_branch !== "string" || !result.default_branch.trim()) {
+		throw new HttpError(502, "GitHub did not return a default branch");
+	}
+	return result.default_branch;
+}
+
 export async function ensureRoomBranches(
 	env: Env,
 	room: Room,
@@ -35,7 +45,7 @@ async function githubJson<T = unknown>(env: Env, path: string, init: RequestInit
 		signal: init.signal ?? AbortSignal.timeout(15_000),
 		headers: {
 			accept: "application/vnd.github+json",
-			authorization: `Bearer ${env.GITHUB_TOKEN}`,
+			...(env.GITHUB_TOKEN ? { authorization: `Bearer ${env.GITHUB_TOKEN}` } : {}),
 			"user-agent": "multicodex",
 			"x-github-api-version": "2022-11-28",
 			...init.headers,

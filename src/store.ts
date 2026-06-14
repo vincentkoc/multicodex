@@ -47,6 +47,8 @@ type ParticipantRow = {
 	runtime_summary: string;
 	branch: string | null;
 	state: Participant["state"];
+	access_token: string | null;
+	join_request_id: string | null;
 	joined_at: number | null;
 	created_at: number;
 	updated_at: number;
@@ -109,6 +111,7 @@ export async function createRoom(
 		title: string;
 		hostName: string;
 		repo: string;
+		baseBranch: string;
 		durationMinutes: number;
 		activeRoomLimit: number;
 		activeUpdatedSince: number;
@@ -126,7 +129,7 @@ export async function createRoom(
 				`INSERT INTO rooms
           (id, slug, title, status, host_participant_id, repo, base_branch, integration_branch,
            duration_minutes, created_at, updated_at)
-         SELECT ?, ?, ?, 'setup', ?, ?, 'main', ?, ?, ?, ?
+         SELECT ?, ?, ?, 'setup', ?, ?, ?, ?, ?, ?, ?
          WHERE (
            SELECT COUNT(*) FROM rooms WHERE status != 'ended' AND updated_at >= ?
          ) < ?`,
@@ -137,6 +140,7 @@ export async function createRoom(
 				input.title,
 				hostId,
 				input.repo,
+				input.baseBranch,
 				integrationBranch,
 				input.durationMinutes,
 				now,
@@ -223,8 +227,21 @@ export async function readRoomSnapshot(db: D1Database, roomId: string): Promise<
 export async function addParticipant(
 	db: D1Database,
 	roomId: string,
-	input: { displayName: string; kind: ParticipantKind; githubLogin?: string | null },
+	input: {
+		displayName: string;
+		kind: ParticipantKind;
+		githubLogin?: string | null;
+		requestId: string;
+		maxAiSeats: number;
+	},
 ): Promise<{ participant: Participant; participantToken: string }> {
+	const existing = await db
+		.prepare("SELECT * FROM participants WHERE room_id = ? AND join_request_id = ?")
+		.bind(roomId, input.requestId)
+		.first<ParticipantRow>();
+	if (existing?.access_token) {
+		return { participant: participantFromRow(existing), participantToken: existing.access_token };
+	}
 	const room = await db
 		.prepare("SELECT slug, status FROM rooms WHERE id = ?")
 		.bind(roomId)
@@ -245,9 +262,10 @@ export async function addParticipant(
 	const statements: D1PreparedStatement[] = [
 		db
 			.prepare(
-				`INSERT INTO participants
-        (id, room_id, kind, display_name, github_login, access_token, branch, state, joined_at, created_at, updated_at)
-       SELECT ?, ?, ?, ?, ?, ?, ?, 'joined', ?, ?, ?
+				`INSERT OR IGNORE INTO participants
+        (id, room_id, kind, display_name, github_login, access_token, join_request_id, branch, state,
+         joined_at, created_at, updated_at)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'joined', ?, ?, ?
        WHERE EXISTS (
          SELECT 1 FROM rooms
          WHERE id = ? AND ${
@@ -259,7 +277,12 @@ export async function addParticipant(
        AND (
          SELECT COUNT(*) FROM participants
          WHERE room_id = ? ${input.kind === "observer" ? "" : "AND kind != 'observer'"}
-       ) < ?`,
+       ) < ?
+       AND (
+         ? != 'ai' OR (
+           SELECT COUNT(*) FROM participants WHERE room_id = ? AND kind = 'ai'
+         ) < ?
+       )`,
 			)
 			.bind(
 				id,
@@ -268,6 +291,7 @@ export async function addParticipant(
 				input.displayName,
 				input.githubLogin ?? null,
 				participantToken,
+				input.requestId,
 				branch,
 				now,
 				now,
@@ -275,6 +299,9 @@ export async function addParticipant(
 				roomId,
 				roomId,
 				limit,
+				input.kind,
+				roomId,
+				input.maxAiSeats,
 			),
 	];
 	if (input.kind !== "observer") {
@@ -304,8 +331,25 @@ export async function addParticipant(
 				.bind(now, roomId, id, roomId),
 		);
 	}
+	statements.push(
+		db
+			.prepare(
+				`INSERT INTO room_messages
+          (id, room_id, author_kind, author_id, target_kind, body, created_at)
+         SELECT ?, ?, 'system', 'system', 'system', ?, ?
+         WHERE EXISTS (SELECT 1 FROM participants WHERE id = ? AND room_id = ?)`,
+			)
+			.bind(newId("msg"), roomId, `${input.displayName} joined the room.`, now, id, roomId),
+	);
 	const [result] = await db.batch(statements);
 	if (result?.meta.changes !== 1) {
+		const replay = await db
+			.prepare("SELECT * FROM participants WHERE room_id = ? AND join_request_id = ?")
+			.bind(roomId, input.requestId)
+			.first<ParticipantRow>();
+		if (replay?.access_token) {
+			return { participant: participantFromRow(replay), participantToken: replay.access_token };
+		}
 		throw new HttpError(409, "room is no longer accepting this seat");
 	}
 	return {
