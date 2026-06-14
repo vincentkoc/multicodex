@@ -155,6 +155,10 @@ test("observer controls stay read-only and presentation waits for success", asyn
 		/canEdit=\{!readOnly && \(isHost \|\| task\.ownerParticipantId === me\.id\)\}/,
 	);
 	assert.match(source, /if \(await action\("present"\)\) onRecap\(\)/);
+	assert.match(
+		source,
+		/snapshot\.room\.status === "presenting" \|\| snapshot\.room\.status === "ended"/,
+	);
 });
 
 test("conductor turns are claimed before model execution and cannot nudge workspaces", async () => {
@@ -216,7 +220,9 @@ test("failed launch cleanup must claim lifecycle ownership before stopping works
 	const end = source.indexOf("async function nudgeParticipant", start);
 	const cleanupSource = source.slice(start, end);
 
+	assert.match(cleanupSource, /resetRoomProvisioning\(env\.DB, roomId, \["provisioning"\]\)/);
 	assert.match(cleanupSource, /const claimed = await markRoomCleanup/);
+	assert.match(cleanupSource, /"cleanup-planning",\s*\["provisioning"\]/);
 	assert.match(cleanupSource, /if \(!claimed\) return/);
 	assert.ok(
 		cleanupSource.indexOf("if (!claimed) return") < cleanupSource.indexOf("stopRoomCrabboxes"),

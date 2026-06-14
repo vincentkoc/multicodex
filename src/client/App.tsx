@@ -700,10 +700,8 @@ function HostControls({
 	) => Promise<boolean>;
 	onRecap: () => void;
 }) {
-	const launched = ["building", "integrating", "presenting", "ended"].includes(
-		snapshot.room.status,
-	);
-	if (snapshot.room.status === "ended") {
+	const launched = ["building", "integrating"].includes(snapshot.room.status);
+	if (snapshot.room.status === "presenting" || snapshot.room.status === "ended") {
 		return (
 			<button class="button primary" onClick={onRecap}>
 				<MonitorPlay size={16} />

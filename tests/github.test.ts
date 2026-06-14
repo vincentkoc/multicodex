@@ -35,18 +35,16 @@ test("room creation fails closed when GitHub omits the default branch", async ()
 	}
 });
 
-test("branch provisioning rejects an existing ref at the wrong commit", async () => {
+test("branch provisioning safely reuses a room-owned ref after work advances it", async () => {
 	const originalFetch = globalThis.fetch;
 	const responses = [
 		Response.json({ object: { sha: "base-sha" } }),
-		Response.json({ object: { sha: "wrong-sha" } }),
+		Response.json({ object: { sha: "advanced-room-sha" } }),
 	];
 	globalThis.fetch = async () => responses.shift()!;
 	try {
-		await assert.rejects(
-			ensureRoomBranches({ GITHUB_TOKEN: "token" } as Env, room, []),
-			/unexpected commit/,
-		);
+		await ensureRoomBranches({ GITHUB_TOKEN: "token" } as Env, room, []);
+		assert.equal(responses.length, 0);
 	} finally {
 		globalThis.fetch = originalFetch;
 	}

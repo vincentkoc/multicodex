@@ -184,6 +184,8 @@ test("failed launch reset rotates the provisioning replay generation", async () 
 
 	assert.match(resetSource, /brief_revision = brief_revision \+ 1/);
 	assert.match(resetSource, /INSERT OR IGNORE INTO room_runtime_redactions/);
+	assert.match(resetSource, /expectedStatuses/);
+	assert.match(resetSource, /return roomResult\?\.meta\.changes === 1/);
 	assert.ok(
 		resetSource.indexOf("room_runtime_redactions") <
 			resetSource.indexOf("crabfleet_root_session_id = NULL"),

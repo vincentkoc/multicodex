@@ -596,9 +596,14 @@ export async function approveRoomPlan(
 	return result.meta.changes === 1;
 }
 
-export async function resetRoomProvisioning(db: D1Database, roomId: string): Promise<void> {
+export async function resetRoomProvisioning(
+	db: D1Database,
+	roomId: string,
+	expectedStatuses: RoomStatus[],
+): Promise<boolean> {
+	if (!expectedStatuses.length) return false;
 	const now = Date.now();
-	await db.batch([
+	const [, , , roomResult] = await db.batch([
 		db
 			.prepare(
 				`INSERT OR IGNORE INTO room_runtime_redactions (room_id, identifier, created_at)
@@ -629,9 +634,9 @@ export async function resetRoomProvisioning(db: D1Database, roomId: string): Pro
          SET status = 'planning', started_at = NULL, ends_at = NULL, crabfleet_root_session_id = NULL,
              brief_json = json_set(brief_json, '$.planApproved', json('false')),
              brief_revision = brief_revision + 1, updated_at = ?
-         WHERE id = ? AND status IN ('provisioning', 'building', 'cleanup-planning')`,
+         WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})`,
 			)
-			.bind(now, roomId),
+			.bind(now, roomId, ...expectedStatuses),
 		db
 			.prepare(
 				`UPDATE participants
@@ -642,6 +647,7 @@ export async function resetRoomProvisioning(db: D1Database, roomId: string): Pro
 			)
 			.bind(now, roomId, roomId),
 	]);
+	return roomResult?.meta.changes === 1;
 }
 
 export async function recordProvisioningBinding(

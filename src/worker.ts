@@ -643,7 +643,9 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 					),
 				);
 			}
-			await resetRoomProvisioning(env.DB, roomId);
+			if (!(await resetRoomProvisioning(env.DB, roomId, ["cleanup-planning"]))) {
+				throw new HttpError(409, "room cleanup state changed before reset");
+			}
 			snapshot = await readRoomSnapshot(env.DB, roomId);
 			context.waitUntil(broadcastSnapshot(env, snapshot));
 			return json(snapshotForViewer(snapshot, host.id));
@@ -799,7 +801,7 @@ async function cleanupFailedLaunch(
 	bindings: Awaited<ReturnType<typeof provisionRoomCrabboxes>>,
 ): Promise<void> {
 	if (!bindings.length) {
-		await resetRoomProvisioning(env.DB, roomId);
+		await resetRoomProvisioning(env.DB, roomId, ["provisioning"]);
 		return;
 	}
 	const rootSessionId =
@@ -817,7 +819,7 @@ async function cleanupFailedLaunch(
 		roomId,
 		rootSessionId,
 		"cleanup-planning",
-		["provisioning", "cleanup-planning"],
+		["provisioning"],
 		cleanupBindings,
 	);
 	if (!claimed) return;
@@ -839,7 +841,9 @@ async function cleanupFailedLaunch(
 		if (snapshot.room.status === "cleanup-ending") {
 			await endRoom(env.DB, roomId);
 		} else if (snapshot.room.status !== "ended") {
-			await resetRoomProvisioning(env.DB, roomId);
+			if (!(await resetRoomProvisioning(env.DB, roomId, ["cleanup-planning"]))) {
+				throw new HttpError(409, "room cleanup state changed before reset");
+			}
 		}
 	} catch (error) {
 		const snapshot = await readRoomSnapshot(env.DB, roomId);

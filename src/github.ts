@@ -37,12 +37,7 @@ export async function ensureRoomBranches(
 	];
 	for (const branch of new Set(branches)) {
 		const existingSha = await readBranchSha(env, owner, repo, branch);
-		if (existingSha) {
-			if (existingSha !== baseSha) {
-				throw new HttpError(409, `GitHub branch ${branch} already exists at an unexpected commit`);
-			}
-			continue;
-		}
+		if (existingSha) continue;
 		try {
 			const created = await githubJson<unknown>(env, `/repos/${owner}/${repo}/git/refs`, {
 				method: "POST",
