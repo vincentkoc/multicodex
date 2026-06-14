@@ -123,6 +123,16 @@ test("room snapshots read all redaction-related state from one D1 snapshot", asy
 	assert.match(snapshotSource, /messageCount: Number/);
 });
 
+test("room existence checks stay lightweight for public socket handshakes", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function roomExists");
+	const end = source.indexOf("export async function readRoomSnapshot", start);
+	const existenceSource = source.slice(start, end);
+
+	assert.match(existenceSource, /SELECT 1 AS found FROM rooms WHERE id = \?/);
+	assert.doesNotMatch(existenceSource, /room_messages|participants|tasks/);
+});
+
 test("room message history uses a stable bounded cursor", async () => {
 	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
 	const start = source.indexOf("export async function readRoomMessagesPage");
@@ -240,6 +250,7 @@ test("failed launch reset rotates the provisioning replay generation", async () 
 	const resetSource = source.slice(start, end);
 
 	assert.match(resetSource, /brief_revision = brief_revision \+ 1/);
+	assert.match(resetSource, /root_provisioning_attempted_at = NULL/);
 	assert.match(resetSource, /INSERT OR IGNORE INTO room_runtime_redactions/);
 	assert.match(resetSource, /expectedStatuses/);
 	assert.match(resetSource, /return roomResult\?\.meta\.changes === 1/);
@@ -247,6 +258,17 @@ test("failed launch reset rotates the provisioning replay generation", async () 
 		resetSource.indexOf("room_runtime_redactions") <
 			resetSource.indexOf("crabfleet_root_session_id = NULL"),
 	);
+});
+
+test("root provisioning attempts are durable before external creation", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function markRootProvisioningAttempt");
+	const end = source.indexOf("export async function markRoomCleanup", start);
+	const attemptSource = source.slice(start, end);
+
+	assert.match(attemptSource, /root_provisioning_attempted_at/);
+	assert.match(attemptSource, /status = 'provisioning'/);
+	assert.match(attemptSource, /roomRootProvisioningAttempted/);
 });
 
 test("conductor claims atomically enforce room cooldown and hourly budget", async () => {

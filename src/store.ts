@@ -25,6 +25,7 @@ type RoomRow = {
 	base_branch: string;
 	integration_branch: string;
 	crabfleet_root_session_id: string | null;
+	root_provisioning_attempted_at: number | null;
 	creation_request_id: string | null;
 	builder_invite_token: string | null;
 	brief_json: string;
@@ -241,6 +242,14 @@ export async function roomBuilderInviteAuthorized(
 		.bind(roomId, inviteToken)
 		.first<{ id: string }>();
 	return Boolean(room);
+}
+
+export async function roomExists(db: D1Database, roomId: string): Promise<boolean> {
+	const room = await db
+		.prepare("SELECT 1 AS found FROM rooms WHERE id = ?")
+		.bind(roomId)
+		.first<{ found: number }>();
+	return room?.found === 1;
 }
 
 export async function readRoomSnapshot(db: D1Database, roomId: string): Promise<RoomSnapshot> {
@@ -697,6 +706,7 @@ export async function resetRoomProvisioning(
 			.prepare(
 				`UPDATE rooms
          SET status = 'planning', started_at = NULL, ends_at = NULL, crabfleet_root_session_id = NULL,
+             root_provisioning_attempted_at = NULL,
              brief_json = json_set(brief_json, '$.planApproved', json('false')),
              brief_revision = brief_revision + 1, updated_at = ?
          WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})`,
@@ -783,6 +793,34 @@ export async function renewProvisioningLease(db: D1Database, roomId: string): Pr
 		.bind(Date.now(), roomId)
 		.run();
 	return result.meta.changes === 1;
+}
+
+export async function markRootProvisioningAttempt(
+	db: D1Database,
+	roomId: string,
+): Promise<boolean> {
+	const now = Date.now();
+	const result = await db
+		.prepare(
+			`UPDATE rooms
+       SET root_provisioning_attempted_at = COALESCE(root_provisioning_attempted_at, ?),
+           updated_at = ?
+       WHERE id = ? AND status = 'provisioning'`,
+		)
+		.bind(now, now, roomId)
+		.run();
+	return result.meta.changes === 1;
+}
+
+export async function roomRootProvisioningAttempted(
+	db: D1Database,
+	roomId: string,
+): Promise<boolean> {
+	const room = await db
+		.prepare("SELECT root_provisioning_attempted_at FROM rooms WHERE id = ?")
+		.bind(roomId)
+		.first<{ root_provisioning_attempted_at: number | null }>();
+	return room?.root_provisioning_attempted_at != null;
 }
 
 export async function markRoomCleanup(

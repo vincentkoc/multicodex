@@ -63,3 +63,14 @@ test("room builder invitations are durable capabilities", async () => {
 	assert.match(migration, /builder_invite_token TEXT/);
 	assert.match(migration, /UNIQUE INDEX idx_rooms_builder_invite_token/);
 });
+
+test("root provisioning attempts are durable cleanup evidence", async () => {
+	const migration = await readFile(
+		new URL("../migrations/0009_root_provisioning_attempts.sql", import.meta.url),
+		"utf8",
+	);
+
+	assert.match(migration, /root_provisioning_attempted_at INTEGER/);
+	assert.match(migration, /crabfleet_root_session_id IS NOT NULL/);
+	assert.match(migration, /participants\.crabfleet_session_id IS NOT NULL/);
+});

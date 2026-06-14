@@ -51,6 +51,7 @@ import {
 	createRoom,
 	endRoom,
 	listRuntimeRoomIdsNeedingCleanup,
+	markRootProvisioningAttempt,
 	markRoomCleanup,
 	readRoomMessagesPage,
 	readRoomSnapshot,
@@ -62,6 +63,8 @@ import {
 	requireRoomParticipant,
 	resetRoomProvisioning,
 	roomBuilderInviteAuthorized,
+	roomExists,
+	roomRootProvisioningAttempted,
 	updateParticipantRuntime,
 	updateConductorActionApprovalState,
 	updateRoomRuntime,
@@ -190,7 +193,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			throw new HttpError(426, "websocket upgrade required");
 		}
 		const roomId = decodeURIComponent(roomWsMatch[1] ?? "");
-		await readRoomSnapshot(env.DB, roomId);
+		if (!(await roomExists(env.DB, roomId))) throw new HttpError(404, "room not found");
 		return env.ROOM_HUB.getByName(roomId).fetch(request);
 	}
 
@@ -358,6 +361,9 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		if (!roomAllowsPlanning(snapshot.room.status)) {
 			throw new HttpError(409, "room is no longer accepting planning changes");
 		}
+		if (!snapshot.room.brief.productGoal?.trim()) {
+			throw new HttpError(409, "shuffle an idea before drafting the plan");
+		}
 		const active = snapshot.participants.filter((participant) => participant.kind !== "observer");
 		const plan = planForBrief(snapshot.room.brief, active);
 		const participants = participantsWithAssignments(snapshot.participants, plan.assignments);
@@ -425,6 +431,9 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 					throw new HttpError(409, "room launch was cancelled");
 				}
 			});
+			if (!(await markRootProvisioningAttempt(env.DB, roomId))) {
+				throw new HttpError(409, "room launch was cancelled");
+			}
 			bindings = await provisionRoomCrabboxes(
 				env,
 				snapshot.room,
@@ -649,7 +658,10 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		);
 		if (!cleanupLeaseId) throw new HttpError(409, "room cleanup is already active");
 		try {
-			if (!snapshot.room.crabfleetRootSessionId) {
+			if (
+				!snapshot.room.crabfleetRootSessionId &&
+				(await roomRootProvisioningAttempted(env.DB, roomId))
+			) {
 				const root = await recoverRoomRootCrabbox(
 					env,
 					snapshot.room,
@@ -709,9 +721,8 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			throw new HttpError(409, "active provisioning can be cancelled after its lease expires");
 		}
 		const runtimeMayExist =
-			snapshot.room.startedAt !== null ||
-			snapshot.room.endsAt !== null ||
-			snapshot.room.crabfleetRootSessionId !== null;
+			snapshot.room.crabfleetRootSessionId !== null ||
+			(await roomRootProvisioningAttempted(env.DB, roomId));
 		const endableStatuses = [
 			"setup",
 			"planning",
@@ -841,9 +852,8 @@ async function reconcileRuntimeRoom(env: Env, roomId: string): Promise<void> {
 		}
 	}
 	const runtimeMayExist =
-		snapshot.room.startedAt !== null ||
-		snapshot.room.endsAt !== null ||
-		snapshot.room.crabfleetRootSessionId !== null;
+		snapshot.room.crabfleetRootSessionId !== null ||
+		(await roomRootProvisioningAttempted(env.DB, roomId));
 	const expectedStatuses: RoomStatus[] = [
 		"building",
 		"integrating",
@@ -928,7 +938,10 @@ async function reconcileFailedLaunchCleanup(env: Env, roomId: string): Promise<v
 	if (!cleanupLeaseId) return;
 	try {
 		let snapshot = await readRoomSnapshot(env.DB, roomId);
-		if (!snapshot.room.crabfleetRootSessionId) {
+		if (
+			!snapshot.room.crabfleetRootSessionId &&
+			(await roomRootProvisioningAttempted(env.DB, roomId))
+		) {
 			const root = await recoverRoomRootCrabbox(
 				env,
 				snapshot.room,

@@ -73,6 +73,7 @@ test("planning announcements remain fenced against room closure", async () => {
 	assert.equal(planningSource.match(/installedRevision/g)?.length, 6);
 	assert.match(planningSource, /room closed before the shuffled plan could be announced/);
 	assert.match(planningSource, /room closed before the plan could be announced/);
+	assert.match(planningSource, /shuffle an idea before drafting the plan/);
 });
 
 test("cleanup retry preserves failed launches while end excludes unsafe lifecycle states", async () => {
@@ -88,6 +89,7 @@ test("cleanup retry preserves failed launches while end excludes unsafe lifecycl
 	assert.match(retrySource, /snapshot\.room\.status !== "cleanup-planning"/);
 	assert.match(retrySource, /resetRoomProvisioning/);
 	assert.match(retrySource, /claimStaleProvisioningCleanup/);
+	assert.match(retrySource, /roomRootProvisioningAttempted/);
 	assert.match(retrySource, /recoverRoomRootCrabbox/);
 	assert.match(retrySource, /claimRoomRuntimeLease/);
 	assert.match(retrySource, /finally \{\s*await releaseRoomRuntimeLease/);
@@ -324,6 +326,7 @@ test("scheduled reconciliation retries cleanup and expires runtime rooms", async
 	assert.match(expirySource, /claimStaleProvisioningCleanup/);
 	assert.match(expirySource, /beginRoomCleanup/);
 	assert.match(expirySource, /reconcileFailedLaunchCleanup/);
+	assert.match(expirySource, /roomRootProvisioningAttempted/);
 	assert.match(expirySource, /recoverRoomRootCrabbox/);
 	assert.match(expirySource, /stopRoomCrabboxes/);
 	assert.match(expirySource, /resetRoomProvisioning/);
@@ -343,6 +346,10 @@ test("launch preparation renews provisioning while GitHub branches are created",
 	);
 	assert.match(launchSource, /renewProvisioningLease\(env\.DB, roomId\)/);
 	assert.match(launchSource, /await broadcastSnapshot\(env, snapshot\)/);
+	assert.ok(
+		launchSource.indexOf("markRootProvisioningAttempt") <
+			launchSource.indexOf("bindings = await provisionRoomCrabboxes"),
+	);
 });
 
 test("mutations refresh through the central snapshot sequence and recap actions match room state", async () => {
@@ -357,6 +364,8 @@ test("mutations refresh through the central snapshot sequence and recap actions 
 	assert.match(workbenchSource, /await run\(\);\s*await onRefresh\(\)/);
 	assert.doesNotMatch(workbenchSource, /onSnapshot/);
 	assert.match(chatSource, /await postMessage/);
+	assert.ok(chatSource.indexOf('setText("")') < chatSource.indexOf("await onRefresh()"));
+	assert.match(chatSource, /message sent; room refresh failed/);
 	assert.match(chatSource, /await onRefresh\(\)/);
 	assert.doesNotMatch(chatSource, /onSnapshot/);
 	assert.match(workbenchSource, /snapshot\.room\.status === "cleanup-planning"/);
@@ -405,6 +414,16 @@ test("message history is paginated through the existing viewer redaction policy"
 	assert.match(messagesSource, /beforeId/);
 	assert.match(messagesSource, /snapshotForViewer\(\{ \.\.\.snapshot, messages \}, viewer\?\.id\)/);
 	assert.match(messagesSource, /messageCount: snapshot\.messageCount/);
+});
+
+test("public WebSocket handshakes use a lightweight room existence check", async () => {
+	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
+	const start = source.indexOf("const roomWsMatch");
+	const end = source.indexOf("const joinMatch", start);
+	const socketSource = source.slice(start, end);
+
+	assert.match(socketSource, /roomExists\(env\.DB, roomId\)/);
+	assert.doesNotMatch(socketSource, /readRoomSnapshot/);
 });
 
 test("public terminal room links render the preserved recap", async () => {

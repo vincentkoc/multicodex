@@ -974,8 +974,12 @@ function ChatPanel({
 				targetKind: target.kind,
 				targetId: target.id || null,
 			});
-			await onRefresh();
 			setText("");
+			try {
+				await onRefresh();
+			} catch (cause) {
+				onError(`message sent; room refresh failed: ${errorMessage(cause)}`);
+			}
 		} catch (cause) {
 			onError(errorMessage(cause));
 		} finally {
