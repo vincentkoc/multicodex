@@ -625,20 +625,21 @@ export async function updateTaskState(
 	roomId: string,
 	taskId: string,
 	state: TaskState,
+	expectedState: TaskState,
 	expectedStatuses: RoomStatus[],
 ): Promise<boolean> {
 	if (!expectedStatuses.length) return false;
 	const result = await db
 		.prepare(
 			`UPDATE tasks SET state = ?, updated_at = ?
-       WHERE id = ? AND room_id = ?
+       WHERE id = ? AND room_id = ? AND state = ?
          AND EXISTS (
            SELECT 1 FROM rooms WHERE id = ? AND status IN (${expectedStatuses
 							.map(() => "?")
 							.join(", ")})
          )`,
 		)
-		.bind(state, Date.now(), taskId, roomId, roomId, ...expectedStatuses)
+		.bind(state, Date.now(), taskId, roomId, expectedState, roomId, ...expectedStatuses)
 		.run();
 	return result.meta.changes === 1;
 }

@@ -18,7 +18,7 @@ test("worker mutation routes keep terminal rooms immutable", async () => {
 	assert.match(refreshSource, /expectedStatuses: runtimeRefreshStatuses/);
 });
 
-test("cleanup retry preserves failed launches while end excludes cleanup-planning", async () => {
+test("cleanup retry preserves failed launches while end excludes unsafe lifecycle states", async () => {
 	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
 	const retryStart = source.indexOf("const retryCleanupMatch");
 	const endStart = source.indexOf("const endMatch", retryStart);
@@ -31,6 +31,33 @@ test("cleanup retry preserves failed launches while end excludes cleanup-plannin
 	assert.match(retrySource, /snapshot\.room\.status !== "cleanup-planning"/);
 	assert.match(retrySource, /resetRoomProvisioning/);
 	assert.doesNotMatch(endSource, /"cleanup-planning"/);
+	assert.match(endSource, /snapshot\.room\.status === "provisioning"/);
+	assert.match(endSource, /room provisioning must finish before cleanup/);
+	assert.doesNotMatch(
+		endSource.slice(endSource.indexOf("const endableStatuses")),
+		/"provisioning"/,
+	);
+});
+
+test("failed launch cleanup always broadcasts its durable recovery state", async () => {
+	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
+	const start = source.indexOf("if (error instanceof PartialProvisioningError)");
+	const end = source.indexOf("const refreshMatch", start);
+	const failureSource = source.slice(start, end);
+
+	assert.match(failureSource, /try \{\s*await cleanupFailedLaunch/);
+	assert.match(failureSource, /finally \{/);
+	assert.match(failureSource, /context\.waitUntil\(broadcastSnapshot\(env, failed\)\)/);
+});
+
+test("WebSocket reconnects resync the current room snapshot", async () => {
+	const source = await readFile(new URL("../src/client/App.tsx", import.meta.url), "utf8");
+	const start = source.indexOf("const syncRoom");
+	const end = source.indexOf("function enterRoom", start);
+	const socketSource = source.slice(start, end);
+
+	assert.match(socketSource, /socket\.onopen = syncRoom/);
+	assert.match(socketSource, /if \(payload\.type === "changed"\) syncRoom\(\)/);
 });
 
 test("conductor turns are claimed before model execution and cannot nudge workspaces", async () => {

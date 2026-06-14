@@ -92,16 +92,22 @@ export function App() {
 		let socket: WebSocket | null = null;
 		let retry: number | null = null;
 		let disposed = false;
+		const syncRoom = () => {
+			readRoom(roomId, identity?.participantToken)
+				.then((value) => {
+					if (!disposed) setSnapshot(value);
+				})
+				.catch((cause: Error) => {
+					if (!disposed) setError(cause.message);
+				});
+		};
 		const connect = () => {
 			socket = new WebSocket(roomSocketUrl(roomId));
+			socket.onopen = syncRoom;
 			socket.onmessage = (event) => {
 				if (event.data === "pong") return;
 				const payload = JSON.parse(String(event.data)) as { type: string };
-				if (payload.type === "changed") {
-					readRoom(roomId, identity?.participantToken)
-						.then(setSnapshot)
-						.catch((cause: Error) => setError(cause.message));
-				}
+				if (payload.type === "changed") syncRoom();
 			};
 			socket.onclose = () => {
 				if (!disposed) retry = window.setTimeout(connect, 1200);

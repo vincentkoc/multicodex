@@ -334,7 +334,12 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			});
 		} catch (error) {
 			if (error instanceof PartialProvisioningError) bindings = error.bindings;
-			await cleanupFailedLaunch(env, roomId, bindings);
+			try {
+				await cleanupFailedLaunch(env, roomId, bindings);
+			} finally {
+				const failed = await readRoomSnapshot(env.DB, roomId);
+				context.waitUntil(broadcastSnapshot(env, failed));
+			}
 			throw error;
 		}
 		snapshot = await readRoomSnapshot(env.DB, roomId);
@@ -411,7 +416,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		if (scopeChange && actor.id !== snapshot.room.hostParticipantId) {
 			throw new HttpError(403, "host approval required to cut a task");
 		}
-		if (!(await updateTaskState(env.DB, roomId, taskId, body.state, messageStatuses))) {
+		if (!(await updateTaskState(env.DB, roomId, taskId, body.state, task.state, messageStatuses))) {
 			throw new HttpError(409, "room is no longer accepting task updates");
 		}
 		if (scopeChange && body.state !== task.state) {
@@ -490,10 +495,12 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const host = await requireHost(env.DB, roomId, participantToken(request));
 		let snapshot = await readRoomSnapshot(env.DB, roomId);
 		if (snapshot.room.status === "ended") return json(snapshotForViewer(snapshot, host.id));
+		if (snapshot.room.status === "provisioning") {
+			throw new HttpError(409, "room provisioning must finish before cleanup");
+		}
 		const endableStatuses = [
 			"setup",
 			"planning",
-			"provisioning",
 			"building",
 			"integrating",
 			"presenting",

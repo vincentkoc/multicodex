@@ -65,6 +65,8 @@ test("task updates are atomically fenced against terminal rooms", async () => {
 
 	assert.match(taskSource, /EXISTS \(/);
 	assert.match(taskSource, /status IN/);
+	assert.match(taskSource, /AND state = \?/);
+	assert.match(taskSource, /expectedState/);
 	assert.match(taskSource, /return result\.meta\.changes === 1/);
 });
 
