@@ -659,7 +659,9 @@ function HostControls({
 }: {
 	snapshot: RoomSnapshot;
 	busy: string;
-	action: (action: "shuffle" | "plan" | "approve-plan" | "present" | "end") => void;
+	action: (
+		action: "shuffle" | "plan" | "approve-plan" | "retry-cleanup" | "present" | "end",
+	) => void;
 	onRecap: () => void;
 }) {
 	const launched = ["building", "integrating", "presenting", "ended"].includes(
@@ -674,8 +676,9 @@ function HostControls({
 		);
 	}
 	if (snapshot.room.status === "cleanup-planning" || snapshot.room.status === "cleanup-ending") {
+		const cleanupAction = snapshot.room.status === "cleanup-planning" ? "retry-cleanup" : "end";
 		return (
-			<button class="button danger" disabled={Boolean(busy)} onClick={() => action("end")}>
+			<button class="button danger" disabled={Boolean(busy)} onClick={() => action(cleanupAction)}>
 				<CircleStop size={16} />
 				retry workspace cleanup
 			</button>

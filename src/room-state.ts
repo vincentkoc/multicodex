@@ -12,6 +12,14 @@ export function roomAllowsRuntimeNudge(status: RoomStatus): boolean {
 	return status === "building" || status === "integrating";
 }
 
+export function roomAllowsRuntimeRefresh(status: RoomStatus): boolean {
+	return status === "building" || status === "integrating" || status === "presenting";
+}
+
+export function roomAllowsMessages(status: RoomStatus): boolean {
+	return status !== "cleanup-planning" && status !== "cleanup-ending" && status !== "ended";
+}
+
 export function roomPlanCoversActiveParticipants(snapshot: RoomSnapshot): boolean {
 	const active = snapshot.participants.filter((participant) => participant.kind !== "observer");
 	const activeIds = new Set(active.map((participant) => participant.id));

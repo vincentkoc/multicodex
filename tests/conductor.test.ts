@@ -1,17 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { conductorCanNudge, runConductorTurn } from "../src/conductor.ts";
+import { runConductorTurn } from "../src/conductor.ts";
 import type { RoomSnapshot } from "../src/domain.ts";
 
 const snapshot = conductorSnapshot();
 
-test("only the host can authorize conductor workspace nudges", () => {
-	assert.equal(conductorCanNudge(snapshot, "host"), true);
-	assert.equal(conductorCanNudge(snapshot, "guest"), false);
-});
-
-test("a participant conductor turn cannot record decisions or nudge sessions", async () => {
+test("conductor turns expose only the visible room-message tool", async () => {
 	const originalFetch = globalThis.fetch;
 	const requests: Array<{ tools?: Array<{ name?: string }> }> = [];
 	let response = 0;
@@ -56,8 +51,6 @@ test("conductor redacts Crabfleet runtime identifiers from model input and publi
 	const originalFetch = globalThis.fetch;
 	const requests: string[] = [];
 	const messages: string[] = [];
-	const decisions: Array<{ title: string; decision: string; reason: string }> = [];
-	const nudges: Array<{ participantId: string; message: string; reason: string }> = [];
 	let response = 0;
 	globalThis.fetch = async (_input, init) => {
 		requests.push(String(init?.body ?? ""));
@@ -115,19 +108,13 @@ test("conductor redacts Crabfleet runtime identifiers from model input and publi
 				postMessage: async (body) => {
 					messages.push(body);
 				},
-				recordDecision: async (input) => {
-					decisions.push(input);
-				},
-				nudge: async (input) => {
-					nudges.push(input);
-				},
 			},
 		);
 	} finally {
 		globalThis.fetch = originalFetch;
 	}
 
-	const published = JSON.stringify({ messages, decisions, nudges });
+	const published = JSON.stringify({ messages });
 	for (const identifier of [
 		"opaque-root-token",
 		"opaque-child-token",
@@ -140,6 +127,7 @@ test("conductor redacts Crabfleet runtime identifiers from model input and publi
 		assert.doesNotMatch(published, new RegExp(identifier));
 	}
 	assert.doesNotMatch(requests[0]!, /crabfleetRootSessionId|crabfleetSessionId|browserUrl/);
+	assert.doesNotMatch(requests[0]!, /record_decision|send_session_nudge/);
 	assert.match(published, /redacted Crabfleet runtime identifier/);
 });
 

@@ -52,3 +52,27 @@ test("builder joins atomically invalidate stale plans and enforce the five-seat 
 	assert.match(addParticipantSource, /brief_revision = brief_revision \+ 1/);
 	assert.match(addParticipantSource, /const \[result\] = await db\.batch\(statements\)/);
 });
+
+test("plan approval atomically binds the validated revision and participant coverage", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function approveRoomPlan");
+	const end = source.indexOf("export async function resetRoomProvisioning", start);
+	const approvalSource = source.slice(start, end);
+
+	assert.match(approvalSource, /brief_revision = \?/);
+	assert.match(approvalSource, /COUNT\(\*\) FROM tasks/);
+	assert.match(approvalSource, /participant\.kind != 'observer'/);
+	assert.match(approvalSource, /task\.owner_participant_id = participant\.id/);
+});
+
+test("conductor claims atomically enforce room cooldown and hourly budget", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function claimConductorTurn");
+	const end = source.indexOf("export async function endRoom", start);
+	const claimSource = source.slice(start, end);
+
+	assert.match(claimSource, /INSERT INTO conductor_actions/);
+	assert.match(claimSource, /kind = 'conductor_turn' AND created_at > \?/);
+	assert.match(claimSource, /\) < 12/);
+	assert.match(claimSource, /status NOT IN \('cleanup-planning', 'cleanup-ending', 'ended'\)/);
+});

@@ -324,13 +324,21 @@ export async function addMessage(
 	db: D1Database,
 	roomId: string,
 	input: Omit<RoomMessage, "id" | "roomId" | "createdAt">,
-): Promise<RoomMessage> {
+	expectedStatuses?: RoomStatus[],
+): Promise<RoomMessage | null> {
+	if (expectedStatuses && !expectedStatuses.length) return null;
 	const message: RoomMessage = { ...input, id: newId("msg"), roomId, createdAt: Date.now() };
-	await db
+	const statusFence = expectedStatuses
+		? `SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+	     WHERE EXISTS (
+	       SELECT 1 FROM rooms WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})
+	     )`
+		: "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+	const result = await db
 		.prepare(
 			`INSERT INTO room_messages
-        (id, room_id, author_kind, author_id, target_kind, target_id, body, reply_to_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	        (id, room_id, author_kind, author_id, target_kind, target_id, body, reply_to_id, created_at)
+	       ${statusFence}`,
 		)
 		.bind(
 			message.id,
@@ -342,9 +350,10 @@ export async function addMessage(
 			message.body,
 			message.replyToId,
 			message.createdAt,
+			...(expectedStatuses ? [roomId, ...expectedStatuses] : []),
 		)
 		.run();
-	return message;
+	return result.meta.changes === 1 ? message : null;
 }
 
 export async function replacePlan(
@@ -434,16 +443,43 @@ export async function replacePlan(
 	return roomResult?.meta.changes === 1;
 }
 
-export async function approveRoomPlan(db: D1Database, roomId: string): Promise<boolean> {
+export async function approveRoomPlan(
+	db: D1Database,
+	roomId: string,
+	expectedBriefRevision: number,
+): Promise<boolean> {
 	const now = Date.now();
 	const result = await db
 		.prepare(
 			`UPDATE rooms
-       SET status = 'provisioning', started_at = ?, ends_at = ? + duration_minutes * 60000,
-           brief_json = json_set(brief_json, '$.planApproved', json('true')), updated_at = ?
-       WHERE id = ? AND status = 'planning'`,
+	       SET status = 'provisioning', started_at = ?, ends_at = ? + duration_minutes * 60000,
+	           brief_json = json_set(brief_json, '$.planApproved', json('true')), updated_at = ?
+	       WHERE id = ? AND status = 'planning' AND brief_revision = ?
+	         AND (SELECT COUNT(*) FROM tasks WHERE room_id = rooms.id) > 0
+	         AND (SELECT COUNT(*) FROM tasks WHERE room_id = rooms.id) =
+	             (SELECT COUNT(*) FROM participants WHERE room_id = rooms.id AND kind != 'observer')
+	         AND NOT EXISTS (
+	           SELECT 1
+	           FROM participants AS participant
+	           LEFT JOIN tasks AS task
+	             ON task.id = participant.task_id
+	             AND task.room_id = participant.room_id
+	             AND task.owner_participant_id = participant.id
+	           WHERE participant.room_id = rooms.id
+	             AND participant.kind != 'observer'
+	             AND (participant.role_id IS NULL OR participant.task_id IS NULL OR task.id IS NULL)
+	         )
+	         AND NOT EXISTS (
+	           SELECT 1
+	           FROM tasks AS task
+	           LEFT JOIN participants AS participant
+	             ON participant.id = task.owner_participant_id
+	             AND participant.room_id = task.room_id
+	             AND participant.kind != 'observer'
+	           WHERE task.room_id = rooms.id AND participant.id IS NULL
+	         )`,
 		)
-		.bind(now, now, now, roomId)
+		.bind(now, now, now, roomId, expectedBriefRevision)
 		.run();
 	return result.meta.changes === 1;
 }
@@ -548,16 +584,26 @@ export async function updateParticipantRuntime(
 		summary?: string;
 		state?: Participant["state"];
 	},
-): Promise<void> {
-	await db
+	fence?: { roomId: string; expectedStatuses: RoomStatus[] },
+): Promise<boolean> {
+	if (fence && !fence.expectedStatuses.length) return false;
+	const roomFence = fence
+		? `AND room_id = ?
+	     AND EXISTS (
+	       SELECT 1 FROM rooms WHERE id = ? AND status IN (${fence.expectedStatuses
+						.map(() => "?")
+						.join(", ")})
+	     )`
+		: "";
+	const result = await db
 		.prepare(
 			`UPDATE participants
        SET crabfleet_session_id = COALESCE(?, crabfleet_session_id),
            browser_url = COALESCE(?, browser_url),
            runtime_summary = COALESCE(?, runtime_summary),
-           state = COALESCE(?, state),
-           updated_at = ?
-       WHERE id = ?`,
+	           state = COALESCE(?, state),
+	           updated_at = ?
+	       WHERE id = ? ${roomFence}`,
 		)
 		.bind(
 			input.sessionId ?? null,
@@ -566,8 +612,10 @@ export async function updateParticipantRuntime(
 			input.state ?? null,
 			Date.now(),
 			participantId,
+			...(fence ? [fence.roomId, fence.roomId, ...fence.expectedStatuses] : []),
 		)
 		.run();
+	return result.meta.changes === 1;
 }
 
 export async function updateTaskState(
@@ -629,6 +677,45 @@ export async function addConductorAction(
 			Date.now(),
 		)
 		.run();
+}
+
+export async function claimConductorTurn(
+	db: D1Database,
+	roomId: string,
+	actorParticipantId: string,
+): Promise<boolean> {
+	const now = Date.now();
+	const result = await db
+		.prepare(
+			`INSERT INTO conductor_actions
+        (id, room_id, kind, target_ids_json, reason, evidence_refs_json, approval_state, created_at)
+       SELECT ?, ?, 'conductor_turn', ?, 'conductor turn started', '[]', 'not_required', ?
+       WHERE EXISTS (
+         SELECT 1 FROM rooms
+         WHERE id = ? AND status NOT IN ('cleanup-planning', 'cleanup-ending', 'ended')
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM conductor_actions
+         WHERE room_id = ? AND kind = 'conductor_turn' AND created_at > ?
+       )
+       AND (
+         SELECT COUNT(*) FROM conductor_actions
+         WHERE room_id = ? AND kind = 'conductor_turn' AND created_at > ?
+       ) < 12`,
+		)
+		.bind(
+			newId("action"),
+			roomId,
+			encodeJson([actorParticipantId]),
+			now,
+			roomId,
+			roomId,
+			now - 60_000,
+			roomId,
+			now - 60 * 60 * 1000,
+		)
+		.run();
+	return result.meta.changes === 1;
 }
 
 export async function endRoom(db: D1Database, roomId: string): Promise<boolean> {

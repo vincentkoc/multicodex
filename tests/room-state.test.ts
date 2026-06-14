@@ -4,6 +4,8 @@ import test from "node:test";
 import {
 	roomAllowsPlanning,
 	roomAllowsPresentation,
+	roomAllowsMessages,
+	roomAllowsRuntimeRefresh,
 	roomAllowsRuntimeNudge,
 	roomPlanCoversActiveParticipants,
 } from "../src/room-state.ts";
@@ -19,6 +21,12 @@ test("room lifecycle guards reject stale destructive actions", () => {
 	assert.equal(roomAllowsPresentation("ended"), false);
 	assert.equal(roomAllowsRuntimeNudge("integrating"), true);
 	assert.equal(roomAllowsRuntimeNudge("presenting"), false);
+	assert.equal(roomAllowsRuntimeRefresh("presenting"), true);
+	assert.equal(roomAllowsRuntimeRefresh("ended"), false);
+	assert.equal(roomAllowsMessages("presenting"), true);
+	assert.equal(roomAllowsMessages("cleanup-planning"), false);
+	assert.equal(roomAllowsMessages("cleanup-ending"), false);
+	assert.equal(roomAllowsMessages("ended"), false);
 });
 
 test("plan approval requires one current role and owned task per active participant", () => {

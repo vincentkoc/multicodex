@@ -71,7 +71,7 @@ export function catalog(): Promise<Catalog> {
 export function roomAction(
 	roomId: string,
 	participantToken: string,
-	action: "shuffle" | "plan" | "approve-plan" | "refresh" | "present" | "end",
+	action: "shuffle" | "plan" | "approve-plan" | "refresh" | "retry-cleanup" | "present" | "end",
 ): Promise<RoomSnapshot> {
 	return request(`/api/rooms/${encodeURIComponent(roomId)}/${action}`, {
 		method: "POST",

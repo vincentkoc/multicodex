@@ -1,6 +1,6 @@
 import { ideas, roles } from "./catalog.ts";
 import { activeRoomLimit, eventAccessAuthorized } from "./access.ts";
-import { conductorCanNudge, runConductorTurn } from "./conductor.ts";
+import { runConductorTurn } from "./conductor.ts";
 import {
 	PartialProvisioningError,
 	provisionRoomCrabboxes,
@@ -8,7 +8,13 @@ import {
 	sendCrabboxNudge,
 	stopRoomCrabboxes,
 } from "./crabfleet.ts";
-import type { MessageTargetKind, Participant, RoomSnapshot, TaskState } from "./domain.ts";
+import type {
+	MessageTargetKind,
+	Participant,
+	RoomSnapshot,
+	RoomStatus,
+	TaskState,
+} from "./domain.ts";
 import { ensureRoomBranches } from "./github.ts";
 import {
 	clean,
@@ -23,16 +29,18 @@ import { repoAllowed } from "./repos.ts";
 import {
 	roomAllowsPlanning,
 	roomAllowsPresentation,
+	roomAllowsMessages,
+	roomAllowsRuntimeRefresh,
 	roomAllowsRuntimeNudge,
 	roomPlanCoversActiveParticipants,
 } from "./room-state.ts";
 import { RoomHub } from "./room-hub.ts";
 import {
 	addConductorAction,
-	addDecision,
 	addMessage,
 	addParticipant,
 	approveRoomPlan,
+	claimConductorTurn,
 	createRoom,
 	endRoom,
 	markRoomCleanup,
@@ -47,6 +55,16 @@ import {
 import { snapshotForViewer } from "./visibility.ts";
 
 export { RoomHub };
+
+const messageStatuses: RoomStatus[] = [
+	"setup",
+	"planning",
+	"provisioning",
+	"building",
+	"integrating",
+	"presenting",
+];
+const runtimeRefreshStatuses: RoomStatus[] = ["building", "integrating", "presenting"];
 
 export default {
 	async fetch(request, env, context): Promise<Response> {
@@ -169,6 +187,10 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 	if (request.method === "POST" && messagesMatch) {
 		const roomId = decodeURIComponent(messagesMatch[1] ?? "");
 		const author = await requireRoomParticipant(env.DB, roomId, participantToken(request), false);
+		const current = await readRoomSnapshot(env.DB, roomId);
+		if (!roomAllowsMessages(current.room.status)) {
+			throw new HttpError(409, "room messages are closed");
+		}
 		const body = await readJson<{
 			body?: string;
 			targetKind?: MessageTargetKind;
@@ -178,14 +200,23 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const text = clean(body.body, 2000);
 		if (!text) throw new HttpError(400, "message is required");
 		const targetKind = body.targetKind ?? (text.includes("@conductor") ? "conductor" : "room");
-		await addMessage(env.DB, roomId, {
-			authorKind: "human",
-			authorId: author.id,
-			targetKind,
-			targetId: clean(body.targetId, 100) || null,
-			body: text,
-			replyToId: clean(body.replyToId, 100) || null,
-		});
+		if (
+			!(await addMessage(
+				env.DB,
+				roomId,
+				{
+					authorKind: "human",
+					authorId: author.id,
+					targetKind,
+					targetId: clean(body.targetId, 100) || null,
+					body: text,
+					replyToId: clean(body.replyToId, 100) || null,
+				},
+				messageStatuses,
+			))
+		) {
+			throw new HttpError(409, "room messages are closed");
+		}
 		if (targetKind === "conductor" || text.includes("@conductor")) {
 			await conductorTurnBestEffort(env, roomId, `${author.displayName}: ${text}`, author.id);
 		}
@@ -263,7 +294,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		if (!roomPlanCoversActiveParticipants(snapshot)) {
 			throw new HttpError(409, "draft a current role and task for every active participant");
 		}
-		if (!(await approveRoomPlan(env.DB, roomId))) {
+		if (!(await approveRoomPlan(env.DB, roomId, snapshot.room.briefRevision))) {
 			throw new HttpError(409, "room is not ready to launch");
 		}
 		snapshot = await readRoomSnapshot(env.DB, roomId);
@@ -310,17 +341,25 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 	const refreshMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/refresh$/);
 	if (request.method === "POST" && refreshMatch) {
 		const roomId = decodeURIComponent(refreshMatch[1] ?? "");
-		const actor = await requireRoomParticipant(env.DB, roomId, participantToken(request));
+		const actor = await requireRoomParticipant(env.DB, roomId, participantToken(request), false);
 		let snapshot = await readRoomSnapshot(env.DB, roomId);
+		if (!roomAllowsRuntimeRefresh(snapshot.room.status)) {
+			throw new HttpError(409, "room runtime is not active");
+		}
 		if (snapshot.room.crabfleetRootSessionId) {
 			const bindings = await readRoomCrabboxes(env, snapshot.room.crabfleetRootSessionId);
 			for (const participant of snapshot.participants) {
 				const binding = bindings.find((item) => item.session.id === participant.crabfleetSessionId);
 				if (!binding) continue;
-				await updateParticipantRuntime(env.DB, participant.id, {
-					summary: binding.session.summary,
-					state: binding.session.status === "ready" ? "working" : participant.state,
-				});
+				await updateParticipantRuntime(
+					env.DB,
+					participant.id,
+					{
+						summary: binding.session.summary,
+						state: binding.session.status === "ready" ? "working" : participant.state,
+					},
+					{ roomId, expectedStatuses: runtimeRefreshStatuses },
+				);
 			}
 		}
 		snapshot = await readRoomSnapshot(env.DB, roomId);
@@ -401,6 +440,29 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		return json(snapshotForViewer(updated, host.id));
 	}
 
+	const retryCleanupMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/retry-cleanup$/);
+	if (request.method === "POST" && retryCleanupMatch) {
+		const roomId = decodeURIComponent(retryCleanupMatch[1] ?? "");
+		const host = await requireHost(env.DB, roomId, participantToken(request));
+		let snapshot = await readRoomSnapshot(env.DB, roomId);
+		if (snapshot.room.status !== "cleanup-planning") {
+			throw new HttpError(409, "room is not waiting for launch cleanup");
+		}
+		if (snapshot.room.crabfleetRootSessionId) {
+			await stopRoomCrabboxes(
+				env,
+				snapshot.room.crabfleetRootSessionId,
+				snapshot.participants.flatMap((item) =>
+					item.crabfleetSessionId ? [item.crabfleetSessionId] : [],
+				),
+			);
+		}
+		await resetRoomProvisioning(env.DB, roomId);
+		snapshot = await readRoomSnapshot(env.DB, roomId);
+		context.waitUntil(broadcastSnapshot(env, snapshot));
+		return json(snapshotForViewer(snapshot, host.id));
+	}
+
 	const endMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/end$/);
 	if (request.method === "POST" && endMatch) {
 		const roomId = decodeURIComponent(endMatch[1] ?? "");
@@ -414,7 +476,6 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			"building",
 			"integrating",
 			"presenting",
-			"cleanup-planning",
 			"cleanup-ending",
 		] as const;
 		if (
@@ -484,31 +545,25 @@ async function conductorTurn(
 	trigger: string,
 	actorParticipantId: string,
 ): Promise<void> {
+	if (!(await claimConductorTurn(env.DB, roomId, actorParticipantId))) return;
 	const snapshot = await readRoomSnapshot(env.DB, roomId);
 	const tools: Parameters<typeof runConductorTurn>[3] = {
 		postMessage: async (body) => {
-			await addMessage(env.DB, roomId, {
-				authorKind: "conductor",
-				authorId: "conductor",
-				targetKind: "room",
-				targetId: null,
-				body,
-				replyToId: null,
-			});
+			await addMessage(
+				env.DB,
+				roomId,
+				{
+					authorKind: "conductor",
+					authorId: "conductor",
+					targetKind: "room",
+					targetId: null,
+					body,
+					replyToId: null,
+				},
+				messageStatuses,
+			);
 		},
 	};
-	if (conductorCanNudge(snapshot, actorParticipantId)) {
-		tools.recordDecision = async (input) => {
-			await addDecision(env.DB, roomId, {
-				...input,
-				authorKind: "conductor",
-				authorId: "conductor",
-				affectedTaskIds: [],
-			});
-		};
-		tools.nudge = async (input) =>
-			nudgeParticipant(env, roomId, input.participantId, input.message, input.reason);
-	}
 	await runConductorTurn(env, snapshot, trigger, tools);
 }
 
@@ -615,7 +670,7 @@ async function nudgeParticipant(
 		targetIds: [target.id],
 		reason,
 		evidenceRefs: [],
-		approvalState: "not_required",
+		approvalState: "approved",
 	});
 	await addMessage(env.DB, roomId, {
 		authorKind: "conductor",
