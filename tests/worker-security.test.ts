@@ -141,15 +141,24 @@ test("browser history navigation resynchronizes room state", async () => {
 	assert.match(source, /setSnapshot\(null\)/);
 });
 
-test("room entry survives unavailable local storage", async () => {
+test("room entry persists only minimal identity with tab-scoped fallback", async () => {
 	const source = await readFile(new URL("../src/client/App.tsx", import.meta.url), "utf8");
 	const start = source.indexOf("function enterRoom");
 	const end = source.indexOf("if (!roomId)", start);
 	const enterSource = source.slice(start, end);
+	const persistenceStart = source.indexOf("function minimalRoomIdentity");
+	const persistenceEnd = source.indexOf("function initials", persistenceStart);
+	const persistenceSource = source.slice(persistenceStart, persistenceEnd);
 
-	assert.match(enterSource, /try \{\s*localStorage\.setItem/);
-	assert.ok(enterSource.indexOf("localStorage.setItem") < enterSource.indexOf("setIdentity"));
-	assert.match(enterSource, /catch \{/);
+	assert.match(enterSource, /const identity = minimalRoomIdentity\(nextIdentity\)/);
+	assert.match(enterSource, /const persisted = persistIdentity/);
+	assert.match(enterSource, /return persisted/);
+	assert.match(persistenceSource, /JSON\.stringify\(identity\)/);
+	assert.match(persistenceSource, /localStorage\.setItem/);
+	assert.match(persistenceSource, /sessionStorage\.setItem/);
+	assert.doesNotMatch(persistenceSource, /JSON\.stringify\(nextIdentity\)/);
+	assert.match(source, /if \(onEnter\(result\.snapshot, result\)\) clearCreateRequestId\(\)/);
+	assert.match(source, /if \(onEnter\(result\.snapshot, result\)\) clearJoinRequestId/);
 });
 
 test("observer controls stay read-only and presentation waits for success", async () => {
@@ -291,22 +300,24 @@ test("local dev enables simulation without changing the production default", asy
 	assert.match(readme, /enables simulation only for the local Wrangler/);
 });
 
-test("scheduled expiry owns cleanup through room end", async () => {
+test("scheduled reconciliation retries cleanup and expires runtime rooms", async () => {
 	const [worker, config] = await Promise.all([
 		readFile(new URL("../src/worker.ts", import.meta.url), "utf8"),
 		readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
 	]);
-	const start = worker.indexOf("async function expireRuntimeRooms");
+	const start = worker.indexOf("async function reconcileRuntimeRooms");
 	const end = worker.indexOf("function participantsWithAssignments", start);
 	const expirySource = worker.slice(start, end);
 
 	assert.match(config, /"crons": \["\*\/2 \* \* \* \*"\]/);
-	assert.match(worker, /context\.waitUntil\(expireRuntimeRooms\(env\)\)/);
-	assert.match(expirySource, /listExpiredRuntimeRoomIds/);
+	assert.match(worker, /context\.waitUntil\(reconcileRuntimeRooms\(env\)\)/);
+	assert.match(expirySource, /listRuntimeRoomIdsNeedingCleanup/);
 	assert.match(expirySource, /claimStaleProvisioningCleanup/);
 	assert.match(expirySource, /beginRoomCleanup/);
+	assert.match(expirySource, /reconcileFailedLaunchCleanup/);
 	assert.match(expirySource, /recoverRoomRootCrabbox/);
 	assert.match(expirySource, /stopRoomCrabboxes/);
+	assert.match(expirySource, /resetRoomProvisioning/);
 	assert.match(expirySource, /await endRoom/);
 	assert.match(expirySource, /finally \{\s*await releaseRoomRuntimeLease/);
 });

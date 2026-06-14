@@ -108,14 +108,15 @@ test("room snapshots read all redaction-related state from one D1 snapshot", asy
 	assert.match(snapshotSource, /room_runtime_redactions/);
 });
 
-test("expired runtime rooms are discoverable for durable cleanup", async () => {
+test("expired runtime and pending cleanup rooms are discoverable", async () => {
 	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
-	const start = source.indexOf("export async function listExpiredRuntimeRoomIds");
+	const start = source.indexOf("export async function listRuntimeRoomIdsNeedingCleanup");
 	const end = source.indexOf("export function participantBranch", start);
 	const expirySource = source.slice(start, end);
 
 	assert.match(expirySource, /ends_at IS NOT NULL AND ends_at <= \?/);
 	assert.match(expirySource, /'provisioning'/);
+	assert.match(expirySource, /status IN \('cleanup-planning', 'cleanup-ending'\)/);
 	assert.match(expirySource, /'cleanup-ending'/);
 	assert.match(expirySource, /LIMIT \?/);
 });

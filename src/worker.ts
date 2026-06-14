@@ -50,7 +50,7 @@ import {
 	claimStaleProvisioningCleanup,
 	createRoom,
 	endRoom,
-	listExpiredRuntimeRoomIds,
+	listRuntimeRoomIdsNeedingCleanup,
 	markRoomCleanup,
 	readRoomSnapshot,
 	recordProvisioningBinding,
@@ -111,7 +111,7 @@ export default {
 		}
 	},
 	async scheduled(_controller, env, context): Promise<void> {
-		context.waitUntil(expireRuntimeRooms(env));
+		context.waitUntil(reconcileRuntimeRooms(env));
 	},
 } satisfies ExportedHandler<Env>;
 
@@ -763,14 +763,14 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 	return env.ASSETS.fetch(request);
 }
 
-async function expireRuntimeRooms(env: Env): Promise<void> {
-	for (const roomId of await listExpiredRuntimeRoomIds(env.DB, Date.now())) {
+async function reconcileRuntimeRooms(env: Env): Promise<void> {
+	for (const roomId of await listRuntimeRoomIdsNeedingCleanup(env.DB, Date.now())) {
 		try {
-			await expireRuntimeRoom(env, roomId);
+			await reconcileRuntimeRoom(env, roomId);
 		} catch (error) {
 			console.error(
 				JSON.stringify({
-					event: "room_expiry_failed",
+					event: "room_cleanup_reconciliation_failed",
 					roomId,
 					message: error instanceof Error ? error.message : "unknown error",
 				}),
@@ -779,15 +779,17 @@ async function expireRuntimeRooms(env: Env): Promise<void> {
 	}
 }
 
-async function expireRuntimeRoom(env: Env, roomId: string): Promise<void> {
+async function reconcileRuntimeRoom(env: Env, roomId: string): Promise<void> {
 	let snapshot = await readRoomSnapshot(env.DB, roomId);
 	const now = Date.now();
-	if (
-		snapshot.room.endsAt === null ||
-		snapshot.room.endsAt > now ||
-		snapshot.room.status === "ended"
-	)
+	const cleanupPending =
+		snapshot.room.status === "cleanup-planning" || snapshot.room.status === "cleanup-ending";
+	const expired = snapshot.room.endsAt !== null && snapshot.room.endsAt <= now;
+	if (!cleanupPending && !expired) return;
+	if (snapshot.room.status === "cleanup-planning" && !expired) {
+		await reconcileFailedLaunchCleanup(env, roomId);
 		return;
+	}
 	if (snapshot.room.status === "provisioning") {
 		if (
 			!(await claimStaleProvisioningCleanup(env.DB, roomId, now - provisioningLeaseMilliseconds))
@@ -796,6 +798,10 @@ async function expireRuntimeRoom(env: Env, roomId: string): Promise<void> {
 		}
 		snapshot = await readRoomSnapshot(env.DB, roomId);
 	}
+	const runtimeMayExist =
+		snapshot.room.startedAt !== null ||
+		snapshot.room.endsAt !== null ||
+		snapshot.room.crabfleetRootSessionId !== null;
 	const expectedStatuses: RoomStatus[] = [
 		"building",
 		"integrating",
@@ -813,7 +819,7 @@ async function expireRuntimeRoom(env: Env, roomId: string): Promise<void> {
 	if (!cleanupLeaseId) return;
 	try {
 		snapshot = await readRoomSnapshot(env.DB, roomId);
-		if (!snapshot.room.crabfleetRootSessionId) {
+		if (!snapshot.room.crabfleetRootSessionId && runtimeMayExist) {
 			const root = await recoverRoomRootCrabbox(
 				env,
 				snapshot.room,
@@ -838,26 +844,88 @@ async function expireRuntimeRoom(env: Env, roomId: string): Promise<void> {
 					],
 				))
 			) {
-				throw new HttpError(409, "room expiry state changed during root recovery");
+				throw new HttpError(409, "room cleanup state changed during root recovery");
 			}
 			snapshot = await readRoomSnapshot(env.DB, roomId);
 		}
-		await stopRoomCrabboxes(
-			env,
-			snapshot.room.crabfleetRootSessionId!,
-			snapshot.participants.flatMap((item) =>
-				item.crabfleetSessionId ? [item.crabfleetSessionId] : [],
-			),
-		);
+		if (snapshot.room.crabfleetRootSessionId) {
+			await stopRoomCrabboxes(
+				env,
+				snapshot.room.crabfleetRootSessionId,
+				snapshot.participants.flatMap((item) =>
+					item.crabfleetSessionId ? [item.crabfleetSessionId] : [],
+				),
+			);
+		}
 		if (await endRoom(env.DB, roomId)) {
 			await addMessage(env.DB, roomId, {
 				authorKind: "conductor",
 				authorId: "conductor",
 				targetKind: "room",
 				targetId: null,
-				body: "Sprint expired. Workspaces were stopped and the final state was preserved.",
+				body: expired
+					? "Sprint expired. Workspaces were stopped and the final state was preserved."
+					: "Room cleanup completed. The final state was preserved.",
 				replyToId: null,
 			});
+		}
+	} finally {
+		await releaseRoomRuntimeLease(env.DB, roomId, cleanupLeaseId);
+		await broadcastSnapshot(env, await readRoomSnapshot(env.DB, roomId));
+	}
+}
+
+async function reconcileFailedLaunchCleanup(env: Env, roomId: string): Promise<void> {
+	const cleanupLeaseId = await claimRoomRuntimeLease(
+		env.DB,
+		roomId,
+		"launch_cleanup",
+		["cleanup-planning"],
+		cleanupActionLeaseMilliseconds,
+	);
+	if (!cleanupLeaseId) return;
+	try {
+		let snapshot = await readRoomSnapshot(env.DB, roomId);
+		if (!snapshot.room.crabfleetRootSessionId) {
+			const root = await recoverRoomRootCrabbox(
+				env,
+				snapshot.room,
+				snapshot.participants,
+				snapshot.tasks,
+			);
+			if (
+				!(await markRoomCleanup(
+					env.DB,
+					roomId,
+					root.binding.session.rootSessionId || root.binding.session.id,
+					"cleanup-planning",
+					["cleanup-planning"],
+					[
+						{
+							participantId: root.participantId,
+							sessionId: root.binding.session.id,
+							browserUrl: root.binding.browserUrl,
+							summary: root.binding.session.summary,
+							state: participantStateForCrabfleetStatus(root.binding.session.status, "joined"),
+						},
+					],
+				))
+			) {
+				throw new HttpError(409, "launch cleanup state changed during root recovery");
+			}
+			snapshot = await readRoomSnapshot(env.DB, roomId);
+		}
+		if (snapshot.room.crabfleetRootSessionId) {
+			await stopRoomCrabboxes(
+				env,
+				snapshot.room.crabfleetRootSessionId,
+				snapshot.participants.flatMap((item) =>
+					item.crabfleetSessionId ? [item.crabfleetSessionId] : [],
+				),
+			);
+		}
+		if (!(await resetRoomProvisioning(env.DB, roomId, ["cleanup-planning"]))) {
+			throw new HttpError(409, "launch cleanup state changed before reset");
 		}
 	} finally {
 		await releaseRoomRuntimeLease(env.DB, roomId, cleanupLeaseId);

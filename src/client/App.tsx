@@ -136,17 +136,15 @@ export function App() {
 		};
 	}, [roomId, Boolean(snapshot), identity?.participantToken]);
 
-	function enterRoom(next: RoomSnapshot, nextIdentity: RoomIdentity) {
-		try {
-			localStorage.setItem(identityKey(next.room.id), JSON.stringify(nextIdentity));
-		} catch {
-			// The in-memory identity still lets this tab enter the room.
-		}
+	function enterRoom(next: RoomSnapshot, nextIdentity: RoomIdentity): boolean {
+		const identity = minimalRoomIdentity(nextIdentity);
+		const persisted = persistIdentity(next.room.id, identity);
 		history.pushState({ roomId: next.room.id }, "", `/rooms/${next.room.id}`);
 		setRoomId(next.room.id);
-		setIdentity(nextIdentity);
+		setIdentity(identity);
 		setSnapshot(next);
 		setError("");
+		return persisted;
 	}
 
 	if (!roomId) return <CreateRoom onEnter={enterRoom} />;
@@ -195,7 +193,7 @@ export function App() {
 function CreateRoom({
 	onEnter,
 }: {
-	onEnter: (snapshot: RoomSnapshot, identity: RoomIdentity) => void;
+	onEnter: (snapshot: RoomSnapshot, identity: RoomIdentity) => boolean;
 }) {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
@@ -215,8 +213,7 @@ function CreateRoom({
 				eventCode: String(data.get("eventCode") || "").trim(),
 				requestId: createRequestId,
 			});
-			onEnter(result.snapshot, result);
-			clearCreateRequestId();
+			if (onEnter(result.snapshot, result)) clearCreateRequestId();
 		} catch (cause) {
 			setError(errorMessage(cause));
 		} finally {
@@ -293,7 +290,7 @@ function JoinRoom({
 	onEnter,
 }: {
 	snapshot: RoomSnapshot;
-	onEnter: (snapshot: RoomSnapshot, identity: RoomIdentity) => void;
+	onEnter: (snapshot: RoomSnapshot, identity: RoomIdentity) => boolean;
 }) {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
@@ -316,8 +313,7 @@ function JoinRoom({
 				requestId: joinRequestId,
 				inviteToken: kind === "human" ? inviteToken : undefined,
 			});
-			onEnter(result.snapshot, result);
-			clearJoinRequestId(snapshot.room.id);
+			if (onEnter(result.snapshot, result)) clearJoinRequestId(snapshot.room.id);
 		} catch (cause) {
 			setError(errorMessage(cause));
 		} finally {
@@ -1389,15 +1385,49 @@ function clearSessionRequestId(key: string): void {
 	}
 }
 
-function loadIdentity(roomId: string): RoomIdentity | null {
+function minimalRoomIdentity(identity: RoomIdentity): RoomIdentity {
+	return {
+		participantId: identity.participantId,
+		participantToken: identity.participantToken,
+		...(identity.builderInviteToken ? { builderInviteToken: identity.builderInviteToken } : {}),
+	};
+}
+
+function persistIdentity(roomId: string, identity: RoomIdentity): boolean {
+	const value = JSON.stringify(identity);
 	try {
-		const value = JSON.parse(
-			localStorage.getItem(identityKey(roomId)) || "null",
-		) as RoomIdentity | null;
-		return value?.participantId && value.participantToken ? value : null;
+		localStorage.setItem(identityKey(roomId), value);
+		return true;
+	} catch {
+		try {
+			sessionStorage.setItem(identityKey(roomId), value);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+}
+
+function loadIdentity(roomId: string): RoomIdentity | null {
+	const key = identityKey(roomId);
+	try {
+		const identity = parseIdentity(localStorage.getItem(key));
+		if (identity) return identity;
+	} catch {
+		// Fall through to tab-scoped storage.
+	}
+	try {
+		return parseIdentity(sessionStorage.getItem(key));
 	} catch {
 		return null;
 	}
+}
+
+function parseIdentity(value: string | null): RoomIdentity | null {
+	const identity = JSON.parse(value || "null") as RoomIdentity | null;
+	return identity?.participantId && identity.participantToken
+		? minimalRoomIdentity(identity)
+		: null;
 }
 
 function initials(name: string): string {

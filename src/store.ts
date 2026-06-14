@@ -1139,7 +1139,7 @@ export async function endRoom(db: D1Database, roomId: string): Promise<boolean> 
 	return result.meta.changes === 1;
 }
 
-export async function listExpiredRuntimeRoomIds(
+export async function listRuntimeRoomIdsNeedingCleanup(
 	db: D1Database,
 	now: number,
 	limit = 20,
@@ -1147,10 +1147,12 @@ export async function listExpiredRuntimeRoomIds(
 	const result = await db
 		.prepare(
 			`SELECT id FROM rooms
-       WHERE ends_at IS NOT NULL AND ends_at <= ?
-         AND status IN ('provisioning', 'building', 'integrating', 'presenting',
-                        'cleanup-planning', 'cleanup-ending')
-       ORDER BY ends_at ASC
+       WHERE status IN ('cleanup-planning', 'cleanup-ending')
+          OR (
+            ends_at IS NOT NULL AND ends_at <= ?
+            AND status IN ('provisioning', 'building', 'integrating', 'presenting')
+          )
+       ORDER BY updated_at ASC
        LIMIT ?`,
 		)
 		.bind(now, Math.max(1, Math.min(100, limit)))
