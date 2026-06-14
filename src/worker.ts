@@ -50,6 +50,7 @@ import {
 	claimStaleProvisioningCleanup,
 	createRoom,
 	endRoom,
+	expireInactivePrelaunchRooms,
 	listRuntimeRoomIdsNeedingCleanup,
 	markRootProvisioningAttempt,
 	markRoomCleanup,
@@ -95,6 +96,7 @@ const runtimeNudgeStatuses: RoomStatus[] = ["building", "integrating"];
 const provisioningLeaseMilliseconds = 2 * 60 * 1000;
 const runtimeActionLeaseMilliseconds = 30_000;
 const cleanupActionLeaseMilliseconds = 2 * 60 * 1000;
+const prelaunchInactivityMilliseconds = 6 * 60 * 60 * 1000;
 
 export default {
 	async fetch(request, env, context): Promise<Response> {
@@ -115,7 +117,7 @@ export default {
 		}
 	},
 	async scheduled(_controller, env, context): Promise<void> {
-		context.waitUntil(reconcileRuntimeRooms(env));
+		context.waitUntil(reconcileRooms(env));
 	},
 } satisfies ExportedHandler<Env>;
 
@@ -803,8 +805,32 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 	return env.ASSETS.fetch(request);
 }
 
-async function reconcileRuntimeRooms(env: Env): Promise<void> {
+async function reconcileRooms(env: Env): Promise<void> {
 	const now = Date.now();
+	for (const roomId of await expireInactivePrelaunchRooms(
+		env.DB,
+		now - prelaunchInactivityMilliseconds,
+	)) {
+		try {
+			await addMessage(env.DB, roomId, {
+				authorKind: "system",
+				authorId: "system",
+				targetKind: "room",
+				targetId: null,
+				body: "Room expired after six hours without planning activity.",
+				replyToId: null,
+			});
+			await broadcastSnapshot(env, await readRoomSnapshot(env.DB, roomId));
+		} catch (error) {
+			console.error(
+				JSON.stringify({
+					event: "prelaunch_room_expiry_broadcast_failed",
+					roomId,
+					message: error instanceof Error ? error.message : "unknown error",
+				}),
+			);
+		}
+	}
 	for (const roomId of await listRuntimeRoomIdsNeedingCleanup(
 		env.DB,
 		now,

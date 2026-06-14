@@ -438,6 +438,13 @@ export async function addParticipant(
          WHERE EXISTS (SELECT 1 FROM participants WHERE id = ? AND room_id = ?)`,
 			)
 			.bind(newId("msg"), roomId, `${input.displayName} joined the room.`, now, id, roomId),
+		db
+			.prepare(
+				`UPDATE rooms SET updated_at = ?
+         WHERE id = ? AND status IN ('setup', 'planning')
+           AND EXISTS (SELECT 1 FROM participants WHERE id = ? AND room_id = ?)`,
+			)
+			.bind(now, roomId, id, roomId),
 	);
 	const [result] = await db.batch(statements);
 	if (result?.meta.changes !== 1) {
@@ -495,32 +502,40 @@ export async function addMessage(
 	         ${expectedBriefRevision === undefined ? "" : "AND brief_revision = ?"}
 	     )`
 		: "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
-	const result = await db
-		.prepare(
-			`INSERT INTO room_messages
-	        (id, room_id, author_kind, author_id, target_kind, target_id, body, reply_to_id, created_at)
-	       ${statusFence}`,
-		)
-		.bind(
-			message.id,
-			roomId,
-			message.authorKind,
-			message.authorId,
-			message.targetKind,
-			message.targetId,
-			message.body,
-			message.replyToId,
-			message.createdAt,
-			...(expectedStatuses
-				? [
-						roomId,
-						...expectedStatuses,
-						...(expectedBriefRevision === undefined ? [] : [expectedBriefRevision]),
-					]
-				: []),
-		)
-		.run();
-	return result.meta.changes === 1 ? message : null;
+	const [result] = await db.batch([
+		db
+			.prepare(
+				`INSERT INTO room_messages
+		        (id, room_id, author_kind, author_id, target_kind, target_id, body, reply_to_id, created_at)
+		       ${statusFence}`,
+			)
+			.bind(
+				message.id,
+				roomId,
+				message.authorKind,
+				message.authorId,
+				message.targetKind,
+				message.targetId,
+				message.body,
+				message.replyToId,
+				message.createdAt,
+				...(expectedStatuses
+					? [
+							roomId,
+							...expectedStatuses,
+							...(expectedBriefRevision === undefined ? [] : [expectedBriefRevision]),
+						]
+					: []),
+			),
+		db
+			.prepare(
+				`UPDATE rooms SET updated_at = ?
+         WHERE id = ? AND status IN ('setup', 'planning')
+           AND EXISTS (SELECT 1 FROM room_messages WHERE id = ? AND room_id = ?)`,
+			)
+			.bind(message.createdAt, roomId, message.id, roomId),
+	]);
+	return result?.meta.changes === 1 ? message : null;
 }
 
 export async function replacePlan(
@@ -1212,6 +1227,50 @@ export async function endRoom(db: D1Database, roomId: string): Promise<boolean> 
 		.bind(Date.now(), roomId)
 		.run();
 	return result.meta.changes === 1;
+}
+
+export async function expireInactivePrelaunchRooms(
+	db: D1Database,
+	staleBefore: number,
+	limit = 20,
+): Promise<string[]> {
+	const boundedLimit = Math.max(1, Math.min(100, limit));
+	const candidates = await db
+		.prepare(
+			`SELECT id FROM rooms
+       WHERE status IN ('setup', 'planning') AND updated_at <= ?
+         AND crabfleet_root_session_id IS NULL
+         AND root_provisioning_attempted_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM participants
+           WHERE participants.room_id = rooms.id AND crabfleet_session_id IS NOT NULL
+         )
+       ORDER BY updated_at ASC
+       LIMIT ?`,
+		)
+		.bind(staleBefore, boundedLimit)
+		.all<{ id: string }>();
+	if (!candidates.results.length) return [];
+	const now = Date.now();
+	const results = await db.batch(
+		candidates.results.map(({ id }) =>
+			db
+				.prepare(
+					`UPDATE rooms SET status = 'ended', updated_at = ?
+           WHERE id = ? AND status IN ('setup', 'planning') AND updated_at <= ?
+             AND crabfleet_root_session_id IS NULL
+             AND root_provisioning_attempted_at IS NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM participants
+               WHERE participants.room_id = rooms.id AND crabfleet_session_id IS NOT NULL
+             )`,
+				)
+				.bind(now, id, staleBefore),
+		),
+	);
+	return candidates.results
+		.filter((_, index) => results[index]?.meta.changes === 1)
+		.map(({ id }) => id);
 }
 
 export async function listRuntimeRoomIdsNeedingCleanup(

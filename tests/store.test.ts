@@ -61,6 +61,8 @@ test("builder joins atomically invalidate stale plans and enforce the five-seat 
 		/COUNT\(\*\) FROM participants WHERE room_id = \? AND kind = 'ai'/,
 	);
 	assert.match(addParticipantSource, /INSERT INTO room_messages/);
+	assert.match(addParticipantSource, /UPDATE rooms SET updated_at = \?/);
+	assert.match(addParticipantSource, /status IN \('setup', 'planning'\)/);
 	assert.match(addParticipantSource, /participantReplay\(existing, input\)/);
 	assert.match(addParticipantSource, /participantReplay\(replay, input\)/);
 	assert.match(addParticipantSource, /const \[result\] = await db\.batch\(statements\)/);
@@ -225,6 +227,25 @@ test("planning messages can bind to the exact installed revision", async () => {
 
 	assert.match(messageSource, /expectedBriefRevision/);
 	assert.match(messageSource, /AND brief_revision = \?/);
+	assert.match(messageSource, /UPDATE rooms SET updated_at = \?/);
+	assert.match(messageSource, /status IN \('setup', 'planning'\)/);
+	assert.match(
+		messageSource,
+		/EXISTS \(SELECT 1 FROM room_messages WHERE id = \? AND room_id = \?\)/,
+	);
+});
+
+test("inactive pre-launch expiry is fenced by current activity and runtime evidence", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function expireInactivePrelaunchRooms");
+	const end = source.indexOf("export async function listRuntimeRoomIdsNeedingCleanup", start);
+	const expirySource = source.slice(start, end);
+
+	assert.match(expirySource, /status IN \('setup', 'planning'\) AND updated_at <= \?/);
+	assert.match(expirySource, /root_provisioning_attempted_at IS NULL/);
+	assert.match(expirySource, /crabfleet_session_id IS NOT NULL/);
+	assert.match(expirySource, /UPDATE rooms SET status = 'ended'/);
+	assert.match(expirySource, /results\[index\]\?\.meta\.changes === 1/);
 });
 
 test("runtime leases fence cleanup and stale provisioning can be claimed", async () => {

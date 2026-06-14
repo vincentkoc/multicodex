@@ -74,3 +74,15 @@ test("root provisioning attempts are durable cleanup evidence", async () => {
 	assert.match(migration, /crabfleet_root_session_id IS NOT NULL/);
 	assert.match(migration, /participants\.crabfleet_session_id IS NOT NULL/);
 });
+
+test("pre-launch activity is backfilled before inactivity expiry", async () => {
+	const migration = await readFile(
+		new URL("../migrations/0010_prelaunch_activity_backfill.sql", import.meta.url),
+		"utf8",
+	);
+
+	assert.match(migration, /MAX\(created_at\) FROM room_messages/);
+	assert.match(migration, /MAX\(updated_at\) FROM participants/);
+	assert.match(migration, /MAX\(updated_at\) FROM tasks/);
+	assert.match(migration, /status IN \('setup', 'planning'\)/);
+});

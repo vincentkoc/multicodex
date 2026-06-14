@@ -313,17 +313,21 @@ test("local dev enables simulation without changing the production default", asy
 	assert.match(readme, /enables simulation only for the local Wrangler/);
 });
 
-test("scheduled reconciliation retries cleanup and expires runtime rooms", async () => {
+test("scheduled reconciliation expires inactive planning and runtime rooms", async () => {
 	const [worker, config] = await Promise.all([
 		readFile(new URL("../src/worker.ts", import.meta.url), "utf8"),
 		readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
 	]);
-	const start = worker.indexOf("async function reconcileRuntimeRooms");
+	const start = worker.indexOf("async function reconcileRooms");
 	const end = worker.indexOf("function participantsWithAssignments", start);
 	const expirySource = worker.slice(start, end);
 
 	assert.match(config, /"crons": \["\*\/2 \* \* \* \*"\]/);
-	assert.match(worker, /context\.waitUntil\(reconcileRuntimeRooms\(env\)\)/);
+	assert.match(worker, /context\.waitUntil\(reconcileRooms\(env\)\)/);
+	assert.match(expirySource, /expireInactivePrelaunchRooms/);
+	assert.match(expirySource, /prelaunchInactivityMilliseconds/);
+	assert.match(expirySource, /without planning activity/);
+	assert.match(expirySource, /broadcastSnapshot/);
 	assert.match(expirySource, /listRuntimeRoomIdsNeedingCleanup/);
 	assert.match(expirySource, /provisioningStale/);
 	assert.match(expirySource, /claimStaleProvisioningCleanup/);
