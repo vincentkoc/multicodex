@@ -37,6 +37,8 @@ still testable.
   session, present, or end a room.
 - Active builder seats are capped at six. The Worker is the only component that
   holds OpenAI, GitHub, and Crabfleet service credentials.
+- Room repositories must appear in the deployment's `ALLOWED_REPOS` list.
+  This fences both GitHub branch creation and Crabfleet provisioning.
 
 ## Checks
 
@@ -63,6 +65,9 @@ create branches only in the intended event repo.
 `CRABFLEET_RUNTIME` selects `container` or `crabbox`. The event deployment uses
 the built-in `container` runtime for reliable terminal nudges; switch to
 `crabbox` when the external adapter exposes a healthy terminal route.
+
+`ALLOWED_REPOS` is a comma-separated deployment allowlist. Keep it narrower
+than the GitHub token's repository access.
 
 ## Architecture
 

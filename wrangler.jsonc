@@ -35,6 +35,7 @@
 		"head_sampling_rate": 1,
 	},
 	"vars": {
+		"ALLOWED_REPOS": "vincentkoc/multicodex,openclaw/gogcli",
 		"CRABFLEET_API_URL": "https://crabfleet.openclaw.ai",
 		"CRABFLEET_RUNTIME": "container",
 		"DEFAULT_REPO": "vincentkoc/multicodex",
