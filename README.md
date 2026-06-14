@@ -55,8 +55,14 @@ pnpm exec wrangler secret put GITHUB_TOKEN
 pnpm deploy
 ```
 
-`CRABFLEET_SERVICE_TOKEN` must match Crabfleet's `CRABBOX_OPENCLAW_TOKEN`.
-Use a GitHub token that can create branches only in the intended event repo.
+`CRABFLEET_SERVICE_TOKEN` must match one of Crabfleet's service tokens. Prefer
+the dedicated `CRABBOX_MULTICODEX_TOKEN`; use `CRABBOX_OPENCLAW_TOKEN` only
+when a shared service capability is intentional. Use a GitHub token that can
+create branches only in the intended event repo.
+
+`CRABFLEET_RUNTIME` selects `container` or `crabbox`. The event deployment uses
+the built-in `container` runtime for reliable terminal nudges; switch to
+`crabbox` when the external adapter exposes a healthy terminal route.
 
 ## Architecture
 

@@ -15,6 +15,10 @@ export type CrabboxBinding = {
 	browserUrl: string;
 };
 
+export function crabfleetRuntime(value: string | undefined): "container" | "crabbox" {
+	return value === "container" ? "container" : "crabbox";
+}
+
 export async function provisionRoomCrabboxes(
 	env: Env,
 	room: Room,
@@ -133,7 +137,7 @@ async function createCrabbox(
 		method: "POST",
 		body: JSON.stringify({
 			...body,
-			runtime: "crabbox",
+			runtime: crabfleetRuntime(env.CRABFLEET_RUNTIME),
 			profile: env.CRABFLEET_PROFILE || "default",
 		}),
 		headers: { "content-type": "application/json" },
