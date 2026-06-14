@@ -2,6 +2,7 @@ import { ideas, roles } from "./catalog.ts";
 import { activeRoomLimit, eventAccessAuthorized } from "./access.ts";
 import { conductorCanNudge, runConductorTurn } from "./conductor.ts";
 import {
+	PartialProvisioningError,
 	provisionRoomCrabboxes,
 	readRoomCrabboxes,
 	sendCrabboxNudge,
@@ -33,6 +34,7 @@ import {
 	approveRoomPlan,
 	createRoom,
 	endRoom,
+	markRoomCleanup,
 	readRoomSnapshot,
 	replacePlan,
 	requireRoomParticipant,
@@ -184,17 +186,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			replyToId: clean(body.replyToId, 100) || null,
 		});
 		if (targetKind === "conductor" || text.includes("@conductor")) {
-			try {
-				await conductorTurn(env, roomId, `${author.displayName}: ${text}`, author.id);
-			} catch (error) {
-				console.error(
-					JSON.stringify({
-						event: "conductor_turn_failed",
-						roomId,
-						message: error instanceof Error ? error.message : "unknown error",
-					}),
-				);
-			}
+			await conductorTurnBestEffort(env, roomId, `${author.displayName}: ${text}`, author.id);
 		}
 		const snapshot = await readRoomSnapshot(env.DB, roomId);
 		context.waitUntil(broadcastSnapshot(env, snapshot));
@@ -302,16 +294,8 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 				replyToId: null,
 			});
 		} catch (error) {
-			const rootSessionId =
-				bindings[0]?.binding.session.rootSessionId || bindings[0]?.binding.session.id;
-			if (rootSessionId) {
-				await stopRoomCrabboxes(
-					env,
-					rootSessionId,
-					bindings.map(({ binding }) => binding.session.id),
-				).catch(() => undefined);
-			}
-			await resetRoomProvisioning(env.DB, roomId);
+			if (error instanceof PartialProvisioningError) bindings = error.bindings;
+			await cleanupFailedLaunch(env, roomId, bindings);
 			throw error;
 		}
 		snapshot = await readRoomSnapshot(env.DB, roomId);
@@ -367,7 +351,9 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const snapshot = await readRoomSnapshot(env.DB, roomId);
 		const task = snapshot.tasks.find((item) => item.id === taskId);
 		if (!task) throw new HttpError(404, "task not found");
-		if (snapshot.room.status === "ended") throw new HttpError(409, "room has ended");
+		if (["cleanup-planning", "cleanup-ending", "ended"].includes(snapshot.room.status)) {
+			throw new HttpError(409, "room is no longer accepting task updates");
+		}
 		if (actor.id !== snapshot.room.hostParticipantId && actor.id !== task.ownerParticipantId) {
 			throw new HttpError(403, "only the task owner or host can update this task");
 		}
@@ -376,7 +362,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		if (!body.state || !states.includes(body.state)) throw new HttpError(400, "invalid task state");
 		await updateTaskState(env.DB, roomId, taskId, body.state);
 		if (body.state === "blocked")
-			await conductorTurn(
+			await conductorTurnBestEffort(
 				env,
 				roomId,
 				`${actor.displayName} marked ${task.title} blocked`,
@@ -415,8 +401,31 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 	if (request.method === "POST" && endMatch) {
 		const roomId = decodeURIComponent(endMatch[1] ?? "");
 		const host = await requireHost(env.DB, roomId, participantToken(request));
-		await endRoom(env.DB, roomId);
-		const snapshot = await readRoomSnapshot(env.DB, roomId);
+		let snapshot = await readRoomSnapshot(env.DB, roomId);
+		if (snapshot.room.status === "ended") return json(snapshotForViewer(snapshot, host.id));
+		const endableStatuses = [
+			"setup",
+			"planning",
+			"provisioning",
+			"building",
+			"integrating",
+			"presenting",
+			"cleanup-planning",
+			"cleanup-ending",
+		] as const;
+		if (
+			!(await updateRoomRuntime(
+				env.DB,
+				roomId,
+				snapshot.room.crabfleetRootSessionId,
+				"cleanup-ending",
+				[...endableStatuses],
+			))
+		) {
+			throw new HttpError(409, "room state changed before cleanup");
+		}
+		snapshot = await readRoomSnapshot(env.DB, roomId);
+		context.waitUntil(broadcastSnapshot(env, snapshot));
 		if (snapshot.room.crabfleetRootSessionId) {
 			await stopRoomCrabboxes(
 				env,
@@ -426,6 +435,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 				),
 			);
 		}
+		await endRoom(env.DB, roomId);
 		await addMessage(env.DB, roomId, {
 			authorKind: "conductor",
 			authorId: "conductor",
@@ -496,6 +506,80 @@ async function conductorTurn(
 			nudgeParticipant(env, roomId, input.participantId, input.message, input.reason);
 	}
 	await runConductorTurn(env, snapshot, trigger, tools);
+}
+
+async function conductorTurnBestEffort(
+	env: Env,
+	roomId: string,
+	trigger: string,
+	actorParticipantId: string,
+): Promise<void> {
+	try {
+		await conductorTurn(env, roomId, trigger, actorParticipantId);
+	} catch (error) {
+		console.error(
+			JSON.stringify({
+				event: "conductor_turn_failed",
+				roomId,
+				message: error instanceof Error ? error.message : "unknown error",
+			}),
+		);
+	}
+}
+
+async function cleanupFailedLaunch(
+	env: Env,
+	roomId: string,
+	bindings: Awaited<ReturnType<typeof provisionRoomCrabboxes>>,
+): Promise<void> {
+	if (!bindings.length) {
+		await resetRoomProvisioning(env.DB, roomId);
+		return;
+	}
+	const rootSessionId =
+		bindings[0]?.binding.session.rootSessionId || bindings[0]?.binding.session.id;
+	if (!rootSessionId) return;
+	const cleanupBindings = bindings.map(({ participantId, binding }) => ({
+		participantId,
+		sessionId: binding.session.id,
+		browserUrl: binding.browserUrl,
+		summary: binding.session.summary,
+		state: (binding.session.status === "ready" ? "ready" : "working") as Participant["state"],
+	}));
+	await markRoomCleanup(
+		env.DB,
+		roomId,
+		rootSessionId,
+		"cleanup-planning",
+		["provisioning", "building", "cleanup-planning"],
+		cleanupBindings,
+	);
+	try {
+		await stopRoomCrabboxes(
+			env,
+			rootSessionId,
+			bindings.map(({ binding }) => binding.session.id),
+		);
+	} catch (error) {
+		const snapshot = await readRoomSnapshot(env.DB, roomId);
+		if (snapshot.room.status === "ended" || snapshot.room.status === "cleanup-ending") {
+			await markRoomCleanup(
+				env.DB,
+				roomId,
+				rootSessionId,
+				"cleanup-ending",
+				["ended", "cleanup-ending"],
+				cleanupBindings,
+			);
+		}
+		throw error;
+	}
+	const snapshot = await readRoomSnapshot(env.DB, roomId);
+	if (snapshot.room.status === "cleanup-ending") {
+		await endRoom(env.DB, roomId);
+	} else if (snapshot.room.status !== "ended") {
+		await resetRoomProvisioning(env.DB, roomId);
+	}
 }
 
 async function nudgeParticipant(

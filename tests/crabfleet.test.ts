@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { crabfleetRuntime, provisionRoomCrabboxes } from "../src/crabfleet.ts";
+import {
+	crabfleetRuntime,
+	PartialProvisioningError,
+	provisionRoomCrabboxes,
+} from "../src/crabfleet.ts";
 import type { Participant, Room } from "../src/domain.ts";
 
 test("Crabfleet runtime selection keeps crabbox as the conservative fallback", () => {
@@ -11,9 +15,8 @@ test("Crabfleet runtime selection keeps crabbox as the conservative fallback", (
 	assert.equal(crabfleetRuntime("unknown"), "crabbox");
 });
 
-test("partial room provisioning stops every session it created", async () => {
+test("partial room provisioning returns every created session for durable cleanup", async () => {
 	const originalFetch = globalThis.fetch;
-	const stopped: string[] = [];
 	let creates = 0;
 	globalThis.fetch = async (input, init) => {
 		const path = new URL(String(input)).pathname;
@@ -32,10 +35,6 @@ test("partial room provisioning stops every session it created", async () => {
 				browserUrl: `https://example.test/${id}`,
 			});
 		}
-		if (path.endsWith("/actions")) {
-			stopped.push(path.split("/").at(-2) ?? "");
-			return Response.json({ ok: true });
-		}
 		return new Response("not found", { status: 404 });
 	};
 	try {
@@ -46,9 +45,15 @@ test("partial room provisioning stops every session it created", async () => {
 				[participant("host"), participant("child"), participant("failure")],
 				[],
 			),
-			/Crabfleet 500/,
+			(error) => {
+				assert.ok(error instanceof PartialProvisioningError);
+				assert.deepEqual(
+					error.bindings.map(({ binding }) => binding.session.id),
+					["root", "child"],
+				);
+				return true;
+			},
 		);
-		assert.deepEqual(stopped.sort(), ["child", "root"]);
 	} finally {
 		globalThis.fetch = originalFetch;
 	}

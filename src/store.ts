@@ -216,7 +216,9 @@ export async function addParticipant(
 		.bind(roomId)
 		.first<{ slug: string; status: RoomStatus }>();
 	if (!room) throw new HttpError(404, "room not found");
-	if (room.status === "ended") throw new HttpError(409, "room has ended");
+	if (["cleanup-planning", "cleanup-ending", "ended"].includes(room.status)) {
+		throw new HttpError(409, "room is not accepting new seats");
+	}
 	if (input.kind !== "observer" && !roomAllowsPlanning(room.status)) {
 		throw new HttpError(409, "only observers can join after launch");
 	}
@@ -425,7 +427,7 @@ export async function resetRoomProvisioning(db: D1Database, roomId: string): Pro
 				`UPDATE rooms
          SET status = 'planning', started_at = NULL, ends_at = NULL, crabfleet_root_session_id = NULL,
              brief_json = json_set(brief_json, '$.planApproved', json('false')), updated_at = ?
-         WHERE id = ? AND status IN ('provisioning', 'building')`,
+         WHERE id = ? AND status IN ('provisioning', 'building', 'cleanup-planning')`,
 			)
 			.bind(now, roomId),
 		db
@@ -433,10 +435,61 @@ export async function resetRoomProvisioning(db: D1Database, roomId: string): Pro
 				`UPDATE participants
          SET crabfleet_session_id = NULL, browser_url = NULL, runtime_summary = '', state = 'joined',
              updated_at = ?
-         WHERE room_id = ?`,
+         WHERE room_id = ?
+           AND EXISTS (SELECT 1 FROM rooms WHERE id = ? AND status = 'planning')`,
 			)
-			.bind(now, roomId),
+			.bind(now, roomId, roomId),
 	]);
+}
+
+export async function markRoomCleanup(
+	db: D1Database,
+	roomId: string,
+	rootSessionId: string,
+	status: "cleanup-planning" | "cleanup-ending",
+	expectedStatuses: RoomStatus[],
+	bindings: Array<{
+		participantId: string;
+		sessionId: string;
+		browserUrl: string;
+		summary: string;
+		state: Participant["state"];
+	}>,
+): Promise<boolean> {
+	if (!expectedStatuses.length) return false;
+	const now = Date.now();
+	const statements: D1PreparedStatement[] = [
+		db
+			.prepare(
+				`UPDATE rooms SET crabfleet_root_session_id = ?, status = ?, updated_at = ?
+         WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})`,
+			)
+			.bind(rootSessionId, status, now, roomId, ...expectedStatuses),
+	];
+	for (const binding of bindings) {
+		statements.push(
+			db
+				.prepare(
+					`UPDATE participants
+           SET crabfleet_session_id = ?, browser_url = ?, runtime_summary = ?, state = ?, updated_at = ?
+           WHERE id = ? AND room_id = ?
+             AND EXISTS (SELECT 1 FROM rooms WHERE id = ? AND status = ?)`,
+				)
+				.bind(
+					binding.sessionId,
+					binding.browserUrl,
+					binding.summary,
+					binding.state,
+					now,
+					binding.participantId,
+					roomId,
+					roomId,
+					status,
+				),
+		);
+	}
+	const [roomResult] = await db.batch(statements);
+	return roomResult?.meta.changes === 1;
 }
 
 export async function updateRoomRuntime(
@@ -549,11 +602,14 @@ export async function addConductorAction(
 		.run();
 }
 
-export async function endRoom(db: D1Database, roomId: string): Promise<void> {
-	await db
-		.prepare("UPDATE rooms SET status = 'ended', updated_at = ? WHERE id = ?")
+export async function endRoom(db: D1Database, roomId: string): Promise<boolean> {
+	const result = await db
+		.prepare(
+			"UPDATE rooms SET status = 'ended', updated_at = ? WHERE id = ? AND status = 'cleanup-ending'",
+		)
 		.bind(Date.now(), roomId)
 		.run();
+	return result.meta.changes === 1;
 }
 
 export function participantBranch(

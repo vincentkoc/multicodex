@@ -5,6 +5,8 @@ export type RoomStatus =
 	| "building"
 	| "integrating"
 	| "presenting"
+	| "cleanup-planning"
+	| "cleanup-ending"
 	| "ended";
 
 export type ParticipantKind = "human" | "ai" | "observer";

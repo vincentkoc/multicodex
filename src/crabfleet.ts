@@ -15,6 +15,18 @@ export type CrabboxBinding = {
 	browserUrl: string;
 };
 
+export type ParticipantCrabboxBinding = { participantId: string; binding: CrabboxBinding };
+
+export class PartialProvisioningError extends Error {
+	readonly bindings: ParticipantCrabboxBinding[];
+
+	constructor(cause: unknown, bindings: ParticipantCrabboxBinding[]) {
+		super(cause instanceof Error ? cause.message : "room provisioning failed", { cause });
+		this.name = "PartialProvisioningError";
+		this.bindings = bindings;
+	}
+}
+
 export function crabfleetRuntime(value: string | undefined): "container" | "crabbox" {
 	return value === "container" ? "container" : "crabbox";
 }
@@ -24,7 +36,7 @@ export async function provisionRoomCrabboxes(
 	room: Room,
 	participants: Participant[],
 	tasks: Task[],
-): Promise<Array<{ participantId: string; binding: CrabboxBinding }>> {
+): Promise<ParticipantCrabboxBinding[]> {
 	const active = participants.filter((participant) => participant.kind !== "observer");
 	const host = active.find((participant) => participant.id === room.hostParticipantId) ?? active[0];
 	if (!host) throw new HttpError(400, "room has no active participant");
@@ -62,12 +74,7 @@ export async function provisionRoomCrabboxes(
 		}
 		return bindings;
 	} catch (error) {
-		await stopRoomCrabboxes(
-			env,
-			root.session.rootSessionId || root.session.id,
-			bindings.map(({ binding }) => binding.session.id),
-		).catch(() => undefined);
-		throw error;
+		throw new PartialProvisioningError(error, bindings);
 	}
 }
 
@@ -178,10 +185,7 @@ async function responseJson<T = unknown>(response: Response): Promise<T> {
 	}
 }
 
-function simulatedBindings(
-	room: Room,
-	participants: Participant[],
-): Array<{ participantId: string; binding: CrabboxBinding }> {
+function simulatedBindings(room: Room, participants: Participant[]): ParticipantCrabboxBinding[] {
 	const rootId = `SIM-${room.id.slice(-8)}`;
 	return participants.map((participant, index) => ({
 		participantId: participant.id,

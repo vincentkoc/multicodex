@@ -1,4 +1,5 @@
 import type { RoomSnapshot } from "./domain.ts";
+import { redactRuntimeValue, runtimeRedactor } from "./runtime-redaction.ts";
 
 export function snapshotForViewer(
 	snapshot: RoomSnapshot,
@@ -10,18 +11,27 @@ export function snapshotForViewer(
 		...snapshot.messages.map((message) => message.id),
 		...snapshot.decisions.map((decision) => decision.id),
 	]);
-	return {
-		...snapshot,
-		room: { ...snapshot.room, crabfleetRootSessionId: null },
-		participants: snapshot.participants.map((participant) => ({
-			...participant,
-			crabfleetSessionId: null,
-			browserUrl: participant.id === viewerId ? participant.browserUrl : null,
-		})),
-		conductorActions: snapshot.conductorActions.map((action) => ({
-			...action,
-			targetIds: action.targetIds.filter((id) => publicIds.has(id)),
-			evidenceRefs: action.evidenceRefs.filter((id) => publicIds.has(id)),
-		})),
-	};
+	const sanitized = redactRuntimeValue(
+		{
+			...snapshot,
+			room: { ...snapshot.room, crabfleetRootSessionId: null },
+			participants: snapshot.participants.map((participant) => ({
+				...participant,
+				crabfleetSessionId: null,
+				browserUrl: null,
+			})),
+			conductorActions: snapshot.conductorActions.map((action) => ({
+				...action,
+				targetIds: action.targetIds.filter((id) => publicIds.has(id)),
+				evidenceRefs: action.evidenceRefs.filter((id) => publicIds.has(id)),
+			})),
+		},
+		runtimeRedactor(snapshot),
+	) as RoomSnapshot;
+	if (viewerId) {
+		const source = snapshot.participants.find((participant) => participant.id === viewerId);
+		const viewer = sanitized.participants.find((participant) => participant.id === viewerId);
+		if (source && viewer) viewer.browserUrl = source.browserUrl;
+	}
+	return sanitized;
 }

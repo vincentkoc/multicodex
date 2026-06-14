@@ -1,5 +1,6 @@
 import type { RoomSnapshot } from "./domain.ts";
 import { clean, HttpError, readBoundedText } from "./http.ts";
+import { redactRuntimeValue, runtimeRedactor } from "./runtime-redaction.ts";
 
 type ConductorTools = {
 	postMessage(body: string): Promise<void>;
@@ -17,9 +18,6 @@ type OpenAIOutput = {
 		content?: Array<{ type?: string; text?: string }>;
 	}>;
 };
-
-const runtimeIdentifierRedaction = "[redacted Crabfleet runtime identifier]";
-const runtimeIdentifierPattern = /\b(?:IS|LOCAL|SIM)-[A-Za-z0-9][A-Za-z0-9._:-]*\b/g;
 
 export function conductorCanNudge(snapshot: RoomSnapshot, actorParticipantId: string): boolean {
 	return snapshot.room.hostParticipantId === actorParticipantId;
@@ -178,7 +176,7 @@ async function executeTool(
 
 function compactSnapshot(snapshot: RoomSnapshot, redact: (value: string) => string): unknown {
 	const { crabfleetRootSessionId: _crabfleetRootSessionId, ...room } = snapshot.room;
-	return redactValue(
+	return redactRuntimeValue(
 		{
 			room,
 			participants: snapshot.participants.map((participant) => ({
@@ -228,36 +226,6 @@ function outputText(output: OpenAIOutput, redact: (value: string) => string): st
 		1200,
 		redact,
 	);
-}
-
-function runtimeRedactor(snapshot: RoomSnapshot): (value: string) => string {
-	const identifiers = [
-		snapshot.room.crabfleetRootSessionId,
-		...snapshot.participants.flatMap((participant) => [
-			participant.crabfleetSessionId,
-			participant.browserUrl,
-		]),
-	]
-		.filter((value): value is string => Boolean(value))
-		.sort((left, right) => right.length - left.length);
-	return (value) => {
-		let redacted = value;
-		for (const identifier of identifiers) {
-			redacted = redacted.replaceAll(identifier, runtimeIdentifierRedaction);
-		}
-		return redacted.replace(runtimeIdentifierPattern, runtimeIdentifierRedaction);
-	};
-}
-
-function redactValue(value: unknown, redact: (value: string) => string): unknown {
-	if (typeof value === "string") return redact(value);
-	if (Array.isArray(value)) return value.map((item) => redactValue(item, redact));
-	if (value && typeof value === "object") {
-		return Object.fromEntries(
-			Object.entries(value).map(([key, item]) => [key, redactValue(item, redact)]),
-		);
-	}
-	return value;
 }
 
 function redactOutput(value: unknown, max: number, redact: (value: string) => string): string {

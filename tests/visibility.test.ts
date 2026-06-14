@@ -33,7 +33,7 @@ const snapshot = {
 		taskId: null,
 		crabfleetSessionId: `${id}-session-secret`,
 		browserUrl: `https://runtime.example/${id}-secret`,
-		runtimeSummary: "ready",
+		runtimeSummary: `ready ${id}-session-secret under root-secret`,
 		branch: `multicodex/room/${id}`,
 		state: "ready" as const,
 		joinedAt: 1,
@@ -64,6 +64,10 @@ test("public snapshots hide every runtime capability", () => {
 	assert.ok(visible.participants.every((participant) => participant.browserUrl === null));
 	assert.deepEqual(visible.conductorActions[0]?.targetIds, ["guest"]);
 	assert.deepEqual(visible.conductorActions[0]?.evidenceRefs, []);
+	assert.doesNotMatch(
+		JSON.stringify(visible),
+		/root-secret|host-session-secret|guest-session-secret/,
+	);
 });
 
 test("participants only receive their own workspace URL", () => {
@@ -77,4 +81,8 @@ test("participants only receive their own workspace URL", () => {
 		"https://runtime.example/guest-secret",
 	);
 	assert.ok(visible.participants.every((participant) => participant.crabfleetSessionId === null));
+	assert.doesNotMatch(
+		visible.participants.map((participant) => participant.runtimeSummary).join(" "),
+		/root-secret|session-secret/,
+	);
 });

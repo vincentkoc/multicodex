@@ -8,7 +8,7 @@
 		"check": "pnpm typecheck && pnpm test && pnpm lint && pnpm format",
 		"db:local": "wrangler d1 migrations apply DB --local",
 		"deploy": "pnpm build && wrangler d1 migrations apply DB --remote && wrangler deploy",
-		"dev": "wrangler dev",
+		"dev": "node scripts/dev.mjs",
 		"format": "oxfmt --check .",
 		"format:fix": "oxfmt .",
 		"lint": "oxlint .",

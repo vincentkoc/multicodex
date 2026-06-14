@@ -10,8 +10,10 @@ import {
 test("room lifecycle guards reject stale destructive actions", () => {
 	assert.equal(roomAllowsPlanning("planning"), true);
 	assert.equal(roomAllowsPlanning("building"), false);
+	assert.equal(roomAllowsPlanning("cleanup-planning"), false);
 	assert.equal(roomAllowsPlanning("ended"), false);
 	assert.equal(roomAllowsPresentation("building"), true);
+	assert.equal(roomAllowsPresentation("cleanup-ending"), false);
 	assert.equal(roomAllowsPresentation("ended"), false);
 	assert.equal(roomAllowsRuntimeNudge("integrating"), true);
 	assert.equal(roomAllowsRuntimeNudge("presenting"), false);

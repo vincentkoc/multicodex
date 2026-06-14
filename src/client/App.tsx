@@ -673,6 +673,14 @@ function HostControls({
 			</button>
 		);
 	}
+	if (snapshot.room.status === "cleanup-planning" || snapshot.room.status === "cleanup-ending") {
+		return (
+			<button class="button danger" disabled={Boolean(busy)} onClick={() => action("end")}>
+				<CircleStop size={16} />
+				retry workspace cleanup
+			</button>
+		);
+	}
 	if (launched) {
 		return (
 			<button
@@ -1121,11 +1129,13 @@ function RoomProgress({ status }: { status: RoomStatus }) {
 	const current =
 		status === "provisioning"
 			? 2
-			: status === "integrating"
+			: status === "cleanup-planning" || status === "cleanup-ending"
 				? 3
-				: status === "ended"
-					? 4
-					: steps.indexOf(status);
+				: status === "integrating"
+					? 3
+					: status === "ended"
+						? 4
+						: steps.indexOf(status);
 	return (
 		<div class="room-progress" aria-label={`room status ${status}`}>
 			{steps.map((step, index) => (
