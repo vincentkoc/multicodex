@@ -18,6 +18,19 @@ test("worker mutation routes keep terminal rooms immutable", async () => {
 	assert.match(refreshSource, /expectedStatuses: runtimeRefreshStatuses/);
 });
 
+test("participant messages fan out before asynchronous conductor work", async () => {
+	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
+	const start = source.indexOf("const messagesMatch");
+	const end = source.indexOf("const shuffleMatch", start);
+	const messageSource = source.slice(start, end);
+
+	assert.ok(
+		messageSource.indexOf("context.waitUntil(broadcastSnapshot") <
+			messageSource.indexOf("context.waitUntil(\n\t\t\t\tconductorTurnBestEffort"),
+	);
+	assert.doesNotMatch(messageSource, /await conductorTurnBestEffort/);
+});
+
 test("planning announcements remain fenced against room closure", async () => {
 	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
 	const start = source.indexOf("const shuffleMatch");
@@ -25,6 +38,7 @@ test("planning announcements remain fenced against room closure", async () => {
 	const planningSource = source.slice(start, end);
 
 	assert.equal(planningSource.match(/\["planning"\]/g)?.length, 2);
+	assert.equal(planningSource.match(/installedRevision/g)?.length, 6);
 	assert.match(planningSource, /room closed before the shuffled plan could be announced/);
 	assert.match(planningSource, /room closed before the plan could be announced/);
 });

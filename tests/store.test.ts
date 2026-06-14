@@ -108,6 +108,20 @@ test("plan replacement fences every write to its claimed revision", async () => 
 	assert.match(replacementSource, /nextBriefRevision/);
 	assert.match(replacementSource, /AND brief_revision = \?/);
 	assert.match(replacementSource, /brief_revision = \?/);
+	assert.match(
+		replacementSource,
+		/return roomResult\?\.meta\.changes === 1 \? nextBriefRevision : null/,
+	);
+});
+
+test("planning messages can bind to the exact installed revision", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function addMessage");
+	const end = source.indexOf("export async function replacePlan", start);
+	const messageSource = source.slice(start, end);
+
+	assert.match(messageSource, /expectedBriefRevision/);
+	assert.match(messageSource, /AND brief_revision = \?/);
 });
 
 test("runtime leases fence cleanup and stale provisioning can be claimed", async () => {

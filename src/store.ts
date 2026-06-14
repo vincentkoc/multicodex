@@ -341,13 +341,17 @@ export async function addMessage(
 	roomId: string,
 	input: Omit<RoomMessage, "id" | "roomId" | "createdAt">,
 	expectedStatuses?: RoomStatus[],
+	expectedBriefRevision?: number,
 ): Promise<RoomMessage | null> {
 	if (expectedStatuses && !expectedStatuses.length) return null;
+	if (expectedBriefRevision !== undefined && !expectedStatuses) return null;
 	const message: RoomMessage = { ...input, id: newId("msg"), roomId, createdAt: Date.now() };
 	const statusFence = expectedStatuses
 		? `SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
 	     WHERE EXISTS (
-	       SELECT 1 FROM rooms WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})
+	       SELECT 1 FROM rooms
+	       WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})
+	         ${expectedBriefRevision === undefined ? "" : "AND brief_revision = ?"}
 	     )`
 		: "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
 	const result = await db
@@ -366,7 +370,13 @@ export async function addMessage(
 			message.body,
 			message.replyToId,
 			message.createdAt,
-			...(expectedStatuses ? [roomId, ...expectedStatuses] : []),
+			...(expectedStatuses
+				? [
+						roomId,
+						...expectedStatuses,
+						...(expectedBriefRevision === undefined ? [] : [expectedBriefRevision]),
+					]
+				: []),
 		)
 		.run();
 	return result.meta.changes === 1 ? message : null;
@@ -379,7 +389,7 @@ export async function replacePlan(
 	brief: RoomBrief,
 	participants: Participant[],
 	tasks: Array<Omit<Task, "roomId" | "createdAt" | "updatedAt">>,
-): Promise<boolean> {
+): Promise<number | null> {
 	const now = Date.now();
 	const nextBriefRevision = newRevision();
 	const statements: D1PreparedStatement[] = [
@@ -469,7 +479,7 @@ export async function replacePlan(
 		}
 	}
 	const [roomResult] = await db.batch(statements);
-	return roomResult?.meta.changes === 1;
+	return roomResult?.meta.changes === 1 ? nextBriefRevision : null;
 }
 
 export async function approveRoomPlan(

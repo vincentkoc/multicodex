@@ -1,5 +1,5 @@
-import { chooseIdea, ideas, rolesForSeats } from "./catalog.ts";
-import type { IdeaCard } from "./catalog.ts";
+import { chooseIdea, ideas, roles } from "./catalog.ts";
+import type { IdeaCard, RoleCard } from "./catalog.ts";
 import type { Participant, RoomBrief, Task } from "./domain.ts";
 import { newId } from "./http.ts";
 
@@ -44,37 +44,79 @@ export function planForBrief(
 	tasks: Array<Omit<Task, "roomId" | "createdAt" | "updatedAt">>;
 } {
 	const active = participants.filter((participant) => participant.kind !== "observer");
-	const roles = rolesForSeats(active.length);
+	const assignedRoles = rolesForParticipants(active);
+	const integrationParticipant =
+		active.find((participant) => participant.kind !== "ai") ?? active[0] ?? null;
+	const integrationIndex = active.findIndex(
+		(participant) => participant.id === integrationParticipant?.id,
+	);
 	const taskIds = active.map(() => newId("task"));
 	const assignments = active.map((participant, index) => ({
 		participantId: participant.id,
-		roleId: roles[index]!.id,
+		roleId: assignedRoles[index]!.id,
 	}));
+	const criteriaByTask = active.map(() => [] as string[]);
+	const coreCriteria = brief.acceptanceCriteria ?? [];
+	for (const [index, criterion] of coreCriteria.entries()) {
+		criteriaByTask[index % Math.max(active.length, 1)]?.push(criterion);
+	}
+	if (coreCriteria.length) {
+		for (const [index, taskCriteria] of criteriaByTask.entries()) {
+			if (!taskCriteria.length) taskCriteria.push(coreCriteria[index % coreCriteria.length]!);
+		}
+	}
 	const tasks = active.map((participant, index) => {
-		const role = roles[index]!;
+		const role = assignedRoles[index]!;
+		const taskCriteria = criteriaByTask[index] ?? [];
 		return {
 			id: taskIds[index]!,
 			title: role.label,
 			description: role.mission,
 			ownerParticipantId: participant.id,
 			state: "ready" as const,
-			dependsOn: index === 0 ? taskIds.slice(1) : [],
+			dependsOn:
+				index === integrationIndex
+					? taskIds.filter((_, dependencyIndex) => dependencyIndex !== integrationIndex)
+					: [],
 			ownsPaths: role.owns,
 			acceptanceCriteria:
-				index === 0
+				index === integrationIndex
 					? [
 							"integrated branch runs",
 							brief.demoMoment ? `demo moment: ${brief.demoMoment}` : "demo moment is visible",
+							...taskCriteria,
 						]
-					: [
-							brief.acceptanceCriteria?.[index % (brief.acceptanceCriteria?.length || 1)] ??
-								"task works",
-						],
+					: taskCriteria.length
+						? taskCriteria
+						: ["task works"],
 			branch: participant.branch,
 			pullRequestUrl: null,
 		};
 	});
 	return { brief, assignments, tasks };
+}
+
+function rolesForParticipants(participants: Participant[]): RoleCard[] {
+	const assignments = new Map<string, RoleCard>();
+	const available = [...roles];
+	const integrationParticipant =
+		participants.find((participant) => participant.kind !== "ai") ?? participants[0];
+	const integrationRole = roles.find((role) => role.id === "product-integration")!;
+	if (integrationParticipant && integrationParticipant.kind !== "ai") {
+		assignments.set(integrationParticipant.id, integrationRole);
+		available.splice(available.indexOf(integrationRole), 1);
+	}
+	for (const participant of participants) {
+		if (assignments.has(participant.id)) continue;
+		const index = available.findIndex(
+			(role) => participant.kind !== "ai" || role.suitableForAISeat,
+		);
+		const role =
+			(index >= 0 ? available.splice(index, 1)[0] : undefined) ??
+			roles.find((candidate) => participant.kind !== "ai" || candidate.suitableForAISeat)!;
+		assignments.set(participant.id, role);
+	}
+	return participants.map((participant) => assignments.get(participant.id)!);
 }
 
 export function taskPrompt(

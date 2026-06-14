@@ -232,11 +232,13 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		) {
 			throw new HttpError(409, "room messages are closed");
 		}
-		if (targetKind === "conductor" || text.includes("@conductor")) {
-			await conductorTurnBestEffort(env, roomId, `${author.displayName}: ${text}`, author.id);
-		}
 		const snapshot = await readRoomSnapshot(env.DB, roomId);
 		context.waitUntil(broadcastSnapshot(env, snapshot));
+		if (targetKind === "conductor" || text.includes("@conductor")) {
+			context.waitUntil(
+				conductorTurnBestEffort(env, roomId, `${author.displayName}: ${text}`, author.id),
+			);
+		}
 		return json(snapshotForViewer(snapshot, author.id), 201);
 	}
 
@@ -251,16 +253,15 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const active = snapshot.participants.filter((participant) => participant.kind !== "observer");
 		const plan = planForParticipants(`${roomId}:${snapshot.room.briefRevision + 1}`, active);
 		const participants = participantsWithAssignments(snapshot.participants, plan.assignments);
-		if (
-			!(await replacePlan(
-				env.DB,
-				roomId,
-				snapshot.room.briefRevision,
-				plan.brief,
-				participants,
-				[],
-			))
-		) {
+		const installedRevision = await replacePlan(
+			env.DB,
+			roomId,
+			snapshot.room.briefRevision,
+			plan.brief,
+			participants,
+			[],
+		);
+		if (installedRevision === null) {
 			throw new HttpError(409, "room is no longer accepting planning changes");
 		}
 		if (
@@ -276,6 +277,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 					replyToId: null,
 				},
 				["planning"],
+				installedRevision,
 			))
 		) {
 			throw new HttpError(409, "room closed before the shuffled plan could be announced");
@@ -296,16 +298,15 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const active = snapshot.participants.filter((participant) => participant.kind !== "observer");
 		const plan = planForBrief(snapshot.room.brief, active);
 		const participants = participantsWithAssignments(snapshot.participants, plan.assignments);
-		if (
-			!(await replacePlan(
-				env.DB,
-				roomId,
-				snapshot.room.briefRevision,
-				plan.brief,
-				participants,
-				plan.tasks,
-			))
-		) {
+		const installedRevision = await replacePlan(
+			env.DB,
+			roomId,
+			snapshot.room.briefRevision,
+			plan.brief,
+			participants,
+			plan.tasks,
+		);
+		if (installedRevision === null) {
 			throw new HttpError(409, "room is no longer accepting planning changes");
 		}
 		if (
@@ -321,6 +322,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 					replyToId: null,
 				},
 				["planning"],
+				installedRevision,
 			))
 		) {
 			throw new HttpError(409, "room closed before the plan could be announced");
@@ -510,11 +512,13 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			throw new HttpError(409, "room is no longer accepting task updates");
 		}
 		if (body.state === "blocked")
-			await conductorTurnBestEffort(
-				env,
-				roomId,
-				`${actor.displayName} marked ${task.title} blocked`,
-				actor.id,
+			context.waitUntil(
+				conductorTurnBestEffort(
+					env,
+					roomId,
+					`${actor.displayName} marked ${task.title} blocked`,
+					actor.id,
+				),
 			);
 		const updated = await readRoomSnapshot(env.DB, roomId);
 		context.waitUntil(broadcastSnapshot(env, updated));
@@ -741,6 +745,7 @@ async function conductorTurnBestEffort(
 ): Promise<void> {
 	try {
 		await conductorTurn(env, roomId, trigger, actorParticipantId);
+		await broadcastSnapshot(env, await readRoomSnapshot(env.DB, roomId));
 	} catch (error) {
 		console.error(
 			JSON.stringify({

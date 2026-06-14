@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { roles } from "../src/catalog.ts";
 import type { Participant, RoomBrief } from "../src/domain.ts";
 import { planForBrief, planForParticipants, taskPrompt } from "../src/planning.ts";
 
@@ -30,6 +31,23 @@ test("planning assigns one bounded task and distinct role per active participant
 	assert.ok(plan.tasks.every((task) => task.acceptanceCriteria.length > 0));
 	const taskIds = new Set(plan.tasks.map((task) => task.id));
 	assert.ok(plan.tasks.flatMap((task) => task.dependsOn).every((id) => taskIds.has(id)));
+	assert.ok(
+		plan.brief.acceptanceCriteria?.every((criterion) =>
+			plan.tasks.some((task) => task.acceptanceCriteria.includes(criterion)),
+		),
+	);
+});
+
+test("planning gives AI seats only suitable roles and keeps human integration ownership", () => {
+	const reordered = [participants[2]!, participants[0]!, participants[1]!];
+	const plan = planForParticipants("room", reordered);
+	const roleByParticipant = new Map(
+		plan.assignments.map((assignment) => [assignment.participantId, assignment.roleId]),
+	);
+	const aiRole = roles.find((role) => role.id === roleByParticipant.get("p3"));
+
+	assert.equal(aiRole?.suitableForAISeat, true);
+	assert.equal(roleByParticipant.get("p1"), "product-integration");
 });
 
 test("task prompts keep the participant scope explicit", () => {
@@ -80,5 +98,10 @@ test("planning from a stored brief preserves it and derives tasks from it", () =
 			.every((task) =>
 				task.acceptanceCriteria.every((criterion) => brief.acceptanceCriteria?.includes(criterion)),
 			),
+	);
+	assert.ok(
+		brief.acceptanceCriteria?.every((criterion) =>
+			plan.tasks.some((task) => task.acceptanceCriteria.includes(criterion)),
+		),
 	);
 });
