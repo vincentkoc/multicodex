@@ -43,7 +43,18 @@ const snapshot = {
 	messages: [],
 	tasks: [],
 	decisions: [],
-	conductorActions: [],
+	conductorActions: [
+		{
+			id: "action",
+			roomId: "room",
+			kind: "session_nudge",
+			targetIds: ["guest", "guest-session-secret"],
+			reason: "align the contract",
+			evidenceRefs: ["root-secret"],
+			approvalState: "not_required",
+			createdAt: 1,
+		},
+	],
 } satisfies RoomSnapshot;
 
 test("public snapshots hide every runtime capability", () => {
@@ -51,6 +62,8 @@ test("public snapshots hide every runtime capability", () => {
 	assert.equal(visible.room.crabfleetRootSessionId, null);
 	assert.ok(visible.participants.every((participant) => participant.crabfleetSessionId === null));
 	assert.ok(visible.participants.every((participant) => participant.browserUrl === null));
+	assert.deepEqual(visible.conductorActions[0]?.targetIds, ["guest"]);
+	assert.deepEqual(visible.conductorActions[0]?.evidenceRefs, []);
 });
 
 test("participants only receive their own workspace URL", () => {

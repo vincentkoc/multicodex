@@ -115,7 +115,7 @@ export async function createRoom(
 	const roomId = newId("room");
 	const hostId = newId("person");
 	const participantToken = newId("seat");
-	const slug = `${slugify(input.title)}-${roomId.slice(-6)}`;
+	const slug = `${slugify(input.title).slice(0, 40)}-${roomId.slice(-6)}`;
 	const integrationBranch = `multicodex/${slug}/integration`;
 	await db.batch([
 		db
@@ -168,7 +168,7 @@ export async function readRoomSnapshot(db: D1Database, roomId: string): Promise<
 				.bind(roomId)
 				.all<ParticipantRow>(),
 			db
-				.prepare("SELECT * FROM room_messages WHERE room_id = ? ORDER BY created_at ASC LIMIT 500")
+				.prepare("SELECT * FROM room_messages WHERE room_id = ? ORDER BY created_at DESC LIMIT 500")
 				.bind(roomId)
 				.all<MessageRow>(),
 			db
@@ -188,7 +188,7 @@ export async function readRoomSnapshot(db: D1Database, roomId: string): Promise<
 	return {
 		room: roomFromRow(roomResult),
 		participants: participants.results.map(participantFromRow),
-		messages: messages.results.map(messageFromRow),
+		messages: messages.results.reverse().map(messageFromRow),
 		tasks: tasks.results.map(taskFromRow),
 		decisions: decisions.results.map(decisionFromRow),
 		conductorActions: conductorActions.results.map(actionFromRow),
@@ -220,9 +220,7 @@ export async function addParticipant(
 	const participantToken = newId("seat");
 	const now = Date.now();
 	const branch =
-		input.kind === "observer"
-			? null
-			: `multicodex/${room.slug}/${slugify(input.displayName, "seat")}`;
+		input.kind === "observer" ? null : participantBranch(room.slug, input.displayName, id);
 	await db
 		.prepare(
 			`INSERT INTO participants
@@ -331,9 +329,9 @@ export async function replacePlan(
 			)
 			.bind(encodeJson(brief), now, roomId),
 	];
-	for (const [index, task] of tasks.entries()) {
+	for (const task of tasks) {
 		const id = newId("task");
-		const owner = participants[index];
+		const owner = participantForTask(participants, task.ownerParticipantId);
 		statements.push(
 			db
 				.prepare(
@@ -368,6 +366,16 @@ export async function replacePlan(
 	await db.batch(statements);
 }
 
+export async function clearRoomPlan(db: D1Database, roomId: string): Promise<void> {
+	const now = Date.now();
+	await db.batch([
+		db.prepare("DELETE FROM tasks WHERE room_id = ?").bind(roomId),
+		db
+			.prepare("UPDATE participants SET task_id = NULL, updated_at = ? WHERE room_id = ?")
+			.bind(now, roomId),
+	]);
+}
+
 export async function setParticipantRoles(
 	db: D1Database,
 	assignments: Array<{ participantId: string; roleId: string }>,
@@ -383,17 +391,18 @@ export async function setParticipantRoles(
 	);
 }
 
-export async function approveRoomPlan(db: D1Database, roomId: string): Promise<void> {
+export async function approveRoomPlan(db: D1Database, roomId: string): Promise<boolean> {
 	const now = Date.now();
-	await db
+	const result = await db
 		.prepare(
 			`UPDATE rooms
        SET status = 'provisioning', started_at = ?, ends_at = ? + duration_minutes * 60000,
            brief_json = json_set(brief_json, '$.planApproved', json('true')), updated_at = ?
-       WHERE id = ?`,
+       WHERE id = ? AND status = 'planning'`,
 		)
 		.bind(now, now, now, roomId)
 		.run();
+	return result.meta.changes === 1;
 }
 
 export async function updateRoomRuntime(
@@ -507,6 +516,27 @@ export async function endRoom(db: D1Database, roomId: string): Promise<void> {
 		.prepare("UPDATE rooms SET status = 'ended', updated_at = ? WHERE id = ?")
 		.bind(Date.now(), roomId)
 		.run();
+}
+
+export function participantBranch(
+	roomSlug: string,
+	displayName: string,
+	participantId: string,
+): string {
+	const prefix = `multicodex/${roomSlug}/`;
+	const suffix = `-${slugify(participantId, "person")}`;
+	const seat = slugify(displayName, "seat").slice(
+		0,
+		Math.max(1, 120 - prefix.length - suffix.length),
+	);
+	return `${prefix}${seat}${suffix}`;
+}
+
+export function participantForTask(
+	participants: Participant[],
+	ownerParticipantId: string | null,
+): Participant | undefined {
+	return participants.find((participant) => participant.id === ownerParticipantId);
 }
 
 function roomFromRow(row: RoomRow): Room {

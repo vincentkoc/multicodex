@@ -1,5 +1,5 @@
 import { ideas, roles } from "./catalog.ts";
-import { runConductorTurn } from "./conductor.ts";
+import { conductorCanNudge, runConductorTurn } from "./conductor.ts";
 import {
 	provisionRoomCrabboxes,
 	readRoomCrabboxes,
@@ -25,6 +25,7 @@ import {
 	addMessage,
 	addParticipant,
 	approveRoomPlan,
+	clearRoomPlan,
 	createRoom,
 	endRoom,
 	readRoomSnapshot,
@@ -172,7 +173,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			replyToId: clean(body.replyToId, 100) || null,
 		});
 		if (targetKind === "conductor" || text.includes("@conductor")) {
-			await conductorTurn(env, roomId, `${author.displayName}: ${text}`);
+			await conductorTurn(env, roomId, `${author.displayName}: ${text}`, author.id);
 		}
 		const snapshot = await readRoomSnapshot(env.DB, roomId);
 		context.waitUntil(broadcastSnapshot(env, snapshot));
@@ -188,6 +189,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const brief = shuffledBrief(`${roomId}:${snapshot.room.briefRevision + 1}`, active.length);
 		const plan = planForParticipants(`${roomId}:${snapshot.room.briefRevision + 1}`, active);
 		await setParticipantRoles(env.DB, plan.assignments);
+		await clearRoomPlan(env.DB, roomId);
 		await updateRoomBrief(env.DB, roomId, brief, "planning");
 		await addMessage(env.DB, roomId, {
 			authorKind: "conductor",
@@ -235,8 +237,18 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 	if (request.method === "POST" && approveMatch) {
 		const roomId = decodeURIComponent(approveMatch[1] ?? "");
 		const host = await requireHost(env.DB, roomId, participantToken(request));
-		await approveRoomPlan(env.DB, roomId);
 		let snapshot = await readRoomSnapshot(env.DB, roomId);
+		if (["building", "integrating", "presenting", "ended"].includes(snapshot.room.status)) {
+			return json(snapshotForViewer(snapshot, host.id));
+		}
+		if (snapshot.room.status === "provisioning") {
+			throw new HttpError(409, "room provisioning is already in progress");
+		}
+		if (!snapshot.tasks.length) throw new HttpError(409, "draft a plan before launching");
+		if (!(await approveRoomPlan(env.DB, roomId))) {
+			throw new HttpError(409, "room is not ready to launch");
+		}
+		snapshot = await readRoomSnapshot(env.DB, roomId);
 		await ensureRoomBranches(env, snapshot.room, snapshot.participants);
 		const bindings = await provisionRoomCrabboxes(
 			env,
@@ -324,7 +336,12 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		if (!body.state || !states.includes(body.state)) throw new HttpError(400, "invalid task state");
 		await updateTaskState(env.DB, roomId, taskId, body.state);
 		if (body.state === "blocked")
-			await conductorTurn(env, roomId, `${actor.displayName} marked ${task.title} blocked`);
+			await conductorTurn(
+				env,
+				roomId,
+				`${actor.displayName} marked ${task.title} blocked`,
+				actor.id,
+			);
 		const updated = await readRoomSnapshot(env.DB, roomId);
 		context.waitUntil(broadcastSnapshot(env, updated));
 		return json(snapshotForViewer(updated, actor.id));
@@ -385,9 +402,14 @@ async function requireHost(db: D1Database, roomId: string, token: string): Promi
 	return participant;
 }
 
-async function conductorTurn(env: Env, roomId: string, trigger: string): Promise<void> {
+async function conductorTurn(
+	env: Env,
+	roomId: string,
+	trigger: string,
+	actorParticipantId: string,
+): Promise<void> {
 	const snapshot = await readRoomSnapshot(env.DB, roomId);
-	await runConductorTurn(env, snapshot, trigger, {
+	const tools: Parameters<typeof runConductorTurn>[3] = {
 		postMessage: async (body) => {
 			await addMessage(env.DB, roomId, {
 				authorKind: "conductor",
@@ -406,9 +428,12 @@ async function conductorTurn(env: Env, roomId: string, trigger: string): Promise
 				affectedTaskIds: [],
 			});
 		},
-		nudge: async (input) =>
-			nudgeParticipant(env, roomId, input.participantId, input.message, input.reason),
-	});
+	};
+	if (conductorCanNudge(snapshot, actorParticipantId)) {
+		tools.nudge = async (input) =>
+			nudgeParticipant(env, roomId, input.participantId, input.message, input.reason);
+	}
+	await runConductorTurn(env, snapshot, trigger, tools);
 }
 
 async function nudgeParticipant(
@@ -434,7 +459,7 @@ async function nudgeParticipant(
 	);
 	await addConductorAction(env.DB, roomId, {
 		kind: "session_nudge",
-		targetIds: [target.id, target.crabfleetSessionId],
+		targetIds: [target.id],
 		reason,
 		evidenceRefs: [],
 		approvalState: "not_required",

@@ -4,7 +4,7 @@ import { clean, HttpError, readBoundedText } from "./http.ts";
 type ConductorTools = {
 	postMessage(body: string): Promise<void>;
 	recordDecision(input: { title: string; decision: string; reason: string }): Promise<void>;
-	nudge(input: { participantId: string; message: string; reason: string }): Promise<void>;
+	nudge?(input: { participantId: string; message: string; reason: string }): Promise<void>;
 };
 
 type OpenAIOutput = {
@@ -17,6 +17,10 @@ type OpenAIOutput = {
 		content?: Array<{ type?: string; text?: string }>;
 	}>;
 };
+
+export function conductorCanNudge(snapshot: RoomSnapshot, actorParticipantId: string): boolean {
+	return snapshot.room.hostParticipantId === actorParticipantId;
+}
 
 export async function runConductorTurn(
 	env: Env,
@@ -47,16 +51,20 @@ export async function runConductorTurn(
 			},
 			["title", "decision", "reason"],
 		),
-		functionTool(
-			"send_session_nudge",
-			"Nudge one participant's Codex workspace.",
-			{
-				participantId: { type: "string" },
-				message: { type: "string" },
-				reason: { type: "string" },
-			},
-			["participantId", "message", "reason"],
-		),
+		...(tools.nudge
+			? [
+					functionTool(
+						"send_session_nudge",
+						"Nudge one participant's Codex workspace.",
+						{
+							participantId: { type: "string" },
+							message: { type: "string" },
+							reason: { type: "string" },
+						},
+						["participantId", "message", "reason"],
+					),
+				]
+			: []),
 	];
 	let previousResponseId: string | undefined;
 	let input: unknown = [
@@ -79,7 +87,7 @@ export async function runConductorTurn(
 				previous_response_id: previousResponseId,
 				tools: toolDefinitions,
 				parallel_tool_calls: false,
-				store: false,
+				store: true,
 			}),
 		});
 		if (!response.ok) {
@@ -151,6 +159,7 @@ async function executeTool(
 		return { recorded: true };
 	}
 	if (name === "send_session_nudge") {
+		if (!tools.nudge) return { error: "host approval required" };
 		await tools.nudge({
 			participantId: clean(args.participantId, 100),
 			message: clean(args.message, 2000),
