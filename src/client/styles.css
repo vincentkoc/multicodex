@@ -1113,6 +1113,11 @@ textarea:focus {
 	padding: 12px 9px;
 }
 
+.message-ai {
+	border-left: 3px solid #8b5cf6;
+	padding-left: 8px;
+}
+
 .message-system {
 	color: var(--ink-soft);
 }

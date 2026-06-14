@@ -710,6 +710,7 @@ function RoomWorkbench({
 				</section>
 
 				<ChatPanel
+					key={snapshot.room.id}
 					snapshot={snapshot}
 					participantId={participantId}
 					participantToken={participantToken}
@@ -883,13 +884,13 @@ function ChatPanel({
 	const [loadingHistory, setLoadingHistory] = useState(false);
 	const [olderMessages, setOlderMessages] = useState<RoomMessage[]>([]);
 	const timeline = useRef<HTMLDivElement>(null);
+	const previousSnapshotMessages = useRef(snapshot.messages);
 	const messages = useMemo(() => {
-		const byId = new Map(
-			[...olderMessages, ...snapshot.messages].map((message) => [message.id, message]),
-		);
-		return [...byId.values()].sort(
-			(left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id),
-		);
+		return mergeRoomMessages([
+			...olderMessages,
+			...previousSnapshotMessages.current,
+			...snapshot.messages,
+		]);
 	}, [olderMessages, snapshot.messages]);
 	const hasEarlierMessages = messages.length < snapshot.messageCount;
 
@@ -898,8 +899,15 @@ function ChatPanel({
 	}, [snapshot.room.id, snapshot.messages.at(-1)?.id]);
 
 	useEffect(() => {
-		setOlderMessages([]);
-	}, [snapshot.room.id]);
+		const currentIds = new Set(snapshot.messages.map((message) => message.id));
+		const rotatedMessages = previousSnapshotMessages.current.filter(
+			(message) => !currentIds.has(message.id),
+		);
+		if (rotatedMessages.length) {
+			setOlderMessages((current) => mergeRoomMessages([...current, ...rotatedMessages]));
+		}
+		previousSnapshotMessages.current = snapshot.messages;
+	}, [snapshot.messages]);
 
 	async function loadEarlierMessages() {
 		const earliest = messages[0];
@@ -914,10 +922,7 @@ function ChatPanel({
 				participantToken,
 			);
 			setOlderMessages((current) => {
-				const byId = new Map(
-					[...page.messages, ...current].map((message) => [message.id, message]),
-				);
-				return [...byId.values()];
+				return mergeRoomMessages([...page.messages, ...current]);
 			});
 			requestAnimationFrame(() => {
 				if (timeline.current) {
@@ -1058,13 +1063,15 @@ function Message({
 	participants: Participant[];
 	mine: boolean;
 }) {
+	const participant = participants.find((item) => item.id === message.authorId);
 	const author =
 		message.authorKind === "conductor"
 			? "conductor"
 			: message.authorKind === "system"
 				? "room"
-				: participants.find((participant) => participant.id === message.authorId)?.displayName ||
-					"participant";
+				: message.authorKind === "ai"
+					? `${participant?.displayName || "AI participant"} · AI`
+					: participant?.displayName || "participant";
 	const target =
 		message.targetKind === "participant"
 			? participants.find((participant) => participant.id === message.targetId)?.displayName
@@ -1196,6 +1203,9 @@ function Recap({
 }) {
 	const done = snapshot.tasks.filter((task) => task.state === "done").length;
 	const interventions = snapshot.decisions.length + snapshot.conductorActions.length;
+	const recentInterventions = [...snapshot.decisions, ...snapshot.conductorActions]
+		.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
+		.slice(-5);
 	return (
 		<main class="recap-shell">
 			<header class="recap-header">
@@ -1264,7 +1274,7 @@ function Recap({
 					<span class="eyebrow">demo moment</span>
 					<h2>{snapshot.room.brief.demoMoment || "the project converges."}</h2>
 					<div class="recap-decisions">
-						{[...snapshot.decisions, ...snapshot.conductorActions].slice(-5).map((entry) => (
+						{recentInterventions.map((entry) => (
 							<article key={entry.id}>
 								<span>{"kind" in entry ? <Zap size={15} /> : <Check size={15} />}</span>
 								<div>
@@ -1308,6 +1318,13 @@ function RoomProgress({ status }: { status: RoomStatus }) {
 				</span>
 			))}
 		</div>
+	);
+}
+
+function mergeRoomMessages(messages: RoomMessage[]): RoomMessage[] {
+	const byId = new Map(messages.map((message) => [message.id, message]));
+	return [...byId.values()].sort(
+		(left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id),
 	);
 }
 

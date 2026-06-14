@@ -58,6 +58,7 @@ test("participant messages fan out before asynchronous conductor work", async ()
 		messageSource.indexOf("context.waitUntil(broadcastSnapshot") <
 			messageSource.indexOf("context.waitUntil(\n\t\t\t\tconductorTurnBestEffort"),
 	);
+	assert.match(messageSource, /authorKind: author\.kind === "ai" \? "ai" : "human"/);
 	assert.doesNotMatch(messageSource, /await conductorTurnBestEffort/);
 });
 
@@ -337,6 +338,21 @@ test("launch preparation renews provisioning while GitHub branches are created",
 		/ensureRoomBranches\(env, snapshot\.room, snapshot\.participants, async \(\) =>/,
 	);
 	assert.match(launchSource, /renewProvisioningLease\(env\.DB, roomId\)/);
+});
+
+test("chat history preserves rotated live messages and recap events use chronology", async () => {
+	const source = await readFile(new URL("../src/client/App.tsx", import.meta.url), "utf8");
+	const chatStart = source.indexOf("function ChatPanel");
+	const chatEnd = source.indexOf("function Message", chatStart);
+	const chatSource = source.slice(chatStart, chatEnd);
+	const recapStart = source.indexOf("function Recap");
+	const recapEnd = source.indexOf("function RoomProgress", recapStart);
+	const recapSource = source.slice(recapStart, recapEnd);
+
+	assert.match(chatSource, /previousSnapshotMessages/);
+	assert.match(chatSource, /rotatedMessages/);
+	assert.match(chatSource, /mergeRoomMessages/);
+	assert.ok(recapSource.indexOf(".sort(") < recapSource.indexOf(".slice(-5)"));
 });
 
 test("message history is paginated through the existing viewer redaction policy", async () => {

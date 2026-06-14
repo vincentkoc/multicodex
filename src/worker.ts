@@ -283,7 +283,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 				env.DB,
 				roomId,
 				{
-					authorKind: "human",
+					authorKind: author.kind === "ai" ? "ai" : "human",
 					authorId: author.id,
 					targetKind,
 					targetId: clean(body.targetId, 100) || null,

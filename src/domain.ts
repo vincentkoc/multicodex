@@ -70,7 +70,7 @@ export type Participant = {
 export type RoomMessage = {
 	id: string;
 	roomId: string;
-	authorKind: "human" | "conductor" | "system";
+	authorKind: "human" | "ai" | "conductor" | "system";
 	authorId: string;
 	targetKind: MessageTargetKind;
 	targetId: string | null;
