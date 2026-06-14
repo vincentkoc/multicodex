@@ -199,10 +199,17 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		if (!displayName) throw new HttpError(400, "display name is required");
 		const requestId = clean(body.requestId, 100);
 		if (requestId.length < 20) throw new HttpError(400, "join request id is required");
+		const kind = body.kind === "observer" || body.kind === "ai" ? body.kind : "human";
+		if (
+			kind !== "observer" &&
+			!eventAccessAuthorized(request.headers.get("x-multicodex-event-code"), env.EVENT_ACCESS_CODE)
+		) {
+			throw new HttpError(401, "valid event code required for an active seat");
+		}
 		const joined = await addParticipant(env.DB, roomId, {
 			displayName,
 			githubLogin: clean(body.githubLogin, 80) || null,
-			kind: body.kind === "observer" || body.kind === "ai" ? body.kind : "human",
+			kind,
 			requestId,
 			maxAiSeats: roles.filter((role) => role.suitableForAISeat).length,
 		});

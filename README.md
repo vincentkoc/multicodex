@@ -37,10 +37,14 @@ without it. Production keeps simulation explicitly disabled.
 - An authenticated participant only receives the URL for their own workspace.
 - Only the host capability can approve a plan, provision workspaces, nudge a
   session, present, or end a room.
+- Builder and AI seats require the event code; public room links can still admit
+  read-only observers.
 - Active builder seats are capped at five. The Worker is the only component that
   holds OpenAI, GitHub, and Crabfleet service credentials.
 - Room repositories must appear in the deployment's `ALLOWED_REPOS` list.
   This fences both GitHub branch creation and Crabfleet provisioning.
+- Production launch fails closed without GitHub credentials. Only explicit
+  local simulation skips branch creation and ownership checks.
 
 ## Checks
 

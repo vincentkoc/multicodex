@@ -36,11 +36,14 @@ test("room creation and joins are recoverable", async () => {
 	assert.match(createSource, /requestId/);
 	assert.match(joinSource, /requestId/);
 	assert.match(joinSource, /maxAiSeats/);
+	assert.match(joinSource, /kind !== "observer"/);
+	assert.match(joinSource, /eventAccessAuthorized/);
 	assert.doesNotMatch(joinSource, /await addMessage/);
 	assert.match(client, /loadJoinRequestId/);
 	assert.match(client, /clearJoinRequestId/);
 	assert.match(client, /loadCreateRequestId/);
 	assert.match(client, /clearCreateRequestId/);
+	assert.match(client, /eventCode: kind === "human"/);
 });
 
 test("participant messages fan out before asynchronous conductor work", async () => {
@@ -159,6 +162,8 @@ test("observer controls stay read-only and presentation waits for success", asyn
 		source,
 		/snapshot\.room\.status === "presenting" \|\| snapshot\.room\.status === "ended"/,
 	);
+	assert.match(source, /setView\("recap"\)/);
+	assert.match(source, /class="button ghost recap-button"/);
 });
 
 test("conductor turns are claimed before model execution and cannot nudge workspaces", async () => {

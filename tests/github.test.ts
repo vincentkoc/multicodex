@@ -70,6 +70,14 @@ test("room creation fails closed when GitHub omits the default branch", async ()
 	}
 });
 
+test("branch provisioning skips GitHub credentials only in explicit simulation", async () => {
+	await assert.rejects(
+		ensureRoomBranches({ MULTICODEX_SIMULATION_MODE: "false" } as Env, room, []),
+		/GitHub token is not configured/,
+	);
+	await ensureRoomBranches({ MULTICODEX_SIMULATION_MODE: "true" } as unknown as Env, room, []);
+});
+
 test("branch provisioning safely reuses a room-owned ref after work advances it", async () => {
 	const originalFetch = globalThis.fetch;
 	const responses = [

@@ -65,9 +65,15 @@ export function joinRoom(
 		githubLogin: string;
 		kind: "human" | "observer";
 		requestId: string;
+		eventCode?: string;
 	},
 ): Promise<{ snapshot: RoomSnapshot } & RoomIdentity> {
-	return request(`/api/rooms/${encodeURIComponent(roomId)}/join`, { method: "POST", body: input });
+	const { eventCode, ...body } = input;
+	return request(`/api/rooms/${encodeURIComponent(roomId)}/join`, {
+		method: "POST",
+		body,
+		eventCode,
+	});
 }
 
 export function catalog(): Promise<Catalog> {

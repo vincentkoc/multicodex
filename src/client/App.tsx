@@ -277,6 +277,7 @@ function JoinRoom({
 }) {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
+	const [kind, setKind] = useState<"human" | "observer">("human");
 	const joinRequestId = useMemo(() => loadJoinRequestId(snapshot.room.id), [snapshot.room.id]);
 
 	async function submit(event: SubmitEvent) {
@@ -288,8 +289,9 @@ function JoinRoom({
 			const result = await joinRoom(snapshot.room.id, {
 				displayName: String(data.get("displayName") || ""),
 				githubLogin: String(data.get("githubLogin") || ""),
-				kind: data.get("kind") === "observer" ? "observer" : "human",
+				kind,
 				requestId: joinRequestId,
+				eventCode: kind === "human" ? String(data.get("eventCode") || "").trim() : undefined,
 			});
 			onEnter(result.snapshot, result);
 			clearJoinRequestId(snapshot.room.id);
@@ -335,11 +337,27 @@ function JoinRoom({
 				</label>
 				<label>
 					Seat
-					<select name="kind" defaultValue="human">
+					<select
+						name="kind"
+						value={kind}
+						onChange={(event) =>
+							setKind(
+								(event.currentTarget as HTMLSelectElement).value === "observer"
+									? "observer"
+									: "human",
+							)
+						}
+					>
 						<option value="human">Builder</option>
 						<option value="observer">Observer</option>
 					</select>
 				</label>
+				{kind === "human" && (
+					<label>
+						Event code
+						<input name="eventCode" type="password" required maxLength={200} autoComplete="off" />
+					</label>
+				)}
 				{error && <InlineError message={error} />}
 				<button class="button primary wide" type="submit" disabled={busy}>
 					<UserPlus size={17} />
@@ -376,6 +394,10 @@ function RoomWorkbench({
 	const isHost = snapshot.room.hostParticipantId === participantId;
 	const readOnly = me.kind === "observer";
 	const roleMap = useMemo(() => new Map(roleCatalog.map((role) => [role.id, role])), [roleCatalog]);
+
+	useEffect(() => {
+		if (snapshot.room.status === "presenting" || snapshot.room.status === "ended") setView("recap");
+	}, [snapshot.room.status]);
 
 	async function action(label: string, run: () => Promise<RoomSnapshot>): Promise<boolean> {
 		setBusy(label);
@@ -454,7 +476,7 @@ function RoomWorkbench({
 					<button class="icon-button" title="copy invite link" onClick={copyInvite}>
 						{copied ? <Check size={17} /> : <Copy size={17} />}
 					</button>
-					<button class="button ghost" onClick={() => setView("recap")}>
+					<button class="button ghost recap-button" onClick={() => setView("recap")}>
 						<MonitorPlay size={16} />
 						recap
 					</button>

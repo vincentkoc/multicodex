@@ -1417,6 +1417,14 @@ textarea:focus {
 		width: 40px;
 	}
 
+	.topbar-actions .button.recap-button {
+		display: inline-flex;
+		font-size: 0;
+		height: 40px;
+		padding: 0;
+		width: 40px;
+	}
+
 	.workbench {
 		display: block;
 	}

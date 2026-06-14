@@ -26,7 +26,10 @@ export async function ensureRoomBranches(
 	room: Room,
 	participants: Participant[],
 ): Promise<void> {
-	if (!env.GITHUB_TOKEN) return;
+	if (!env.GITHUB_TOKEN) {
+		if (String(env.MULTICODEX_SIMULATION_MODE) === "true") return;
+		throw new HttpError(503, "GitHub token is not configured");
+	}
 	const [owner, repo] = room.repo.split("/");
 	if (!owner || !repo) throw new HttpError(400, "repo must be owner/name");
 	const baseSha = await readBranchSha(env, owner, repo, room.baseBranch);
