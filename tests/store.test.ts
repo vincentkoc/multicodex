@@ -91,9 +91,11 @@ test("room creation persists the resolved repository base branch", async () => {
 	assert.match(createSource, /builder_invite_token/);
 	assert.match(createSource, /builderInviteToken/);
 	assert.match(createSource, /INSERT OR IGNORE INTO rooms/);
-	assert.match(createSource, /status IN \('setup', 'planning'\) AND updated_at < \?/);
+	assert.match(createSource, /replaceAll\("-", ""\)/);
+	assert.match(createSource, /\.slice\(0, 20\)/);
 	assert.match(createSource, /SELECT COUNT\(\*\) FROM rooms WHERE status != 'ended'/);
-	assert.doesNotMatch(createSource, /status != 'ended' AND updated_at/);
+	assert.doesNotMatch(createSource, /UPDATE rooms SET status = 'ended'/);
+	assert.doesNotMatch(createSource, /staleBefore/);
 	assert.doesNotMatch(createSource, /'main'/);
 });
 

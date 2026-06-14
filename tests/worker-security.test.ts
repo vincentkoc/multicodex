@@ -45,6 +45,9 @@ test("room creation and joins are recoverable", async () => {
 	assert.match(client, /clearCreateRequestId/);
 	assert.match(client, /inviteToken: kind !== "observer"/);
 	assert.match(client, /builderInviteTokenFromUrl/);
+	assert.match(client, /invite\.hash = new URLSearchParams/);
+	assert.match(client, /location\.hash\.replace/);
+	assert.doesNotMatch(client, /invite\.searchParams\.set/);
 	assert.match(client, /identity\.builderInviteToken/);
 	assert.match(client, /<option value="ai">AI builder<\/option>/);
 });

@@ -125,7 +125,6 @@ export async function createRoom(
 		baseBranch: string;
 		durationMinutes: number;
 		activeRoomLimit: number;
-		staleBefore: number;
 		requestId: string;
 	},
 ): Promise<{
@@ -140,15 +139,13 @@ export async function createRoom(
 	const hostId = newId("person");
 	const participantToken = newId("seat");
 	const builderInviteToken = newId("invite");
-	const slug = `${slugify(input.title).slice(0, 40)}-${roomId.slice(-6)}`;
+	const roomSuffix = roomId
+		.replace(/^room_/, "")
+		.replaceAll("-", "")
+		.slice(0, 20);
+	const slug = `${slugify(input.title).slice(0, 40)}-${roomSuffix}`;
 	const integrationBranch = `multicodex/${slug}/integration`;
-	const [, roomResult] = await db.batch([
-		db
-			.prepare(
-				`UPDATE rooms SET status = 'ended', updated_at = ?
-         WHERE status IN ('setup', 'planning') AND updated_at < ?`,
-			)
-			.bind(now, input.staleBefore),
+	const [roomResult] = await db.batch([
 		db
 			.prepare(
 				`INSERT OR IGNORE INTO rooms

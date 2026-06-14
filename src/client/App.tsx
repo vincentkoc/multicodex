@@ -441,7 +441,7 @@ function RoomWorkbench({
 	async function copyInvite() {
 		const invite = new URL(`/rooms/${snapshot.room.id}`, location.origin);
 		if (isHost && identity.builderInviteToken) {
-			invite.searchParams.set("invite", identity.builderInviteToken);
+			invite.hash = new URLSearchParams({ invite: identity.builderInviteToken }).toString();
 		}
 		await navigator.clipboard.writeText(invite.toString());
 		setCopied(true);
@@ -1449,7 +1449,7 @@ function roomIdFromPath(): string | null {
 }
 
 function builderInviteTokenFromUrl(): string | undefined {
-	const token = new URLSearchParams(location.search).get("invite")?.trim();
+	const token = new URLSearchParams(location.hash.replace(/^#/, "")).get("invite")?.trim();
 	return token || undefined;
 }
 
