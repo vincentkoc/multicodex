@@ -48,6 +48,7 @@ export function createRoom(input: {
 	repo: string;
 	durationMinutes: number;
 	eventCode: string;
+	requestId: string;
 }): Promise<{ snapshot: RoomSnapshot } & RoomIdentity> {
 	const { eventCode, ...body } = input;
 	return request("/api/rooms", { method: "POST", body, eventCode });

@@ -179,6 +179,7 @@ function CreateRoom({
 }) {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
+	const createRequestId = useMemo(loadCreateRequestId, []);
 
 	async function submit(event: SubmitEvent) {
 		event.preventDefault();
@@ -192,8 +193,10 @@ function CreateRoom({
 				repo: String(data.get("repo") || "vincentkoc/multicodex"),
 				durationMinutes: Number(data.get("durationMinutes") || 30),
 				eventCode: String(data.get("eventCode") || "").trim(),
+				requestId: createRequestId,
 			});
 			onEnter(result.snapshot, result);
+			clearCreateRequestId();
 		} catch (cause) {
 			setError(errorMessage(cause));
 		} finally {
@@ -1302,10 +1305,25 @@ function joinRequestKey(roomId: string): string {
 	return `multicodex.join-request.${roomId}`;
 }
 
+function loadCreateRequestId(): string {
+	return loadSessionRequestId("multicodex.create-request");
+}
+
+function clearCreateRequestId(): void {
+	clearSessionRequestId("multicodex.create-request");
+}
+
 function loadJoinRequestId(roomId: string): string {
+	return loadSessionRequestId(joinRequestKey(roomId));
+}
+
+function clearJoinRequestId(roomId: string): void {
+	clearSessionRequestId(joinRequestKey(roomId));
+}
+
+function loadSessionRequestId(key: string): string {
 	const requestId = crypto.randomUUID();
 	try {
-		const key = joinRequestKey(roomId);
 		const existing = sessionStorage.getItem(key);
 		if (existing) return existing;
 		sessionStorage.setItem(key, requestId);
@@ -1315,9 +1333,9 @@ function loadJoinRequestId(roomId: string): string {
 	return requestId;
 }
 
-function clearJoinRequestId(roomId: string): void {
+function clearSessionRequestId(key: string): void {
 	try {
-		sessionStorage.removeItem(joinRequestKey(roomId));
+		sessionStorage.removeItem(key);
 	} catch {
 		// Storage may be unavailable in hardened browser contexts.
 	}

@@ -1,6 +1,16 @@
 import type { Participant, Room } from "./domain.ts";
 import { HttpError, readBoundedText } from "./http.ts";
 
+class GitHubRequestError extends HttpError {
+	readonly upstreamStatus: number;
+
+	constructor(upstreamStatus: number, detail: string) {
+		super(502, `GitHub ${upstreamStatus}: ${detail || "request failed"}`);
+		this.name = "GitHubRequestError";
+		this.upstreamStatus = upstreamStatus;
+	}
+}
+
 export async function resolveRepoDefaultBranch(env: Env, repository: string): Promise<string> {
 	const [owner, repo] = repository.split("/");
 	if (!owner || !repo) throw new HttpError(400, "repo must be owner/name");
@@ -19,24 +29,60 @@ export async function ensureRoomBranches(
 	if (!env.GITHUB_TOKEN) return;
 	const [owner, repo] = room.repo.split("/");
 	if (!owner || !repo) throw new HttpError(400, "repo must be owner/name");
-	const base = await githubJson<{ object: { sha: string } }>(
-		env,
-		`/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(room.baseBranch)}`,
-	);
+	const baseSha = await readBranchSha(env, owner, repo, room.baseBranch);
+	if (!baseSha) throw new HttpError(502, "GitHub base branch was not found");
 	const branches = [
 		room.integrationBranch,
 		...participants.flatMap((participant) => (participant.branch ? [participant.branch] : [])),
 	];
 	for (const branch of new Set(branches)) {
-		await githubJson(env, `/repos/${owner}/${repo}/git/refs`, {
-			method: "POST",
-			body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: base.object.sha }),
-			headers: { "content-type": "application/json" },
-		}).catch((error) => {
-			if (error instanceof HttpError && error.message.includes("422")) return;
-			throw error;
-		});
+		const existingSha = await readBranchSha(env, owner, repo, branch);
+		if (existingSha) {
+			if (existingSha !== baseSha) {
+				throw new HttpError(409, `GitHub branch ${branch} already exists at an unexpected commit`);
+			}
+			continue;
+		}
+		try {
+			const created = await githubJson<unknown>(env, `/repos/${owner}/${repo}/git/refs`, {
+				method: "POST",
+				body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: baseSha }),
+				headers: { "content-type": "application/json" },
+			});
+			if (refSha(created) !== baseSha) {
+				throw new HttpError(502, `GitHub did not create branch ${branch} at the requested commit`);
+			}
+		} catch (error) {
+			if (!(error instanceof GitHubRequestError) || error.upstreamStatus !== 422) throw error;
+			if ((await readBranchSha(env, owner, repo, branch)) !== baseSha) throw error;
+		}
 	}
+}
+
+async function readBranchSha(
+	env: Env,
+	owner: string,
+	repo: string,
+	branch: string,
+): Promise<string | null> {
+	try {
+		return refSha(
+			await githubJson<unknown>(
+				env,
+				`/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(branch)}`,
+			),
+		);
+	} catch (error) {
+		if (error instanceof GitHubRequestError && error.upstreamStatus === 404) return null;
+		throw error;
+	}
+}
+
+function refSha(value: unknown): string | null {
+	if (!value || typeof value !== "object" || !("object" in value)) return null;
+	const object = value.object;
+	if (!object || typeof object !== "object" || !("sha" in object)) return null;
+	return typeof object.sha === "string" && object.sha ? object.sha : null;
 }
 
 async function githubJson<T = unknown>(env: Env, path: string, init: RequestInit = {}): Promise<T> {
@@ -52,7 +98,6 @@ async function githubJson<T = unknown>(env: Env, path: string, init: RequestInit
 		},
 	});
 	const text = await readBoundedText(response, 256 * 1024);
-	if (!response.ok)
-		throw new HttpError(502, `GitHub ${response.status}: ${text || "request failed"}`);
+	if (!response.ok) throw new GitHubRequestError(response.status, text);
 	return text ? (JSON.parse(text) as T) : ({} as T);
 }

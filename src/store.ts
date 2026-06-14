@@ -25,6 +25,7 @@ type RoomRow = {
 	base_branch: string;
 	integration_branch: string;
 	crabfleet_root_session_id: string | null;
+	creation_request_id: string | null;
 	brief_json: string;
 	brief_revision: number;
 	duration_minutes: number;
@@ -115,8 +116,11 @@ export async function createRoom(
 		durationMinutes: number;
 		activeRoomLimit: number;
 		activeUpdatedSince: number;
+		requestId: string;
 	},
 ): Promise<{ snapshot: RoomSnapshot; participantToken: string }> {
+	const replay = await replayCreatedRoom(db, input.requestId);
+	if (replay) return replay;
 	const now = Date.now();
 	const roomId = newId("room");
 	const hostId = newId("person");
@@ -126,10 +130,10 @@ export async function createRoom(
 	const [roomResult] = await db.batch([
 		db
 			.prepare(
-				`INSERT INTO rooms
+				`INSERT OR IGNORE INTO rooms
           (id, slug, title, status, host_participant_id, repo, base_branch, integration_branch,
-           duration_minutes, created_at, updated_at)
-         SELECT ?, ?, ?, 'setup', ?, ?, ?, ?, ?, ?, ?
+           creation_request_id, duration_minutes, created_at, updated_at)
+         SELECT ?, ?, ?, 'setup', ?, ?, ?, ?, ?, ?, ?, ?
          WHERE (
            SELECT COUNT(*) FROM rooms WHERE status != 'ended' AND updated_at >= ?
          ) < ?`,
@@ -142,6 +146,7 @@ export async function createRoom(
 				input.repo,
 				input.baseBranch,
 				integrationBranch,
+				input.requestId,
 				input.durationMinutes,
 				now,
 				now,
@@ -170,8 +175,29 @@ export async function createRoom(
 				roomId,
 			),
 	]);
-	if (roomResult?.meta.changes !== 1) throw new HttpError(429, "active room limit reached");
+	if (roomResult?.meta.changes !== 1) {
+		const replay = await replayCreatedRoom(db, input.requestId);
+		if (replay) return replay;
+		throw new HttpError(429, "active room limit reached");
+	}
 	return { snapshot: await readRoomSnapshot(db, roomId), participantToken };
+}
+
+export async function replayCreatedRoom(
+	db: D1Database,
+	requestId: string,
+): Promise<{ snapshot: RoomSnapshot; participantToken: string } | null> {
+	const room = await db
+		.prepare("SELECT id, host_participant_id FROM rooms WHERE creation_request_id = ?")
+		.bind(requestId)
+		.first<{ id: string; host_participant_id: string }>();
+	if (!room) return null;
+	const host = await db
+		.prepare("SELECT access_token FROM participants WHERE id = ? AND room_id = ?")
+		.bind(room.host_participant_id, room.id)
+		.first<{ access_token: string | null }>();
+	if (!host?.access_token) throw new HttpError(409, "room creation is incomplete");
+	return { snapshot: await readRoomSnapshot(db, room.id), participantToken: host.access_token };
 }
 
 export async function readRoomSnapshot(db: D1Database, roomId: string): Promise<RoomSnapshot> {

@@ -32,3 +32,13 @@ test("join request capabilities can be recovered idempotently", async () => {
 	assert.match(migration, /join_request_id TEXT/);
 	assert.match(migration, /UNIQUE INDEX idx_participants_room_join_request/);
 });
+
+test("room creation capabilities can be recovered idempotently", async () => {
+	const migration = await readFile(
+		new URL("../migrations/0006_room_creation_requests.sql", import.meta.url),
+		"utf8",
+	);
+
+	assert.match(migration, /creation_request_id TEXT/);
+	assert.match(migration, /UNIQUE INDEX idx_rooms_creation_request_id/);
+});

@@ -54,6 +54,7 @@ import {
 	readRoomSnapshot,
 	recordProvisioningBinding,
 	releaseRoomRuntimeLease,
+	replayCreatedRoom,
 	renewProvisioningLease,
 	replacePlan,
 	requireRoomParticipant,
@@ -72,6 +73,13 @@ const messageStatuses: RoomStatus[] = [
 	"setup",
 	"planning",
 	"provisioning",
+	"building",
+	"integrating",
+	"presenting",
+];
+const scopeChangeStatuses: RoomStatus[] = [
+	"setup",
+	"planning",
 	"building",
 	"integrating",
 	"presenting",
@@ -118,7 +126,18 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			hostName?: string;
 			repo?: string;
 			durationMinutes?: number;
+			requestId?: string;
 		}>(request);
+		const requestId = clean(body.requestId, 100);
+		if (requestId.length < 20) throw new HttpError(400, "room creation request id is required");
+		const replay = await replayCreatedRoom(env.DB, requestId);
+		if (replay) {
+			return json({
+				snapshot: snapshotForViewer(replay.snapshot, replay.snapshot.room.hostParticipantId),
+				participantId: replay.snapshot.room.hostParticipantId,
+				participantToken: replay.participantToken,
+			});
+		}
 		const title = clean(body.title, 100) || "OpenAI event room";
 		const hostName = clean(body.hostName, 80) || "Host";
 		const durationMinutes = Math.max(5, Math.min(240, Math.floor(body.durationMinutes ?? 30)));
@@ -135,6 +154,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			durationMinutes,
 			activeRoomLimit: activeRoomLimit(env.MAX_ACTIVE_ROOMS),
 			activeUpdatedSince: Date.now() - 6 * 60 * 60 * 1000,
+			requestId,
 		});
 		context.waitUntil(broadcastSnapshot(env, created.snapshot));
 		return json(
@@ -493,6 +513,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			throw new HttpError(403, "host approval required to cut a task");
 		}
 		const restoring = task.state === "cut";
+		const allowedStatuses = scopeChange ? scopeChangeStatuses : messageStatuses;
 		const taskUpdated =
 			scopeChange && body.state !== task.state
 				? await updateTaskStateWithDecision(
@@ -501,7 +522,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 						taskId,
 						body.state,
 						task.state,
-						messageStatuses,
+						allowedStatuses,
 						{
 							title: `${restoring ? "Restore" : "Cut"} ${task.title}`,
 							decision: `${task.title} was ${restoring ? "restored to" : "removed from"} the room scope.`,
@@ -511,7 +532,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 							affectedTaskIds: [task.id],
 						},
 					)
-				: await updateTaskState(env.DB, roomId, taskId, body.state, task.state, messageStatuses);
+				: await updateTaskState(env.DB, roomId, taskId, body.state, task.state, allowedStatuses);
 		if (!taskUpdated) {
 			throw new HttpError(409, "room is no longer accepting task updates");
 		}

@@ -18,7 +18,7 @@ test("worker mutation routes keep terminal rooms immutable", async () => {
 	assert.match(refreshSource, /expectedStatuses: runtimeRefreshStatuses/);
 });
 
-test("room creation resolves base branches and joins are recoverable", async () => {
+test("room creation and joins are recoverable", async () => {
 	const [worker, client] = await Promise.all([
 		readFile(new URL("../src/worker.ts", import.meta.url), "utf8"),
 		readFile(new URL("../src/client/App.tsx", import.meta.url), "utf8"),
@@ -29,13 +29,18 @@ test("room creation resolves base branches and joins are recoverable", async () 
 	const joinEnd = worker.indexOf("const messagesMatch", joinStart);
 	const joinSource = worker.slice(joinStart, joinEnd);
 
-	assert.match(createSource, /resolveRepoDefaultBranch/);
+	assert.ok(
+		createSource.indexOf("replayCreatedRoom") < createSource.indexOf("resolveRepoDefaultBranch"),
+	);
 	assert.match(createSource, /baseBranch/);
+	assert.match(createSource, /requestId/);
 	assert.match(joinSource, /requestId/);
 	assert.match(joinSource, /maxAiSeats/);
 	assert.doesNotMatch(joinSource, /await addMessage/);
 	assert.match(client, /loadJoinRequestId/);
 	assert.match(client, /clearJoinRequestId/);
+	assert.match(client, /loadCreateRequestId/);
+	assert.match(client, /clearCreateRequestId/);
 });
 
 test("participant messages fan out before asynchronous conductor work", async () => {
@@ -190,6 +195,8 @@ test("only the host can cut an approved task and the cut is recorded", async () 
 	assert.match(taskSource, /await updateTaskStateWithDecision/);
 	assert.doesNotMatch(taskSource, /await addDecision/);
 	assert.match(taskSource, /affectedTaskIds: \[task\.id\]/);
+	assert.match(taskSource, /scopeChange \? scopeChangeStatuses : messageStatuses/);
+	assert.doesNotMatch(taskSource, /scopeChangeStatuses[\s\S]*"provisioning"/);
 });
 
 test("plan approval revalidates the current repository allowlist", async () => {

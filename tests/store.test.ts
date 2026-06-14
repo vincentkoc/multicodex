@@ -73,7 +73,22 @@ test("room creation persists the resolved repository base branch", async () => {
 
 	assert.match(createSource, /baseBranch: string/);
 	assert.match(createSource, /input\.baseBranch/);
+	assert.match(createSource, /replayCreatedRoom/);
+	assert.match(createSource, /creation_request_id/);
+	assert.match(createSource, /INSERT OR IGNORE INTO rooms/);
 	assert.doesNotMatch(createSource, /'main'/);
+});
+
+test("room creation replay recovers the original host capability", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function replayCreatedRoom");
+	const end = source.indexOf("export async function readRoomSnapshot", start);
+	const replaySource = source.slice(start, end);
+
+	assert.match(replaySource, /WHERE creation_request_id = \?/);
+	assert.match(replaySource, /host_participant_id/);
+	assert.match(replaySource, /access_token/);
+	assert.match(replaySource, /readRoomSnapshot/);
 });
 
 test("task updates are atomically fenced against terminal rooms", async () => {
