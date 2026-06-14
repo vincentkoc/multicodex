@@ -84,6 +84,7 @@ function plannedSnapshot(): RoomSnapshot {
 			},
 		],
 		messages: [],
+		messageCount: 0,
 		tasks: [
 			{
 				id: "task",

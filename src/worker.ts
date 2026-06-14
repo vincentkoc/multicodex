@@ -52,6 +52,7 @@ import {
 	endRoom,
 	listRuntimeRoomIdsNeedingCleanup,
 	markRoomCleanup,
+	readRoomMessagesPage,
 	readRoomSnapshot,
 	recordProvisioningBinding,
 	releaseRoomRuntimeLease,
@@ -234,6 +235,33 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 	}
 
 	const messagesMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/messages$/);
+	if (request.method === "GET" && messagesMatch) {
+		const roomId = decodeURIComponent(messagesMatch[1] ?? "");
+		const snapshot = await readRoomSnapshot(env.DB, roomId);
+		const token = optionalParticipantToken(request);
+		const viewer = token ? await requireRoomParticipant(env.DB, roomId, token) : null;
+		const beforeValue = url.searchParams.get("before");
+		const beforeId = clean(url.searchParams.get("beforeId"), 100);
+		const beforeCreatedAt = beforeValue === null ? null : Number(beforeValue);
+		if (
+			(beforeCreatedAt !== null || beforeId) &&
+			(!Number.isSafeInteger(beforeCreatedAt) || Number(beforeCreatedAt) < 0 || !beforeId)
+		) {
+			throw new HttpError(400, "valid message cursor required");
+		}
+		const requestedLimit = Number(url.searchParams.get("limit") ?? "100");
+		if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1) {
+			throw new HttpError(400, "valid message limit required");
+		}
+		const messages = await readRoomMessagesPage(
+			env.DB,
+			roomId,
+			beforeCreatedAt === null ? null : { createdAt: beforeCreatedAt, id: beforeId },
+			Math.min(100, requestedLimit),
+		);
+		const visible = snapshotForViewer({ ...snapshot, messages }, viewer?.id);
+		return json({ messages: visible.messages, messageCount: snapshot.messageCount });
+	}
 	if (request.method === "POST" && messagesMatch) {
 		const roomId = decodeURIComponent(messagesMatch[1] ?? "");
 		const author = await requireRoomParticipant(env.DB, roomId, participantToken(request), false);
@@ -764,7 +792,12 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 }
 
 async function reconcileRuntimeRooms(env: Env): Promise<void> {
-	for (const roomId of await listRuntimeRoomIdsNeedingCleanup(env.DB, Date.now())) {
+	const now = Date.now();
+	for (const roomId of await listRuntimeRoomIdsNeedingCleanup(
+		env.DB,
+		now,
+		now - provisioningLeaseMilliseconds,
+	)) {
 		try {
 			await reconcileRuntimeRoom(env, roomId);
 		} catch (error) {
@@ -785,7 +818,10 @@ async function reconcileRuntimeRoom(env: Env, roomId: string): Promise<void> {
 	const cleanupPending =
 		snapshot.room.status === "cleanup-planning" || snapshot.room.status === "cleanup-ending";
 	const expired = snapshot.room.endsAt !== null && snapshot.room.endsAt <= now;
-	if (!cleanupPending && !expired) return;
+	const provisioningStale =
+		snapshot.room.status === "provisioning" &&
+		snapshot.room.updatedAt <= now - provisioningLeaseMilliseconds;
+	if (!cleanupPending && !expired && !provisioningStale) return;
 	if (snapshot.room.status === "cleanup-planning" && !expired) {
 		await reconcileFailedLaunchCleanup(env, roomId);
 		return;
@@ -797,6 +833,10 @@ async function reconcileRuntimeRoom(env: Env, roomId: string): Promise<void> {
 			return;
 		}
 		snapshot = await readRoomSnapshot(env.DB, roomId);
+		if (!expired) {
+			await reconcileFailedLaunchCleanup(env, roomId);
+			return;
+		}
 	}
 	const runtimeMayExist =
 		snapshot.room.startedAt !== null ||

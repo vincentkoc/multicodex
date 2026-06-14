@@ -61,8 +61,21 @@ test("builder joins atomically invalidate stale plans and enforce the five-seat 
 		/COUNT\(\*\) FROM participants WHERE room_id = \? AND kind = 'ai'/,
 	);
 	assert.match(addParticipantSource, /INSERT INTO room_messages/);
-	assert.match(addParticipantSource, /replay\?\.access_token/);
+	assert.match(addParticipantSource, /participantReplay\(existing, input\)/);
+	assert.match(addParticipantSource, /participantReplay\(replay, input\)/);
 	assert.match(addParticipantSource, /const \[result\] = await db\.batch\(statements\)/);
+});
+
+test("join request replays preserve immutable seat identity", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("function participantReplay");
+	const end = source.indexOf("function messageFromRow", start);
+	const replaySource = source.slice(start, end);
+
+	assert.match(replaySource, /row\.kind !== input\.kind/);
+	assert.match(replaySource, /row\.display_name !== input\.displayName/);
+	assert.match(replaySource, /row\.github_login !== \(input\.githubLogin \?\? null\)/);
+	assert.match(replaySource, /join request does not match the original seat/);
 });
 
 test("room creation persists the resolved repository base branch", async () => {
@@ -106,16 +119,30 @@ test("room snapshots read all redaction-related state from one D1 snapshot", asy
 	assert.match(snapshotSource, /await db\.batch/);
 	assert.doesNotMatch(snapshotSource, /Promise\.all/);
 	assert.match(snapshotSource, /room_runtime_redactions/);
+	assert.match(snapshotSource, /COUNT\(\*\) AS count FROM room_messages/);
+	assert.match(snapshotSource, /messageCount: Number/);
 });
 
-test("expired runtime and pending cleanup rooms are discoverable", async () => {
+test("room message history uses a stable bounded cursor", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function readRoomMessagesPage");
+	const end = source.indexOf("export async function addParticipant", start);
+	const pageSource = source.slice(start, end);
+
+	assert.match(pageSource, /created_at < \?/);
+	assert.match(pageSource, /created_at = \? AND id < \?/);
+	assert.match(pageSource, /ORDER BY created_at DESC, id DESC/);
+	assert.match(pageSource, /Math\.max\(1, Math\.min\(100, limit\)\)/);
+});
+
+test("expired runtime, stale provisioning, and pending cleanup rooms are discoverable", async () => {
 	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
 	const start = source.indexOf("export async function listRuntimeRoomIdsNeedingCleanup");
 	const end = source.indexOf("export function participantBranch", start);
 	const expirySource = source.slice(start, end);
 
 	assert.match(expirySource, /ends_at IS NOT NULL AND ends_at <= \?/);
-	assert.match(expirySource, /'provisioning'/);
+	assert.match(expirySource, /status = 'provisioning' AND updated_at <= \?/);
 	assert.match(expirySource, /status IN \('cleanup-planning', 'cleanup-ending'\)/);
 	assert.match(expirySource, /'cleanup-ending'/);
 	assert.match(expirySource, /LIMIT \?/);

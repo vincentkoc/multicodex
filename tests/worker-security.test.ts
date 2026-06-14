@@ -312,6 +312,7 @@ test("scheduled reconciliation retries cleanup and expires runtime rooms", async
 	assert.match(config, /"crons": \["\*\/2 \* \* \* \*"\]/);
 	assert.match(worker, /context\.waitUntil\(reconcileRuntimeRooms\(env\)\)/);
 	assert.match(expirySource, /listRuntimeRoomIdsNeedingCleanup/);
+	assert.match(expirySource, /provisioningStale/);
 	assert.match(expirySource, /claimStaleProvisioningCleanup/);
 	assert.match(expirySource, /beginRoomCleanup/);
 	assert.match(expirySource, /reconcileFailedLaunchCleanup/);
@@ -320,6 +321,19 @@ test("scheduled reconciliation retries cleanup and expires runtime rooms", async
 	assert.match(expirySource, /resetRoomProvisioning/);
 	assert.match(expirySource, /await endRoom/);
 	assert.match(expirySource, /finally \{\s*await releaseRoomRuntimeLease/);
+});
+
+test("message history is paginated through the existing viewer redaction policy", async () => {
+	const worker = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
+	const start = worker.indexOf("const messagesMatch");
+	const end = worker.indexOf("const shuffleMatch", start);
+	const messagesSource = worker.slice(start, end);
+
+	assert.match(messagesSource, /request\.method === "GET"/);
+	assert.match(messagesSource, /readRoomMessagesPage/);
+	assert.match(messagesSource, /beforeId/);
+	assert.match(messagesSource, /snapshotForViewer\(\{ \.\.\.snapshot, messages \}, viewer\?\.id\)/);
+	assert.match(messagesSource, /messageCount: snapshot\.messageCount/);
 });
 
 test("public terminal room links render the preserved recap", async () => {

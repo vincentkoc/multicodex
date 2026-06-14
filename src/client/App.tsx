@@ -38,6 +38,7 @@ import {
 	joinRoom,
 	nudgeParticipant,
 	postMessage,
+	readMessagesPage,
 	readRoom,
 	type RoomIdentity,
 	roomAction,
@@ -874,11 +875,56 @@ function ChatPanel({
 	const [target, setTarget] = useState<Target>({ kind: "room" });
 	const [text, setText] = useState("");
 	const [sending, setSending] = useState(false);
+	const [loadingHistory, setLoadingHistory] = useState(false);
+	const [olderMessages, setOlderMessages] = useState<RoomMessage[]>([]);
 	const timeline = useRef<HTMLDivElement>(null);
+	const messages = useMemo(() => {
+		const byId = new Map(
+			[...olderMessages, ...snapshot.messages].map((message) => [message.id, message]),
+		);
+		return [...byId.values()].sort(
+			(left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id),
+		);
+	}, [olderMessages, snapshot.messages]);
+	const hasEarlierMessages = messages.length < snapshot.messageCount;
 
 	useEffect(() => {
 		timeline.current?.scrollTo({ top: timeline.current.scrollHeight, behavior: "smooth" });
-	}, [snapshot.messages.length]);
+	}, [snapshot.room.id, snapshot.messages.at(-1)?.id]);
+
+	useEffect(() => {
+		setOlderMessages([]);
+	}, [snapshot.room.id]);
+
+	async function loadEarlierMessages() {
+		const earliest = messages[0];
+		if (!earliest || loadingHistory) return;
+		setLoadingHistory(true);
+		onError("");
+		const previousHeight = timeline.current?.scrollHeight ?? 0;
+		try {
+			const page = await readMessagesPage(
+				snapshot.room.id,
+				{ createdAt: earliest.createdAt, id: earliest.id },
+				participantToken,
+			);
+			setOlderMessages((current) => {
+				const byId = new Map(
+					[...page.messages, ...current].map((message) => [message.id, message]),
+				);
+				return [...byId.values()];
+			});
+			requestAnimationFrame(() => {
+				if (timeline.current) {
+					timeline.current.scrollTop += timeline.current.scrollHeight - previousHeight;
+				}
+			});
+		} catch (cause) {
+			onError(errorMessage(cause));
+		} finally {
+			setLoadingHistory(false);
+		}
+	}
 
 	async function submit(event: SubmitEvent) {
 		event.preventDefault();
@@ -910,7 +956,17 @@ function ChatPanel({
 				<span class="presence online" />
 			</div>
 			<div class="timeline" ref={timeline}>
-				{snapshot.messages.map((message) => (
+				{hasEarlierMessages && (
+					<button
+						type="button"
+						class="history-button"
+						disabled={loadingHistory}
+						onClick={loadEarlierMessages}
+					>
+						{loadingHistory ? "loading..." : "load earlier"}
+					</button>
+				)}
+				{messages.map((message) => (
 					<Message
 						key={message.id}
 						message={message}
@@ -1169,7 +1225,7 @@ function Recap({
 						<span>visible calls</span>
 					</div>
 					<div>
-						<strong>{snapshot.messages.length}</strong>
+						<strong>{snapshot.messageCount}</strong>
 						<span>room events</span>
 					</div>
 				</div>

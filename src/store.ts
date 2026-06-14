@@ -56,6 +56,14 @@ type ParticipantRow = {
 	updated_at: number;
 };
 
+type ParticipantJoinInput = {
+	displayName: string;
+	kind: ParticipantKind;
+	githubLogin?: string | null;
+	requestId: string;
+	maxAiSeats: number;
+};
+
 type MessageRow = {
 	id: string;
 	room_id: string;
@@ -236,26 +244,35 @@ export async function roomBuilderInviteAuthorized(
 }
 
 export async function readRoomSnapshot(db: D1Database, roomId: string): Promise<RoomSnapshot> {
-	const [rooms, participants, messages, tasks, decisions, conductorActions, runtimeRedactions] =
-		await db.batch([
-			db.prepare("SELECT * FROM rooms WHERE id = ?").bind(roomId),
-			db
-				.prepare("SELECT * FROM participants WHERE room_id = ? ORDER BY created_at ASC")
-				.bind(roomId),
-			db
-				.prepare("SELECT * FROM room_messages WHERE room_id = ? ORDER BY created_at DESC LIMIT 500")
-				.bind(roomId),
-			db.prepare("SELECT * FROM tasks WHERE room_id = ? ORDER BY created_at ASC").bind(roomId),
-			db.prepare("SELECT * FROM decisions WHERE room_id = ? ORDER BY created_at ASC").bind(roomId),
-			db
-				.prepare("SELECT * FROM conductor_actions WHERE room_id = ? ORDER BY created_at ASC")
-				.bind(roomId),
-			db
-				.prepare(
-					"SELECT identifier FROM room_runtime_redactions WHERE room_id = ? ORDER BY created_at ASC",
-				)
-				.bind(roomId),
-		]);
+	const [
+		rooms,
+		participants,
+		messages,
+		messageCount,
+		tasks,
+		decisions,
+		conductorActions,
+		runtimeRedactions,
+	] = await db.batch([
+		db.prepare("SELECT * FROM rooms WHERE id = ?").bind(roomId),
+		db.prepare("SELECT * FROM participants WHERE room_id = ? ORDER BY created_at ASC").bind(roomId),
+		db
+			.prepare(
+				"SELECT * FROM room_messages WHERE room_id = ? ORDER BY created_at DESC, id DESC LIMIT 500",
+			)
+			.bind(roomId),
+		db.prepare("SELECT COUNT(*) AS count FROM room_messages WHERE room_id = ?").bind(roomId),
+		db.prepare("SELECT * FROM tasks WHERE room_id = ? ORDER BY created_at ASC").bind(roomId),
+		db.prepare("SELECT * FROM decisions WHERE room_id = ? ORDER BY created_at ASC").bind(roomId),
+		db
+			.prepare("SELECT * FROM conductor_actions WHERE room_id = ? ORDER BY created_at ASC")
+			.bind(roomId),
+		db
+			.prepare(
+				"SELECT identifier FROM room_runtime_redactions WHERE room_id = ? ORDER BY created_at ASC",
+			)
+			.bind(roomId),
+	]);
 	const roomResult = rooms?.results[0] as RoomRow | undefined;
 	if (!roomResult) throw new HttpError(404, "room not found");
 	const participantRows = (participants?.results ?? []) as ParticipantRow[];
@@ -264,10 +281,12 @@ export async function readRoomSnapshot(db: D1Database, roomId: string): Promise<
 	const decisionRows = (decisions?.results ?? []) as DecisionRow[];
 	const actionRows = (conductorActions?.results ?? []) as ActionRow[];
 	const redactionRows = (runtimeRedactions?.results ?? []) as Array<{ identifier: string }>;
+	const countRow = messageCount?.results[0] as { count: number | string } | undefined;
 	return {
 		room: roomFromRow(roomResult),
 		participants: participantRows.map(participantFromRow),
 		messages: messageRows.reverse().map(messageFromRow),
+		messageCount: Number(countRow?.count ?? messageRows.length),
 		tasks: taskRows.map(taskFromRow),
 		decisions: decisionRows.map(decisionFromRow),
 		conductorActions: actionRows.map(actionFromRow),
@@ -275,24 +294,46 @@ export async function readRoomSnapshot(db: D1Database, roomId: string): Promise<
 	};
 }
 
+export async function readRoomMessagesPage(
+	db: D1Database,
+	roomId: string,
+	before: { createdAt: number; id: string } | null,
+	limit = 100,
+): Promise<RoomMessage[]> {
+	const boundedLimit = Math.max(1, Math.min(100, limit));
+	const result = before
+		? await db
+				.prepare(
+					`SELECT * FROM room_messages
+           WHERE room_id = ? AND (created_at < ? OR (created_at = ? AND id < ?))
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?`,
+				)
+				.bind(roomId, before.createdAt, before.createdAt, before.id, boundedLimit)
+				.all<MessageRow>()
+		: await db
+				.prepare(
+					`SELECT * FROM room_messages
+           WHERE room_id = ?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?`,
+				)
+				.bind(roomId, boundedLimit)
+				.all<MessageRow>();
+	return result.results.reverse().map(messageFromRow);
+}
+
 export async function addParticipant(
 	db: D1Database,
 	roomId: string,
-	input: {
-		displayName: string;
-		kind: ParticipantKind;
-		githubLogin?: string | null;
-		requestId: string;
-		maxAiSeats: number;
-	},
+	input: ParticipantJoinInput,
 ): Promise<{ participant: Participant; participantToken: string }> {
 	const existing = await db
 		.prepare("SELECT * FROM participants WHERE room_id = ? AND join_request_id = ?")
 		.bind(roomId, input.requestId)
 		.first<ParticipantRow>();
-	if (existing?.access_token) {
-		return { participant: participantFromRow(existing), participantToken: existing.access_token };
-	}
+	const existingReplay = participantReplay(existing, input);
+	if (existingReplay) return existingReplay;
 	const room = await db
 		.prepare("SELECT slug, status FROM rooms WHERE id = ?")
 		.bind(roomId)
@@ -398,9 +439,8 @@ export async function addParticipant(
 			.prepare("SELECT * FROM participants WHERE room_id = ? AND join_request_id = ?")
 			.bind(roomId, input.requestId)
 			.first<ParticipantRow>();
-		if (replay?.access_token) {
-			return { participant: participantFromRow(replay), participantToken: replay.access_token };
-		}
+		const insertedReplay = participantReplay(replay, input);
+		if (insertedReplay) return insertedReplay;
 		throw new HttpError(409, "room is no longer accepting this seat");
 	}
 	return {
@@ -1142,20 +1182,22 @@ export async function endRoom(db: D1Database, roomId: string): Promise<boolean> 
 export async function listRuntimeRoomIdsNeedingCleanup(
 	db: D1Database,
 	now: number,
+	staleBefore: number,
 	limit = 20,
 ): Promise<string[]> {
 	const result = await db
 		.prepare(
 			`SELECT id FROM rooms
        WHERE status IN ('cleanup-planning', 'cleanup-ending')
+          OR (status = 'provisioning' AND updated_at <= ?)
           OR (
             ends_at IS NOT NULL AND ends_at <= ?
-            AND status IN ('provisioning', 'building', 'integrating', 'presenting')
+            AND status IN ('building', 'integrating', 'presenting')
           )
        ORDER BY updated_at ASC
        LIMIT ?`,
 		)
-		.bind(now, Math.max(1, Math.min(100, limit)))
+		.bind(staleBefore, now, Math.max(1, Math.min(100, limit)))
 		.all<{ id: string }>();
 	return result.results.map((row) => row.id);
 }
@@ -1225,6 +1267,21 @@ function participantFromRow(row: ParticipantRow): Participant {
 		createdAt: row.created_at,
 		updatedAt: row.updated_at,
 	};
+}
+
+function participantReplay(
+	row: ParticipantRow | null,
+	input: ParticipantJoinInput,
+): { participant: Participant; participantToken: string } | null {
+	if (!row?.access_token) return null;
+	if (
+		row.kind !== input.kind ||
+		row.display_name !== input.displayName ||
+		row.github_login !== (input.githubLogin ?? null)
+	) {
+		throw new HttpError(409, "join request does not match the original seat");
+	}
+	return { participant: participantFromRow(row), participantToken: row.access_token };
 }
 
 function messageFromRow(row: MessageRow): RoomMessage {

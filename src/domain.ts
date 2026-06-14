@@ -122,6 +122,7 @@ export type RoomSnapshot = {
 	room: Room;
 	participants: Participant[];
 	messages: RoomMessage[];
+	messageCount: number;
 	tasks: Task[];
 	decisions: Decision[];
 	conductorActions: ConductorAction[];

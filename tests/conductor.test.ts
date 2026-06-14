@@ -184,6 +184,7 @@ function conductorSnapshot(): RoomSnapshot {
 				createdAt: 1,
 			},
 		],
+		messageCount: 1,
 		tasks: [],
 		decisions: [],
 		conductorActions: [],

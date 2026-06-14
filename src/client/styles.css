@@ -1083,6 +1083,24 @@ textarea:focus {
 	padding: 10px 12px 30px;
 }
 
+.history-button {
+	background: transparent;
+	border: 0;
+	color: var(--blue);
+	cursor: pointer;
+	font:
+		600 9px "DM Mono",
+		monospace;
+	padding: 8px;
+	text-transform: uppercase;
+	width: 100%;
+}
+
+.history-button:disabled {
+	cursor: wait;
+	opacity: 0.55;
+}
+
 .message {
 	border-bottom: 1px solid #e5e8e3;
 	padding: 12px 4px;

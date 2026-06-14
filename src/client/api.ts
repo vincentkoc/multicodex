@@ -1,4 +1,4 @@
-import type { RoomSnapshot, TaskState } from "../domain.ts";
+import type { RoomMessage, RoomSnapshot, TaskState } from "../domain.ts";
 
 export type Catalog = {
 	ideas: Array<{
@@ -57,6 +57,21 @@ export function createRoom(input: {
 
 export function readRoom(roomId: string, participantToken?: string | null): Promise<RoomSnapshot> {
 	return request(`/api/rooms/${encodeURIComponent(roomId)}`, { participantToken });
+}
+
+export function readMessagesPage(
+	roomId: string,
+	before: { createdAt: number; id: string },
+	participantToken?: string | null,
+): Promise<{ messages: RoomMessage[]; messageCount: number }> {
+	const query = new URLSearchParams({
+		before: String(before.createdAt),
+		beforeId: before.id,
+		limit: "100",
+	});
+	return request(`/api/rooms/${encodeURIComponent(roomId)}/messages?${query}`, {
+		participantToken,
+	});
 }
 
 export function joinRoom(
