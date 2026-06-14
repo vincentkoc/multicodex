@@ -30,6 +30,7 @@ export async function provisionRoomCrabboxes(
 		owner: host.githubLogin || slugify(host.displayName, "host"),
 		repo: room.repo,
 		branch: host.branch || room.integrationBranch,
+		baseBranch: room.baseBranch,
 		purpose: hostTask?.title || "room integration",
 		summary: "starting room integration",
 		prompt: hostTask ? taskPrompt(room.brief, host, hostTask) : "Coordinate the room integration.",
@@ -45,6 +46,7 @@ export async function provisionRoomCrabboxes(
 						owner: participant.githubLogin || slugify(participant.displayName, "participant"),
 						repo: room.repo,
 						branch: participant.branch || room.integrationBranch,
+						baseBranch: room.baseBranch,
 						parentSessionId: root.session.id,
 						rootSessionId: root.session.id,
 						purpose: task?.title || participant.roleId || "room task",
@@ -119,6 +121,7 @@ async function createCrabbox(
 		owner: string;
 		repo: string;
 		branch: string;
+		baseBranch: string;
 		parentSessionId?: string;
 		rootSessionId?: string;
 		purpose: string;
