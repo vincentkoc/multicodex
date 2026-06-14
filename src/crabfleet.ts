@@ -178,8 +178,11 @@ export async function readRoomCrabboxes(
 		env,
 		`/api/openclaw/session-roots/${encodeURIComponent(rootSessionId)}`,
 	);
-	const body = await responseJson<{ crabboxes?: CrabboxBinding[] }>(response);
-	return body.crabboxes ?? [];
+	const body = await responseJson<unknown>(response);
+	if (!isRecord(body) || !Array.isArray(body.crabboxes)) {
+		throw new HttpError(502, "Crabfleet returned an invalid session tree");
+	}
+	return body.crabboxes.map((binding) => validatedCrabboxBinding(binding, rootSessionId));
 }
 
 export async function sendCrabboxNudge(
@@ -224,22 +227,23 @@ export async function stopRoomCrabboxes(
 			signal: AbortSignal.timeout(75_000),
 		},
 	);
-	const result = await responseJson<{
-		rootSessionId?: string;
-		admissionClosed?: boolean;
-		crabboxes?: CrabboxBinding[];
-	}>(response);
+	const result = await responseJson<unknown>(response);
+	if (!isRecord(result) || !Array.isArray(result.crabboxes)) {
+		throw new HttpError(502, "Crabfleet cleanup did not reach a terminal state");
+	}
+	const crabboxes = result.crabboxes.map((binding) =>
+		validatedCrabboxBinding(binding, rootSessionId),
+	);
 	const terminalSessionIds = new Set(
-		result.crabboxes
-			?.filter((binding) => terminalCrabfleetStatuses.has(binding.session.status))
-			.map((binding) => binding.session.id) ?? [],
+		crabboxes
+			.filter((binding) => terminalCrabfleetStatuses.has(binding.session.status))
+			.map((binding) => binding.session.id),
 	);
 	const knownSessionIds = new Set([rootSessionId, ...sessionIds]);
 	if (
 		result.rootSessionId !== rootSessionId ||
 		result.admissionClosed !== true ||
-		!Array.isArray(result.crabboxes) ||
-		result.crabboxes.some((binding) => !terminalCrabfleetStatuses.has(binding.session.status)) ||
+		crabboxes.some((binding) => !terminalCrabfleetStatuses.has(binding.session.status)) ||
 		[...knownSessionIds].some((sessionId) => !terminalSessionIds.has(sessionId))
 	) {
 		throw new HttpError(502, "Crabfleet cleanup did not reach a terminal state");
@@ -314,7 +318,11 @@ async function createCrabbox(
 		}),
 		headers: { "content-type": "application/json" },
 	});
-	return responseJson<CrabboxBinding>(response);
+	return validatedCrabboxBinding(
+		await responseJson<unknown>(response),
+		body.rootSessionId,
+		!body.parentSessionId,
+	);
 }
 
 async function crabfleetFetch(env: Env, path: string, init: RequestInit = {}): Promise<Response> {
@@ -358,6 +366,60 @@ async function responseJson<T = unknown>(response: Response): Promise<T> {
 		return JSON.parse(text) as T;
 	} catch {
 		throw new HttpError(502, "Crabfleet returned invalid JSON");
+	}
+}
+
+function validatedCrabboxBinding(
+	value: unknown,
+	expectedRootSessionId?: string,
+	allowRootBinding = true,
+): CrabboxBinding {
+	if (!isRecord(value) || !isRecord(value.session)) {
+		throw new HttpError(502, "Crabfleet returned an invalid workspace binding");
+	}
+	const session = value.session;
+	if (!("rootSessionId" in session)) {
+		throw new HttpError(502, "Crabfleet returned an invalid workspace binding");
+	}
+	const id = nonEmptyString(session.id);
+	const rootSessionId =
+		session.rootSessionId === null ? null : nonEmptyString(session.rootSessionId);
+	const status = nonEmptyString(session.status);
+	const summary = nonEmptyString(session.summary);
+	const purpose = nonEmptyString(session.purpose);
+	const browserUrl = nonEmptyString(value.browserUrl);
+	if (!id || !status || !summary || !purpose || !browserUrl || !validBrowserUrl(browserUrl)) {
+		throw new HttpError(502, "Crabfleet returned an invalid workspace binding");
+	}
+	if (
+		(expectedRootSessionId &&
+			id !== expectedRootSessionId &&
+			rootSessionId !== expectedRootSessionId) ||
+		(expectedRootSessionId && !allowRootBinding && id === expectedRootSessionId) ||
+		(!expectedRootSessionId && rootSessionId !== null && rootSessionId !== id)
+	) {
+		throw new HttpError(502, "Crabfleet returned a workspace outside the expected session tree");
+	}
+	return {
+		session: { id, rootSessionId, status, summary, purpose },
+		browserUrl,
+	};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): string | null {
+	return typeof value === "string" && value.trim() ? value : null;
+}
+
+function validBrowserUrl(value: string): boolean {
+	try {
+		const url = new URL(value);
+		return url.protocol === "https:" || url.protocol === "http:";
+	} catch {
+		return false;
 	}
 }
 

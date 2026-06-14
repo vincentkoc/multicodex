@@ -56,6 +56,12 @@ test("planning by selected idea id keeps that idea and its task criteria", () =>
 	);
 });
 
+test("planning replaces an explicitly selected idea when the team size is incompatible", () => {
+	const plan = planForParticipants("latency-race", participants.slice(0, 1));
+	assert.notEqual(plan.brief.ideaId, "latency-race");
+	assert.equal(plan.brief.ideaId, "solo-demo-switchboard");
+});
+
 test("planning from a stored brief preserves it and derives tasks from it", () => {
 	const brief: RoomBrief = {
 		ideaId: "stored-idea",

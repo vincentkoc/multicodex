@@ -263,14 +263,23 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		) {
 			throw new HttpError(409, "room is no longer accepting planning changes");
 		}
-		await addMessage(env.DB, roomId, {
-			authorKind: "conductor",
-			authorId: "conductor",
-			targetKind: "room",
-			targetId: null,
-			body: `Shuffled: ${plan.brief.productGoal} Demo moment: ${plan.brief.demoMoment}`,
-			replyToId: null,
-		});
+		if (
+			!(await addMessage(
+				env.DB,
+				roomId,
+				{
+					authorKind: "conductor",
+					authorId: "conductor",
+					targetKind: "room",
+					targetId: null,
+					body: `Shuffled: ${plan.brief.productGoal} Demo moment: ${plan.brief.demoMoment}`,
+					replyToId: null,
+				},
+				["planning"],
+			))
+		) {
+			throw new HttpError(409, "room closed before the shuffled plan could be announced");
+		}
 		const updated = await readRoomSnapshot(env.DB, roomId);
 		context.waitUntil(broadcastSnapshot(env, updated));
 		return json(snapshotForViewer(updated, host.id));
@@ -299,14 +308,23 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		) {
 			throw new HttpError(409, "room is no longer accepting planning changes");
 		}
-		await addMessage(env.DB, roomId, {
-			authorKind: "conductor",
-			authorId: "conductor",
-			targetKind: "room",
-			targetId: null,
-			body: `Plan ready: ${active.length} lanes, explicit ownership, and one integration branch. Review it, then launch.`,
-			replyToId: null,
-		});
+		if (
+			!(await addMessage(
+				env.DB,
+				roomId,
+				{
+					authorKind: "conductor",
+					authorId: "conductor",
+					targetKind: "room",
+					targetId: null,
+					body: `Plan ready: ${active.length} lanes, explicit ownership, and one integration branch. Review it, then launch.`,
+					replyToId: null,
+				},
+				["planning"],
+			))
+		) {
+			throw new HttpError(409, "room closed before the plan could be announced");
+		}
 		const updated = await readRoomSnapshot(env.DB, roomId);
 		context.waitUntil(broadcastSnapshot(env, updated));
 		return json(snapshotForViewer(updated, host.id));

@@ -20,6 +20,21 @@ export type RoleCard = {
 
 export const ideas: IdeaCard[] = [
 	{
+		id: "solo-demo-switchboard",
+		title: "Solo demo switchboard",
+		pitch: "A compact control board that turns one builder's idea into a timed, presentable demo.",
+		demoMoment: "The builder moves one prototype from brief to live demo without losing the story.",
+		minPeople: 1,
+		maxPeople: 1,
+		roles: ["product-integration"],
+		acceptanceCriteria: [
+			"capture the promise",
+			"track the build",
+			"show the demo state",
+			"preserve a recap",
+		],
+	},
+	{
 		id: "audience-voting-wall",
 		title: "Audience voting wall",
 		pitch: "A live wall where a room proposes, votes, and watches the winner change in real time.",
@@ -111,8 +126,9 @@ export const roles: RoleCard[] = [
 
 export function chooseIdea(seed: string, people: number): IdeaCard {
 	const compatible = ideas.filter((idea) => people >= idea.minPeople && people <= idea.maxPeople);
+	if (!compatible.length) throw new RangeError(`no idea supports ${people} active builders`);
 	const total = [...seed].reduce((sum, character) => sum + character.charCodeAt(0), 0);
-	return compatible[total % compatible.length] ?? ideas[0]!;
+	return compatible[total % compatible.length]!;
 }
 
 export function rolesForSeats(count: number): RoleCard[] {

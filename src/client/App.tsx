@@ -364,15 +364,18 @@ function RoomWorkbench({
 	const { participantId, participantToken } = identity;
 	const me = snapshot.participants.find((participant) => participant.id === participantId)!;
 	const isHost = snapshot.room.hostParticipantId === participantId;
+	const readOnly = me.kind === "observer";
 	const roleMap = useMemo(() => new Map(roleCatalog.map((role) => [role.id, role])), [roleCatalog]);
 
-	async function action(label: string, run: () => Promise<RoomSnapshot>) {
+	async function action(label: string, run: () => Promise<RoomSnapshot>): Promise<boolean> {
 		setBusy(label);
 		onError("");
 		try {
 			onSnapshot(await run());
+			return true;
 		} catch (cause) {
 			onError(errorMessage(cause));
+			return false;
 		} finally {
 			setBusy("");
 		}
@@ -595,20 +598,21 @@ function RoomWorkbench({
 										: "waiting for a plan"}
 								</h2>
 							</div>
-							{["building", "integrating", "presenting"].includes(snapshot.room.status) && (
-								<button
-									class="button ghost"
-									disabled={busy === "refresh"}
-									onClick={() =>
-										action("refresh", () =>
-											roomAction(snapshot.room.id, participantToken, "refresh"),
-										)
-									}
-								>
-									<RefreshCw size={15} />
-									refresh
-								</button>
-							)}
+							{!readOnly &&
+								["building", "integrating", "presenting"].includes(snapshot.room.status) && (
+									<button
+										class="button ghost"
+										disabled={busy === "refresh"}
+										onClick={() =>
+											action("refresh", () =>
+												roomAction(snapshot.room.id, participantToken, "refresh"),
+											)
+										}
+									>
+										<RefreshCw size={15} />
+										refresh
+									</button>
+								)}
 						</div>
 						{snapshot.tasks.length ? (
 							<div class="task-board">
@@ -626,7 +630,7 @@ function RoomWorkbench({
 												)?.roleId || "",
 											)?.color || roleFallbacks[index % roleFallbacks.length]!
 										}
-										canEdit={isHost || task.ownerParticipantId === me.id}
+										canEdit={!readOnly && (isHost || task.ownerParticipantId === me.id)}
 										onState={(state) => changeTask(task, state)}
 									/>
 								))}
@@ -656,6 +660,7 @@ function RoomWorkbench({
 					participantToken={participantToken}
 					onSnapshot={onSnapshot}
 					onError={onError}
+					readOnly={readOnly}
 				/>
 			</main>
 
@@ -682,7 +687,7 @@ function HostControls({
 	busy: string;
 	action: (
 		action: "shuffle" | "plan" | "approve-plan" | "retry-cleanup" | "present" | "end",
-	) => void;
+	) => Promise<boolean>;
 	onRecap: () => void;
 }) {
 	const launched = ["building", "integrating", "presenting", "ended"].includes(
@@ -722,9 +727,8 @@ function HostControls({
 			<button
 				class="button primary"
 				disabled={Boolean(busy)}
-				onClick={() => {
-					action("present");
-					onRecap();
+				onClick={async () => {
+					if (await action("present")) onRecap();
 				}}
 			>
 				<MonitorPlay size={16} />
@@ -811,12 +815,14 @@ function ChatPanel({
 	participantToken,
 	onSnapshot,
 	onError,
+	readOnly,
 }: {
 	snapshot: RoomSnapshot;
 	participantId: string;
 	participantToken: string;
 	onSnapshot: (snapshot: RoomSnapshot) => void;
 	onError: (message: string) => void;
+	readOnly: boolean;
 }) {
 	const [target, setTarget] = useState<Target>({ kind: "room" });
 	const [text, setText] = useState("");
@@ -866,63 +872,71 @@ function ChatPanel({
 					/>
 				))}
 			</div>
-			<form class="composer" onSubmit={submit}>
-				<div class="target-control">
-					<button
-						type="button"
-						class={target.kind === "room" ? "active" : ""}
-						onClick={() => setTarget({ kind: "room" })}
-					>
-						<Users size={14} /> team
-					</button>
-					<button
-						type="button"
-						class={target.kind === "conductor" ? "active" : ""}
-						onClick={() => setTarget({ kind: "conductor" })}
-					>
-						<WandSparkles size={14} /> conductor
-					</button>
-					<select
-						value={target.kind === "participant" ? target.id : ""}
-						aria-label="message a teammate"
-						onChange={(event) =>
-							setTarget(
-								event.currentTarget.value
-									? { kind: "participant", id: event.currentTarget.value }
-									: { kind: "room" },
-							)
+			{readOnly ? (
+				<div class="composer">
+					<div class="composer-footer">
+						<span>observer mode</span>
+					</div>
+				</div>
+			) : (
+				<form class="composer" onSubmit={submit}>
+					<div class="target-control">
+						<button
+							type="button"
+							class={target.kind === "room" ? "active" : ""}
+							onClick={() => setTarget({ kind: "room" })}
+						>
+							<Users size={14} /> team
+						</button>
+						<button
+							type="button"
+							class={target.kind === "conductor" ? "active" : ""}
+							onClick={() => setTarget({ kind: "conductor" })}
+						>
+							<WandSparkles size={14} /> conductor
+						</button>
+						<select
+							value={target.kind === "participant" ? target.id : ""}
+							aria-label="message a teammate"
+							onChange={(event) =>
+								setTarget(
+									event.currentTarget.value
+										? { kind: "participant", id: event.currentTarget.value }
+										: { kind: "room" },
+								)
+							}
+						>
+							<option value="">teammate</option>
+							{snapshot.participants
+								.filter((participant) => participant.id !== participantId)
+								.map((participant) => (
+									<option key={participant.id} value={participant.id}>
+										{participant.displayName}
+									</option>
+								))}
+						</select>
+					</div>
+					<textarea
+						value={text}
+						onInput={(event) => setText(event.currentTarget.value)}
+						placeholder={
+							target.kind === "conductor" ? "ask the conductor..." : "say it to the room..."
 						}
-					>
-						<option value="">teammate</option>
-						{snapshot.participants
-							.filter((participant) => participant.id !== participantId)
-							.map((participant) => (
-								<option key={participant.id} value={participant.id}>
-									{participant.displayName}
-								</option>
-							))}
-					</select>
-				</div>
-				<textarea
-					value={text}
-					onInput={(event) => setText(event.currentTarget.value)}
-					placeholder={
-						target.kind === "conductor" ? "ask the conductor..." : "say it to the room..."
-					}
-					rows={3}
-					maxLength={2000}
-				/>
-				<div class="composer-footer">
-					<span>{targetLabel(target, snapshot.participants)}</span>
-					<button
-						class="icon-button primary-icon"
-						title="send message"
-						disabled={sending || !text.trim()}
-					>
-						<Send size={17} />
-					</button>
-				</div>
-			</form>
+						rows={3}
+						maxLength={2000}
+					/>
+					<div class="composer-footer">
+						<span>{targetLabel(target, snapshot.participants)}</span>
+						<button
+							class="icon-button primary-icon"
+							title="send message"
+							disabled={sending || !text.trim()}
+						>
+							<Send size={17} />
+						</button>
+					</div>
+				</form>
+			)}
 		</aside>
 	);
 }

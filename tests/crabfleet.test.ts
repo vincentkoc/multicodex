@@ -130,6 +130,70 @@ test("ambiguous root provisioning remains replayable after a stale cleanup claim
 	assert.deepEqual(requestIds, ["multicodex:room:1:host", "multicodex:room:1:host"]);
 });
 
+test("Crabfleet create responses require a valid workspace binding", async () => {
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = async () =>
+		Response.json({
+			session: {
+				id: "",
+				rootSessionId: null,
+				status: "ready",
+				summary: "ready",
+				purpose: "task",
+			},
+			browserUrl: "https://example.test/root",
+		});
+	try {
+		await assert.rejects(
+			recoverRoomRootCrabbox(
+				{ CRABFLEET_SERVICE_TOKEN: "test" } as Env,
+				room,
+				[participant("host")],
+				[],
+			),
+			/invalid workspace binding/,
+		);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test("Crabfleet child bindings must belong to the requested root", async () => {
+	const originalFetch = globalThis.fetch;
+	let creates = 0;
+	globalThis.fetch = async () => {
+		creates += 1;
+		return Response.json(
+			creates === 1
+				? crabbox("root", "ready")
+				: {
+						...crabbox("child", "ready"),
+						session: { ...crabbox("child", "ready").session, rootSessionId: "other-root" },
+					},
+		);
+	};
+	try {
+		await assert.rejects(
+			provisionRoomCrabboxes(
+				{ CRABFLEET_SERVICE_TOKEN: "test" } as Env,
+				room,
+				[participant("host"), participant("child")],
+				[],
+			),
+			(error) => {
+				assert.ok(error instanceof PartialProvisioningError);
+				assert.deepEqual(
+					error.bindings.map(({ binding }) => binding.session.id),
+					["root"],
+				);
+				return true;
+			},
+		);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
 test("room cleanup delegates admission freeze and recursive stop to the root action", async () => {
 	const originalFetch = globalThis.fetch;
 	let rootStops = 0;

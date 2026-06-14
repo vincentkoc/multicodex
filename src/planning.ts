@@ -27,7 +27,10 @@ export function planForParticipants(
 	tasks: Array<Omit<Task, "roomId" | "createdAt" | "updatedAt">>;
 } {
 	const active = participants.filter((participant) => participant.kind !== "observer");
-	const selectedIdea = ideas.find((idea) => idea.id === seed);
+	const selectedIdea = ideas.find(
+		(idea) =>
+			idea.id === seed && active.length >= idea.minPeople && active.length <= idea.maxPeople,
+	);
 	const brief = selectedIdea ? briefForIdea(selectedIdea) : shuffledBrief(seed, active.length);
 	return planForBrief(brief, active);
 }

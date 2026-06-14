@@ -18,6 +18,17 @@ test("worker mutation routes keep terminal rooms immutable", async () => {
 	assert.match(refreshSource, /expectedStatuses: runtimeRefreshStatuses/);
 });
 
+test("planning announcements remain fenced against room closure", async () => {
+	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
+	const start = source.indexOf("const shuffleMatch");
+	const end = source.indexOf("const approveMatch", start);
+	const planningSource = source.slice(start, end);
+
+	assert.equal(planningSource.match(/\["planning"\]/g)?.length, 2);
+	assert.match(planningSource, /room closed before the shuffled plan could be announced/);
+	assert.match(planningSource, /room closed before the plan could be announced/);
+});
+
 test("cleanup retry preserves failed launches while end excludes unsafe lifecycle states", async () => {
 	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
 	const retryStart = source.indexOf("const retryCleanupMatch");
@@ -82,6 +93,18 @@ test("browser history navigation resynchronizes room state", async () => {
 	assert.match(source, /const nextRoomId = roomIdFromPath\(\)/);
 	assert.match(source, /setIdentity\(nextRoomId \? loadIdentity\(nextRoomId\) : null\)/);
 	assert.match(source, /setSnapshot\(null\)/);
+});
+
+test("observer controls stay read-only and presentation waits for success", async () => {
+	const source = await readFile(new URL("../src/client/App.tsx", import.meta.url), "utf8");
+
+	assert.match(source, /const readOnly = me\.kind === "observer"/);
+	assert.match(source, /readOnly=\{readOnly\}/);
+	assert.match(
+		source,
+		/canEdit=\{!readOnly && \(isHost \|\| task\.ownerParticipantId === me\.id\)\}/,
+	);
+	assert.match(source, /if \(await action\("present"\)\) onRecap\(\)/);
 });
 
 test("conductor turns are claimed before model execution and cannot nudge workspaces", async () => {
