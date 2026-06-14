@@ -97,6 +97,17 @@ test("room creation replay recovers the original host capability", async () => {
 	assert.match(replaySource, /readRoomSnapshot/);
 });
 
+test("room snapshots read all redaction-related state from one D1 snapshot", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function readRoomSnapshot");
+	const end = source.indexOf("export async function addParticipant", start);
+	const snapshotSource = source.slice(start, end);
+
+	assert.match(snapshotSource, /await db\.batch/);
+	assert.doesNotMatch(snapshotSource, /Promise\.all/);
+	assert.match(snapshotSource, /room_runtime_redactions/);
+});
+
 test("expired runtime rooms are discoverable for durable cleanup", async () => {
 	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
 	const start = source.indexOf("export async function listExpiredRuntimeRoomIds");

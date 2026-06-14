@@ -678,6 +678,10 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		if (snapshot.room.status === "provisioning") {
 			throw new HttpError(409, "active provisioning can be cancelled after its lease expires");
 		}
+		const runtimeMayExist =
+			snapshot.room.startedAt !== null ||
+			snapshot.room.endsAt !== null ||
+			snapshot.room.crabfleetRootSessionId !== null;
 		const endableStatuses = [
 			"setup",
 			"planning",
@@ -699,6 +703,35 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		try {
 			snapshot = await readRoomSnapshot(env.DB, roomId);
 			context.waitUntil(broadcastSnapshot(env, snapshot));
+			if (!snapshot.room.crabfleetRootSessionId && runtimeMayExist) {
+				const root = await recoverRoomRootCrabbox(
+					env,
+					snapshot.room,
+					snapshot.participants,
+					snapshot.tasks,
+				);
+				if (
+					!(await markRoomCleanup(
+						env.DB,
+						roomId,
+						root.binding.session.rootSessionId || root.binding.session.id,
+						"cleanup-ending",
+						["cleanup-ending"],
+						[
+							{
+								participantId: root.participantId,
+								sessionId: root.binding.session.id,
+								browserUrl: root.binding.browserUrl,
+								summary: root.binding.session.summary,
+								state: participantStateForCrabfleetStatus(root.binding.session.status, "joined"),
+							},
+						],
+					))
+				) {
+					throw new HttpError(409, "room cleanup state changed during root recovery");
+				}
+				snapshot = await readRoomSnapshot(env.DB, roomId);
+			}
 			if (snapshot.room.crabfleetRootSessionId) {
 				await stopRoomCrabboxes(
 					env,

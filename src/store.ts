@@ -236,52 +236,42 @@ export async function roomBuilderInviteAuthorized(
 }
 
 export async function readRoomSnapshot(db: D1Database, roomId: string): Promise<RoomSnapshot> {
-	const [
-		roomResult,
-		participants,
-		messages,
-		tasks,
-		decisions,
-		conductorActions,
-		runtimeRedactions,
-	] = await Promise.all([
-		db.prepare("SELECT * FROM rooms WHERE id = ?").bind(roomId).first<RoomRow>(),
-		db
-			.prepare("SELECT * FROM participants WHERE room_id = ? ORDER BY created_at ASC")
-			.bind(roomId)
-			.all<ParticipantRow>(),
-		db
-			.prepare("SELECT * FROM room_messages WHERE room_id = ? ORDER BY created_at DESC LIMIT 500")
-			.bind(roomId)
-			.all<MessageRow>(),
-		db
-			.prepare("SELECT * FROM tasks WHERE room_id = ? ORDER BY created_at ASC")
-			.bind(roomId)
-			.all<TaskRow>(),
-		db
-			.prepare("SELECT * FROM decisions WHERE room_id = ? ORDER BY created_at ASC")
-			.bind(roomId)
-			.all<DecisionRow>(),
-		db
-			.prepare("SELECT * FROM conductor_actions WHERE room_id = ? ORDER BY created_at ASC")
-			.bind(roomId)
-			.all<ActionRow>(),
-		db
-			.prepare(
-				"SELECT identifier FROM room_runtime_redactions WHERE room_id = ? ORDER BY created_at ASC",
-			)
-			.bind(roomId)
-			.all<{ identifier: string }>(),
-	]);
+	const [rooms, participants, messages, tasks, decisions, conductorActions, runtimeRedactions] =
+		await db.batch([
+			db.prepare("SELECT * FROM rooms WHERE id = ?").bind(roomId),
+			db
+				.prepare("SELECT * FROM participants WHERE room_id = ? ORDER BY created_at ASC")
+				.bind(roomId),
+			db
+				.prepare("SELECT * FROM room_messages WHERE room_id = ? ORDER BY created_at DESC LIMIT 500")
+				.bind(roomId),
+			db.prepare("SELECT * FROM tasks WHERE room_id = ? ORDER BY created_at ASC").bind(roomId),
+			db.prepare("SELECT * FROM decisions WHERE room_id = ? ORDER BY created_at ASC").bind(roomId),
+			db
+				.prepare("SELECT * FROM conductor_actions WHERE room_id = ? ORDER BY created_at ASC")
+				.bind(roomId),
+			db
+				.prepare(
+					"SELECT identifier FROM room_runtime_redactions WHERE room_id = ? ORDER BY created_at ASC",
+				)
+				.bind(roomId),
+		]);
+	const roomResult = rooms?.results[0] as RoomRow | undefined;
 	if (!roomResult) throw new HttpError(404, "room not found");
+	const participantRows = (participants?.results ?? []) as ParticipantRow[];
+	const messageRows = (messages?.results ?? []) as MessageRow[];
+	const taskRows = (tasks?.results ?? []) as TaskRow[];
+	const decisionRows = (decisions?.results ?? []) as DecisionRow[];
+	const actionRows = (conductorActions?.results ?? []) as ActionRow[];
+	const redactionRows = (runtimeRedactions?.results ?? []) as Array<{ identifier: string }>;
 	return {
 		room: roomFromRow(roomResult),
-		participants: participants.results.map(participantFromRow),
-		messages: messages.results.reverse().map(messageFromRow),
-		tasks: tasks.results.map(taskFromRow),
-		decisions: decisions.results.map(decisionFromRow),
-		conductorActions: conductorActions.results.map(actionFromRow),
-		runtimeRedactions: runtimeRedactions.results.map((row) => row.identifier),
+		participants: participantRows.map(participantFromRow),
+		messages: messageRows.reverse().map(messageFromRow),
+		tasks: taskRows.map(taskFromRow),
+		decisions: decisionRows.map(decisionFromRow),
+		conductorActions: actionRows.map(actionFromRow),
+		runtimeRedactions: redactionRows.map((row) => row.identifier),
 	};
 }
 

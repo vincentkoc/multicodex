@@ -101,6 +101,8 @@ test("cleanup retry preserves failed launches while end excludes unsafe lifecycl
 		/"provisioning"/,
 	);
 	assert.match(endSource, /beginRoomCleanup/);
+	assert.match(endSource, /const runtimeMayExist/);
+	assert.ok(endSource.indexOf("recoverRoomRootCrabbox") < endSource.indexOf("await endRoom"));
 	assert.match(endSource, /cleanupActionLeaseMilliseconds/);
 	assert.match(endSource, /if \(await endRoom\(env\.DB, roomId\)\)/);
 	assert.match(endSource, /finally \{\s*await releaseRoomRuntimeLease/);
