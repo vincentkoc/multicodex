@@ -1,33 +1,32 @@
 {
-  "name": "multicodex",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "build": "vite build && tsc --noEmit",
-    "check": "pnpm typecheck && pnpm test && pnpm lint && pnpm format",
-    "db:local": "wrangler d1 migrations apply DB --local",
-    "deploy": "pnpm build && wrangler d1 migrations apply DB --remote && wrangler deploy",
-    "dev": "wrangler dev",
-    "format": "oxfmt --check .",
-    "format:fix": "oxfmt .",
-    "lint": "oxlint .",
-    "test": "node --test --experimental-strip-types tests/*.test.ts",
-    "typecheck": "wrangler types && tsc --noEmit"
-  },
-  "dependencies": {
-    "lucide-preact": "^0.468.0",
-    "preact": "^10.29.2"
-  },
-  "devDependencies": {
-    "@cloudflare/workers-types": "latest",
-    "@preact/preset-vite": "^2.10.5",
-    "@types/node": "^24.0.0",
-    "oxfmt": "^0.54.0",
-    "oxlint": "^1.69.0",
-    "typescript": "^5.9.3",
-    "vite": "^8.0.16",
-    "wrangler": "^4.100.0"
-  },
-  "packageManager": "pnpm@10.23.0"
+	"name": "multicodex",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"build": "vite build && tsc --noEmit",
+		"check": "pnpm typecheck && pnpm test && pnpm lint && pnpm format",
+		"db:local": "wrangler d1 migrations apply DB --local",
+		"deploy": "pnpm build && wrangler d1 migrations apply DB --remote && wrangler deploy",
+		"dev": "wrangler dev",
+		"format": "oxfmt --check .",
+		"format:fix": "oxfmt .",
+		"lint": "oxlint .",
+		"test": "node --test --experimental-strip-types tests/*.test.ts",
+		"typecheck": "wrangler types && tsc --noEmit"
+	},
+	"dependencies": {
+		"lucide-preact": "^0.468.0",
+		"preact": "^10.29.2"
+	},
+	"devDependencies": {
+		"@preact/preset-vite": "^2.10.5",
+		"@types/node": "^24.0.0",
+		"oxfmt": "^0.54.0",
+		"oxlint": "^1.69.0",
+		"typescript": "^5.9.3",
+		"vite": "^8.0.16",
+		"wrangler": "^4.100.0"
+	},
+	"packageManager": "pnpm@10.23.0"
 }

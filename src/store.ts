@@ -1,0 +1,610 @@
+import type {
+	ConductorAction,
+	Decision,
+	MessageTargetKind,
+	Participant,
+	ParticipantKind,
+	Room,
+	RoomBrief,
+	RoomMessage,
+	RoomSnapshot,
+	RoomStatus,
+	Task,
+	TaskState,
+} from "./domain.ts";
+import { encodeJson, HttpError, newId, parseJson, slugify } from "./http.ts";
+
+type RoomRow = {
+	id: string;
+	slug: string;
+	title: string;
+	status: RoomStatus;
+	host_participant_id: string;
+	repo: string;
+	base_branch: string;
+	integration_branch: string;
+	crabfleet_root_session_id: string | null;
+	brief_json: string;
+	brief_revision: number;
+	duration_minutes: number;
+	started_at: number | null;
+	ends_at: number | null;
+	created_at: number;
+	updated_at: number;
+};
+
+type ParticipantRow = {
+	id: string;
+	room_id: string;
+	kind: ParticipantKind;
+	display_name: string;
+	github_login: string | null;
+	role_id: string | null;
+	task_id: string | null;
+	crabfleet_session_id: string | null;
+	browser_url: string | null;
+	runtime_summary: string;
+	branch: string | null;
+	state: Participant["state"];
+	joined_at: number | null;
+	created_at: number;
+	updated_at: number;
+};
+
+type MessageRow = {
+	id: string;
+	room_id: string;
+	author_kind: RoomMessage["authorKind"];
+	author_id: string;
+	target_kind: MessageTargetKind;
+	target_id: string | null;
+	body: string;
+	reply_to_id: string | null;
+	created_at: number;
+};
+
+type TaskRow = {
+	id: string;
+	room_id: string;
+	title: string;
+	description: string;
+	owner_participant_id: string | null;
+	state: TaskState;
+	depends_on_json: string;
+	owns_paths_json: string;
+	acceptance_criteria_json: string;
+	branch: string | null;
+	pull_request_url: string | null;
+	created_at: number;
+	updated_at: number;
+};
+
+type DecisionRow = {
+	id: string;
+	room_id: string;
+	title: string;
+	decision: string;
+	reason: string;
+	author_kind: Decision["authorKind"];
+	author_id: string;
+	affected_task_ids_json: string;
+	created_at: number;
+};
+
+type ActionRow = {
+	id: string;
+	room_id: string;
+	kind: string;
+	target_ids_json: string;
+	reason: string;
+	evidence_refs_json: string;
+	approval_state: ConductorAction["approvalState"];
+	created_at: number;
+};
+
+export async function createRoom(
+	db: D1Database,
+	input: {
+		title: string;
+		hostName: string;
+		repo: string;
+		durationMinutes: number;
+	},
+): Promise<{ snapshot: RoomSnapshot; participantToken: string }> {
+	const now = Date.now();
+	const roomId = newId("room");
+	const hostId = newId("person");
+	const participantToken = newId("seat");
+	const slug = `${slugify(input.title)}-${roomId.slice(-6)}`;
+	const integrationBranch = `multicodex/${slug}/integration`;
+	await db.batch([
+		db
+			.prepare(
+				`INSERT INTO rooms
+          (id, slug, title, status, host_participant_id, repo, base_branch, integration_branch,
+           duration_minutes, created_at, updated_at)
+         VALUES (?, ?, ?, 'setup', ?, ?, 'main', ?, ?, ?, ?)`,
+			)
+			.bind(
+				roomId,
+				slug,
+				input.title,
+				hostId,
+				input.repo,
+				integrationBranch,
+				input.durationMinutes,
+				now,
+				now,
+			),
+		db
+			.prepare(
+				`INSERT INTO participants
+          (id, room_id, kind, display_name, role_id, access_token, branch, state, joined_at, created_at, updated_at)
+         VALUES (?, ?, 'human', ?, 'product-integration', ?, ?, 'joined', ?, ?, ?)`,
+			)
+			.bind(hostId, roomId, input.hostName, participantToken, integrationBranch, now, now, now),
+		db
+			.prepare(
+				`INSERT INTO room_messages
+          (id, room_id, author_kind, author_id, target_kind, body, created_at)
+         VALUES (?, ?, 'conductor', 'conductor', 'room', ?, ?)`,
+			)
+			.bind(
+				newId("msg"),
+				roomId,
+				`Welcome, ${input.hostName}. Invite the team or shuffle a build idea when you are ready.`,
+				now,
+			),
+	]);
+	return { snapshot: await readRoomSnapshot(db, roomId), participantToken };
+}
+
+export async function readRoomSnapshot(db: D1Database, roomId: string): Promise<RoomSnapshot> {
+	const [roomResult, participants, messages, tasks, decisions, conductorActions] =
+		await Promise.all([
+			db.prepare("SELECT * FROM rooms WHERE id = ?").bind(roomId).first<RoomRow>(),
+			db
+				.prepare("SELECT * FROM participants WHERE room_id = ? ORDER BY created_at ASC")
+				.bind(roomId)
+				.all<ParticipantRow>(),
+			db
+				.prepare("SELECT * FROM room_messages WHERE room_id = ? ORDER BY created_at ASC LIMIT 500")
+				.bind(roomId)
+				.all<MessageRow>(),
+			db
+				.prepare("SELECT * FROM tasks WHERE room_id = ? ORDER BY created_at ASC")
+				.bind(roomId)
+				.all<TaskRow>(),
+			db
+				.prepare("SELECT * FROM decisions WHERE room_id = ? ORDER BY created_at ASC")
+				.bind(roomId)
+				.all<DecisionRow>(),
+			db
+				.prepare("SELECT * FROM conductor_actions WHERE room_id = ? ORDER BY created_at ASC")
+				.bind(roomId)
+				.all<ActionRow>(),
+		]);
+	if (!roomResult) throw new HttpError(404, "room not found");
+	return {
+		room: roomFromRow(roomResult),
+		participants: participants.results.map(participantFromRow),
+		messages: messages.results.map(messageFromRow),
+		tasks: tasks.results.map(taskFromRow),
+		decisions: decisions.results.map(decisionFromRow),
+		conductorActions: conductorActions.results.map(actionFromRow),
+	};
+}
+
+export async function addParticipant(
+	db: D1Database,
+	roomId: string,
+	input: { displayName: string; kind: ParticipantKind; githubLogin?: string | null },
+): Promise<{ participant: Participant; participantToken: string }> {
+	const room = await db
+		.prepare("SELECT slug, status FROM rooms WHERE id = ?")
+		.bind(roomId)
+		.first<{ slug: string; status: RoomStatus }>();
+	if (!room) throw new HttpError(404, "room not found");
+	if (room.status === "ended") throw new HttpError(409, "room has ended");
+	const count = await db
+		.prepare(
+			input.kind === "observer"
+				? "SELECT COUNT(*) AS count FROM participants WHERE room_id = ?"
+				: "SELECT COUNT(*) AS count FROM participants WHERE room_id = ? AND kind != 'observer'",
+		)
+		.bind(roomId)
+		.first<{ count: number }>();
+	const limit = input.kind === "observer" ? 24 : 6;
+	if ((count?.count ?? 0) >= limit) throw new HttpError(409, "room seat limit reached");
+	const id = newId("person");
+	const participantToken = newId("seat");
+	const now = Date.now();
+	const branch =
+		input.kind === "observer"
+			? null
+			: `multicodex/${room.slug}/${slugify(input.displayName, "seat")}`;
+	await db
+		.prepare(
+			`INSERT INTO participants
+        (id, room_id, kind, display_name, github_login, access_token, branch, state, joined_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'joined', ?, ?, ?)`,
+		)
+		.bind(
+			id,
+			roomId,
+			input.kind,
+			input.displayName,
+			input.githubLogin ?? null,
+			participantToken,
+			branch,
+			now,
+			now,
+			now,
+		)
+		.run();
+	return {
+		participant: participantFromRow(
+			(await db
+				.prepare("SELECT * FROM participants WHERE id = ?")
+				.bind(id)
+				.first<ParticipantRow>())!,
+		),
+		participantToken,
+	};
+}
+
+export async function requireRoomParticipant(
+	db: D1Database,
+	roomId: string,
+	participantToken: string,
+	allowObserver = true,
+): Promise<Participant> {
+	const row = await db
+		.prepare("SELECT * FROM participants WHERE access_token = ? AND room_id = ?")
+		.bind(participantToken, roomId)
+		.first<ParticipantRow>();
+	if (!row) throw new HttpError(403, "participant is not in this room");
+	const participant = participantFromRow(row);
+	if (!allowObserver && participant.kind === "observer")
+		throw new HttpError(403, "observer is read-only");
+	return participant;
+}
+
+export async function addMessage(
+	db: D1Database,
+	roomId: string,
+	input: Omit<RoomMessage, "id" | "roomId" | "createdAt">,
+): Promise<RoomMessage> {
+	const message: RoomMessage = { ...input, id: newId("msg"), roomId, createdAt: Date.now() };
+	await db
+		.prepare(
+			`INSERT INTO room_messages
+        (id, room_id, author_kind, author_id, target_kind, target_id, body, reply_to_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		)
+		.bind(
+			message.id,
+			roomId,
+			message.authorKind,
+			message.authorId,
+			message.targetKind,
+			message.targetId,
+			message.body,
+			message.replyToId,
+			message.createdAt,
+		)
+		.run();
+	return message;
+}
+
+export async function updateRoomBrief(
+	db: D1Database,
+	roomId: string,
+	brief: RoomBrief,
+	status: RoomStatus,
+): Promise<void> {
+	await db
+		.prepare(
+			`UPDATE rooms
+       SET brief_json = ?, brief_revision = brief_revision + 1, status = ?, updated_at = ?
+       WHERE id = ?`,
+		)
+		.bind(encodeJson(brief), status, Date.now(), roomId)
+		.run();
+}
+
+export async function replacePlan(
+	db: D1Database,
+	roomId: string,
+	brief: RoomBrief,
+	participants: Participant[],
+	tasks: Array<Omit<Task, "id" | "roomId" | "createdAt" | "updatedAt">>,
+): Promise<void> {
+	const now = Date.now();
+	const statements: D1PreparedStatement[] = [
+		db.prepare("DELETE FROM tasks WHERE room_id = ?").bind(roomId),
+		db
+			.prepare(
+				`UPDATE rooms
+         SET brief_json = ?, brief_revision = brief_revision + 1, status = 'planning', updated_at = ?
+         WHERE id = ?`,
+			)
+			.bind(encodeJson(brief), now, roomId),
+	];
+	for (const [index, task] of tasks.entries()) {
+		const id = newId("task");
+		const owner = participants[index];
+		statements.push(
+			db
+				.prepare(
+					`INSERT INTO tasks
+            (id, room_id, title, description, owner_participant_id, state, depends_on_json,
+             owns_paths_json, acceptance_criteria_json, branch, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				)
+				.bind(
+					id,
+					roomId,
+					task.title,
+					task.description,
+					owner?.id ?? task.ownerParticipantId,
+					task.state,
+					encodeJson(task.dependsOn),
+					encodeJson(task.ownsPaths),
+					encodeJson(task.acceptanceCriteria),
+					owner?.branch ?? task.branch,
+					now,
+					now,
+				),
+		);
+		if (owner) {
+			statements.push(
+				db
+					.prepare("UPDATE participants SET role_id = ?, task_id = ?, updated_at = ? WHERE id = ?")
+					.bind(owner.roleId, id, now, owner.id),
+			);
+		}
+	}
+	await db.batch(statements);
+}
+
+export async function setParticipantRoles(
+	db: D1Database,
+	assignments: Array<{ participantId: string; roleId: string }>,
+): Promise<void> {
+	if (!assignments.length) return;
+	const now = Date.now();
+	await db.batch(
+		assignments.map((assignment) =>
+			db
+				.prepare("UPDATE participants SET role_id = ?, updated_at = ? WHERE id = ?")
+				.bind(assignment.roleId, now, assignment.participantId),
+		),
+	);
+}
+
+export async function approveRoomPlan(db: D1Database, roomId: string): Promise<void> {
+	const now = Date.now();
+	await db
+		.prepare(
+			`UPDATE rooms
+       SET status = 'provisioning', started_at = ?, ends_at = ? + duration_minutes * 60000,
+           brief_json = json_set(brief_json, '$.planApproved', json('true')), updated_at = ?
+       WHERE id = ?`,
+		)
+		.bind(now, now, now, roomId)
+		.run();
+}
+
+export async function updateRoomRuntime(
+	db: D1Database,
+	roomId: string,
+	rootSessionId: string | null,
+	status: RoomStatus,
+): Promise<void> {
+	await db
+		.prepare(
+			"UPDATE rooms SET crabfleet_root_session_id = ?, status = ?, updated_at = ? WHERE id = ?",
+		)
+		.bind(rootSessionId, status, Date.now(), roomId)
+		.run();
+}
+
+export async function updateParticipantRuntime(
+	db: D1Database,
+	participantId: string,
+	input: {
+		sessionId?: string | null;
+		browserUrl?: string | null;
+		summary?: string;
+		state?: Participant["state"];
+	},
+): Promise<void> {
+	await db
+		.prepare(
+			`UPDATE participants
+       SET crabfleet_session_id = COALESCE(?, crabfleet_session_id),
+           browser_url = COALESCE(?, browser_url),
+           runtime_summary = COALESCE(?, runtime_summary),
+           state = COALESCE(?, state),
+           updated_at = ?
+       WHERE id = ?`,
+		)
+		.bind(
+			input.sessionId ?? null,
+			input.browserUrl ?? null,
+			input.summary ?? null,
+			input.state ?? null,
+			Date.now(),
+			participantId,
+		)
+		.run();
+}
+
+export async function updateTaskState(
+	db: D1Database,
+	roomId: string,
+	taskId: string,
+	state: TaskState,
+): Promise<void> {
+	await db
+		.prepare("UPDATE tasks SET state = ?, updated_at = ? WHERE id = ? AND room_id = ?")
+		.bind(state, Date.now(), taskId, roomId)
+		.run();
+}
+
+export async function addDecision(
+	db: D1Database,
+	roomId: string,
+	input: Omit<Decision, "id" | "roomId" | "createdAt">,
+): Promise<void> {
+	await db
+		.prepare(
+			`INSERT INTO decisions
+        (id, room_id, title, decision, reason, author_kind, author_id, affected_task_ids_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		)
+		.bind(
+			newId("decision"),
+			roomId,
+			input.title,
+			input.decision,
+			input.reason,
+			input.authorKind,
+			input.authorId,
+			encodeJson(input.affectedTaskIds),
+			Date.now(),
+		)
+		.run();
+}
+
+export async function addConductorAction(
+	db: D1Database,
+	roomId: string,
+	input: Omit<ConductorAction, "id" | "roomId" | "createdAt">,
+): Promise<void> {
+	await db
+		.prepare(
+			`INSERT INTO conductor_actions
+        (id, room_id, kind, target_ids_json, reason, evidence_refs_json, approval_state, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		)
+		.bind(
+			newId("action"),
+			roomId,
+			input.kind,
+			encodeJson(input.targetIds),
+			input.reason,
+			encodeJson(input.evidenceRefs),
+			input.approvalState,
+			Date.now(),
+		)
+		.run();
+}
+
+export async function endRoom(db: D1Database, roomId: string): Promise<void> {
+	await db
+		.prepare("UPDATE rooms SET status = 'ended', updated_at = ? WHERE id = ?")
+		.bind(Date.now(), roomId)
+		.run();
+}
+
+function roomFromRow(row: RoomRow): Room {
+	return {
+		id: row.id,
+		slug: row.slug,
+		title: row.title,
+		status: row.status,
+		hostParticipantId: row.host_participant_id,
+		repo: row.repo,
+		baseBranch: row.base_branch,
+		integrationBranch: row.integration_branch,
+		crabfleetRootSessionId: row.crabfleet_root_session_id,
+		brief: parseJson(row.brief_json, {}),
+		briefRevision: row.brief_revision,
+		durationMinutes: row.duration_minutes,
+		startedAt: row.started_at,
+		endsAt: row.ends_at,
+		createdAt: row.created_at,
+		updatedAt: row.updated_at,
+	};
+}
+
+function participantFromRow(row: ParticipantRow): Participant {
+	return {
+		id: row.id,
+		roomId: row.room_id,
+		kind: row.kind,
+		displayName: row.display_name,
+		githubLogin: row.github_login,
+		roleId: row.role_id,
+		taskId: row.task_id,
+		crabfleetSessionId: row.crabfleet_session_id,
+		browserUrl: row.browser_url,
+		runtimeSummary: row.runtime_summary,
+		branch: row.branch,
+		state: row.state,
+		joinedAt: row.joined_at,
+		createdAt: row.created_at,
+		updatedAt: row.updated_at,
+	};
+}
+
+function messageFromRow(row: MessageRow): RoomMessage {
+	return {
+		id: row.id,
+		roomId: row.room_id,
+		authorKind: row.author_kind,
+		authorId: row.author_id,
+		targetKind: row.target_kind,
+		targetId: row.target_id,
+		body: row.body,
+		replyToId: row.reply_to_id,
+		createdAt: row.created_at,
+	};
+}
+
+function taskFromRow(row: TaskRow): Task {
+	return {
+		id: row.id,
+		roomId: row.room_id,
+		title: row.title,
+		description: row.description,
+		ownerParticipantId: row.owner_participant_id,
+		state: row.state,
+		dependsOn: parseJson(row.depends_on_json, []),
+		ownsPaths: parseJson(row.owns_paths_json, []),
+		acceptanceCriteria: parseJson(row.acceptance_criteria_json, []),
+		branch: row.branch,
+		pullRequestUrl: row.pull_request_url,
+		createdAt: row.created_at,
+		updatedAt: row.updated_at,
+	};
+}
+
+function decisionFromRow(row: DecisionRow): Decision {
+	return {
+		id: row.id,
+		roomId: row.room_id,
+		title: row.title,
+		decision: row.decision,
+		reason: row.reason,
+		authorKind: row.author_kind,
+		authorId: row.author_id,
+		affectedTaskIds: parseJson(row.affected_task_ids_json, []),
+		createdAt: row.created_at,
+	};
+}
+
+function actionFromRow(row: ActionRow): ConductorAction {
+	return {
+		id: row.id,
+		roomId: row.room_id,
+		kind: row.kind,
+		targetIds: parseJson(row.target_ids_json, []),
+		reason: row.reason,
+		evidenceRefs: parseJson(row.evidence_refs_json, []),
+		approvalState: row.approval_state,
+		createdAt: row.created_at,
+	};
+}

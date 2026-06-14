@@ -27,6 +27,7 @@ CREATE TABLE participants (
   task_id TEXT,
   crabfleet_session_id TEXT,
   browser_url TEXT,
+  runtime_summary TEXT NOT NULL DEFAULT '',
   branch TEXT,
   state TEXT NOT NULL,
   joined_at INTEGER,
