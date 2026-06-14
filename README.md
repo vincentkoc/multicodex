@@ -24,8 +24,9 @@ Open <http://localhost:8787>.
 
 Without `OPENAI_API_KEY` or Crabfleet service credentials, the local app uses a
 deterministic conductor and simulated workspaces so the complete room flow is
-still testable. Set `EVENT_ACCESS_CODE` in `.dev.vars`; room creation fails
-closed without it.
+still testable. `pnpm dev` enables simulation only for the local Wrangler
+process. Set `EVENT_ACCESS_CODE` in `.dev.vars`; room creation fails closed
+without it. Production keeps simulation explicitly disabled.
 
 ## Room security
 

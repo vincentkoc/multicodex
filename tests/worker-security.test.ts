@@ -51,11 +51,31 @@ test("only the host can cut an approved task and the cut is recorded", async () 
 	const end = source.indexOf("const presentMatch", start);
 	const taskSource = source.slice(start, end);
 
-	assert.match(
-		taskSource,
-		/body\.state === "cut" && actor\.id !== snapshot\.room\.hostParticipantId/,
-	);
+	assert.match(taskSource, /scopeChange && actor\.id !== snapshot\.room\.hostParticipantId/);
 	assert.match(taskSource, /host approval required to cut a task/);
+	assert.match(taskSource, /body\.state === "cut" \|\| task\.state === "cut"/);
 	assert.match(taskSource, /await addDecision/);
 	assert.match(taskSource, /affectedTaskIds: \[task\.id\]/);
+});
+
+test("plan approval revalidates the current repository allowlist", async () => {
+	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
+	const start = source.indexOf("const approveMatch");
+	const end = source.indexOf("const refreshMatch", start);
+	const approvalSource = source.slice(start, end);
+
+	assert.ok(approvalSource.indexOf("repoAllowed") < approvalSource.indexOf("approveRoomPlan"));
+	assert.match(approvalSource, /room repository is no longer enabled/);
+});
+
+test("local dev enables simulation without changing the production default", async () => {
+	const [script, config, readme] = await Promise.all([
+		readFile(new URL("../scripts/dev.mjs", import.meta.url), "utf8"),
+		readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
+		readFile(new URL("../README.md", import.meta.url), "utf8"),
+	]);
+
+	assert.match(script, /MULTICODEX_SIMULATION_MODE:true/);
+	assert.match(config, /"MULTICODEX_SIMULATION_MODE": "false"/);
+	assert.match(readme, /enables simulation only for the local Wrangler/);
 });

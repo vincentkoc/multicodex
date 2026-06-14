@@ -295,6 +295,9 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		if (!roomPlanCoversActiveParticipants(snapshot)) {
 			throw new HttpError(409, "draft a current role and task for every active participant");
 		}
+		if (!repoAllowed(snapshot.room.repo, env.ALLOWED_REPOS, env.DEFAULT_REPO)) {
+			throw new HttpError(403, "room repository is no longer enabled");
+		}
 		if (!(await approveRoomPlan(env.DB, roomId, snapshot.room.briefRevision))) {
 			throw new HttpError(409, "room is not ready to launch");
 		}
@@ -404,17 +407,19 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const body = await readJson<{ state?: TaskState }>(request);
 		const states: TaskState[] = ["planned", "ready", "active", "blocked", "review", "done", "cut"];
 		if (!body.state || !states.includes(body.state)) throw new HttpError(400, "invalid task state");
-		if (body.state === "cut" && actor.id !== snapshot.room.hostParticipantId) {
+		const scopeChange = body.state === "cut" || task.state === "cut";
+		if (scopeChange && actor.id !== snapshot.room.hostParticipantId) {
 			throw new HttpError(403, "host approval required to cut a task");
 		}
 		if (!(await updateTaskState(env.DB, roomId, taskId, body.state, messageStatuses))) {
 			throw new HttpError(409, "room is no longer accepting task updates");
 		}
-		if (body.state === "cut") {
+		if (scopeChange && body.state !== task.state) {
+			const restoring = task.state === "cut";
 			await addDecision(env.DB, roomId, {
-				title: `Cut ${task.title}`,
-				decision: `${task.title} was removed from the room scope.`,
-				reason: "Host approved the scope cut.",
+				title: `${restoring ? "Restore" : "Cut"} ${task.title}`,
+				decision: `${task.title} was ${restoring ? "restored to" : "removed from"} the room scope.`,
+				reason: `Host approved the scope ${restoring ? "restoration" : "cut"}.`,
 				authorKind: "human",
 				authorId: actor.id,
 				affectedTaskIds: [task.id],

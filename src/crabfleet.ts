@@ -258,8 +258,8 @@ async function crabfleetFetch(env: Env, path: string, init: RequestInit = {}): P
 		},
 	);
 	if (!response.ok) {
-		const message = await readBoundedText(response, 16 * 1024).catch(() => "");
-		throw new HttpError(502, `Crabfleet ${response.status}: ${message || "request failed"}`);
+		console.error(JSON.stringify({ event: "crabfleet_request_failed", status: response.status }));
+		throw new HttpError(502, `Crabfleet request failed (${response.status})`);
 	}
 	return response;
 }

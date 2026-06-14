@@ -7,6 +7,7 @@ import {
 	crabfleetSimulationEnabled,
 	PartialProvisioningError,
 	provisionRoomCrabboxes,
+	readRoomCrabboxes,
 	stopRoomCrabboxes,
 } from "../src/crabfleet.ts";
 import type { Participant, Room } from "../src/domain.ts";
@@ -158,6 +159,28 @@ test("pending Crabfleet sessions must become ready before launch", async () => {
 		assert.equal(bindings[0]?.binding.session.status, "ready");
 	} finally {
 		globalThis.fetch = originalFetch;
+	}
+});
+
+test("Crabfleet upstream errors do not expose response bodies", async () => {
+	const originalFetch = globalThis.fetch;
+	const originalError = console.error;
+	globalThis.fetch = async () =>
+		new Response("opaque-root-token internal failure", { status: 500 });
+	console.error = () => undefined;
+	try {
+		await assert.rejects(
+			readRoomCrabboxes({ CRABFLEET_SERVICE_TOKEN: "test" } as Env, "root"),
+			(error) => {
+				assert.ok(error instanceof Error);
+				assert.doesNotMatch(error.message, /opaque-root-token|internal failure/);
+				assert.match(error.message, /Crabfleet request failed \(500\)/);
+				return true;
+			},
+		);
+	} finally {
+		globalThis.fetch = originalFetch;
+		console.error = originalError;
 	}
 });
 

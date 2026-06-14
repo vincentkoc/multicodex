@@ -12,6 +12,9 @@ if (initialCode !== 0) process.exit(initialCode ?? 1);
 
 const forwardedArgs = process.argv.slice(2);
 if (forwardedArgs[0] === "--") forwardedArgs.shift();
+if (!forwardedArgs.some((argument) => argument.includes("MULTICODEX_SIMULATION_MODE"))) {
+	forwardedArgs.push("--var", "MULTICODEX_SIMULATION_MODE:true");
+}
 const children = [
 	start(["exec", "vite", "build", "--watch"]),
 	start(["exec", "wrangler", "dev", ...forwardedArgs]),
