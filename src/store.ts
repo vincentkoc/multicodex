@@ -361,33 +361,39 @@ export async function addMessage(
 export async function replacePlan(
 	db: D1Database,
 	roomId: string,
+	expectedBriefRevision: number,
 	brief: RoomBrief,
 	participants: Participant[],
 	tasks: Array<Omit<Task, "roomId" | "createdAt" | "updatedAt">>,
 ): Promise<boolean> {
 	const now = Date.now();
+	const nextBriefRevision = newRevision();
 	const statements: D1PreparedStatement[] = [
 		db
 			.prepare(
 				`UPDATE rooms
-         SET brief_json = ?, brief_revision = brief_revision + 1, status = 'planning', updated_at = ?
-         WHERE id = ? AND status IN ('setup', 'planning')`,
+         SET brief_json = ?, brief_revision = ?, status = 'planning', updated_at = ?
+         WHERE id = ? AND status IN ('setup', 'planning') AND brief_revision = ?`,
 			)
-			.bind(encodeJson(brief), now, roomId),
+			.bind(encodeJson(brief), nextBriefRevision, now, roomId, expectedBriefRevision),
 		db
 			.prepare(
 				`DELETE FROM tasks
          WHERE room_id = ?
-           AND EXISTS (SELECT 1 FROM rooms WHERE id = ? AND status = 'planning')`,
+           AND EXISTS (
+             SELECT 1 FROM rooms WHERE id = ? AND status = 'planning' AND brief_revision = ?
+           )`,
 			)
-			.bind(roomId, roomId),
+			.bind(roomId, roomId, nextBriefRevision),
 		db
 			.prepare(
 				`UPDATE participants SET task_id = NULL, updated_at = ?
          WHERE room_id = ?
-           AND EXISTS (SELECT 1 FROM rooms WHERE id = ? AND status = 'planning')`,
+           AND EXISTS (
+             SELECT 1 FROM rooms WHERE id = ? AND status = 'planning' AND brief_revision = ?
+           )`,
 			)
-			.bind(now, roomId, roomId),
+			.bind(now, roomId, roomId, nextBriefRevision),
 	];
 	for (const participant of participants) {
 		if (participant.kind === "observer" || !participant.roleId) continue;
@@ -396,9 +402,11 @@ export async function replacePlan(
 				.prepare(
 					`UPDATE participants SET role_id = ?, updated_at = ?
            WHERE id = ? AND room_id = ?
-             AND EXISTS (SELECT 1 FROM rooms WHERE id = ? AND status = 'planning')`,
+             AND EXISTS (
+               SELECT 1 FROM rooms WHERE id = ? AND status = 'planning' AND brief_revision = ?
+             )`,
 				)
-				.bind(participant.roleId, now, participant.id, roomId, roomId),
+				.bind(participant.roleId, now, participant.id, roomId, roomId, nextBriefRevision),
 		);
 	}
 	for (const task of tasks) {
@@ -411,7 +419,9 @@ export async function replacePlan(
             (id, room_id, title, description, owner_participant_id, state, depends_on_json,
              owns_paths_json, acceptance_criteria_json, branch, created_at, updated_at)
            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-           WHERE EXISTS (SELECT 1 FROM rooms WHERE id = ? AND status = 'planning')`,
+           WHERE EXISTS (
+             SELECT 1 FROM rooms WHERE id = ? AND status = 'planning' AND brief_revision = ?
+           )`,
 				)
 				.bind(
 					id,
@@ -427,6 +437,7 @@ export async function replacePlan(
 					now,
 					now,
 					roomId,
+					nextBriefRevision,
 				),
 		);
 		if (owner) {
@@ -435,9 +446,11 @@ export async function replacePlan(
 					.prepare(
 						`UPDATE participants SET role_id = ?, task_id = ?, updated_at = ?
              WHERE id = ? AND room_id = ?
-               AND EXISTS (SELECT 1 FROM rooms WHERE id = ? AND status = 'planning')`,
+               AND EXISTS (
+                 SELECT 1 FROM rooms WHERE id = ? AND status = 'planning' AND brief_revision = ?
+               )`,
 					)
-					.bind(owner.roleId, id, now, owner.id, roomId, roomId),
+					.bind(owner.roleId, id, now, owner.id, roomId, roomId, nextBriefRevision),
 			);
 		}
 	}
@@ -458,6 +471,9 @@ export async function approveRoomPlan(
 	           brief_json = json_set(brief_json, '$.planApproved', json('true')), updated_at = ?
 	       WHERE id = ? AND status = 'planning' AND brief_revision = ?
 	         AND (SELECT COUNT(*) FROM tasks WHERE room_id = rooms.id) > 0
+	         AND NOT EXISTS (
+	           SELECT 1 FROM tasks WHERE room_id = rooms.id AND state = 'cut'
+	         )
 	         AND (SELECT COUNT(*) FROM tasks WHERE room_id = rooms.id) =
 	             (SELECT COUNT(*) FROM participants WHERE room_id = rooms.id AND kind != 'observer')
 	         AND NOT EXISTS (
@@ -507,6 +523,76 @@ export async function resetRoomProvisioning(db: D1Database, roomId: string): Pro
 			)
 			.bind(now, roomId, roomId),
 	]);
+}
+
+export async function recordProvisioningBinding(
+	db: D1Database,
+	roomId: string,
+	rootSessionId: string,
+	binding: {
+		participantId: string;
+		sessionId: string;
+		browserUrl: string;
+		summary: string;
+		state: Participant["state"];
+	},
+): Promise<boolean> {
+	const now = Date.now();
+	const [roomResult, participantResult] = await db.batch([
+		db
+			.prepare(
+				`UPDATE rooms
+         SET crabfleet_root_session_id = COALESCE(crabfleet_root_session_id, ?), updated_at = ?
+         WHERE id = ? AND status = 'provisioning'
+           AND (crabfleet_root_session_id IS NULL OR crabfleet_root_session_id = ?)`,
+			)
+			.bind(rootSessionId, now, roomId, rootSessionId),
+		db
+			.prepare(
+				`UPDATE participants
+         SET crabfleet_session_id = ?, browser_url = ?, runtime_summary = ?, state = ?, updated_at = ?
+         WHERE id = ? AND room_id = ?
+           AND EXISTS (
+             SELECT 1 FROM rooms
+             WHERE id = ? AND status = 'provisioning' AND crabfleet_root_session_id = ?
+           )`,
+			)
+			.bind(
+				binding.sessionId,
+				binding.browserUrl,
+				binding.summary,
+				binding.state,
+				now,
+				binding.participantId,
+				roomId,
+				roomId,
+				rootSessionId,
+			),
+	]);
+	return roomResult?.meta.changes === 1 && participantResult?.meta.changes === 1;
+}
+
+export async function claimStaleProvisioningCleanup(
+	db: D1Database,
+	roomId: string,
+	staleBefore: number,
+): Promise<boolean> {
+	const result = await db
+		.prepare(
+			`UPDATE rooms SET status = 'cleanup-planning', updated_at = ?
+       WHERE id = ? AND status = 'provisioning' AND updated_at <= ?`,
+		)
+		.bind(Date.now(), roomId, staleBefore)
+		.run();
+	return result.meta.changes === 1;
+}
+
+export async function renewProvisioningLease(db: D1Database, roomId: string): Promise<boolean> {
+	const result = await db
+		.prepare("UPDATE rooms SET updated_at = ? WHERE id = ? AND status = 'provisioning'")
+		.bind(Date.now(), roomId)
+		.run();
+	return result.meta.changes === 1;
 }
 
 export async function markRoomCleanup(
@@ -573,6 +659,68 @@ export async function updateRoomRuntime(
        WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})`,
 		)
 		.bind(rootSessionId, status, Date.now(), roomId, ...expectedStatuses)
+		.run();
+	return result.meta.changes === 1;
+}
+
+export async function claimRoomRuntimeLease(
+	db: D1Database,
+	roomId: string,
+	kind: string,
+	expectedStatuses: RoomStatus[],
+	ttlMilliseconds: number,
+): Promise<string | null> {
+	if (!expectedStatuses.length) return null;
+	const now = Date.now();
+	const leaseId = newId("lease");
+	const [, claim] = await db.batch([
+		db
+			.prepare("DELETE FROM room_runtime_leases WHERE room_id = ? AND expires_at <= ?")
+			.bind(roomId, now),
+		db
+			.prepare(
+				`INSERT OR IGNORE INTO room_runtime_leases (room_id, lease_id, kind, expires_at)
+         SELECT ?, ?, ?, ?
+         WHERE EXISTS (
+           SELECT 1 FROM rooms WHERE id = ? AND status IN (${expectedStatuses
+							.map(() => "?")
+							.join(", ")})
+         )`,
+			)
+			.bind(roomId, leaseId, kind, now + ttlMilliseconds, roomId, ...expectedStatuses),
+	]);
+	return claim?.meta.changes === 1 ? leaseId : null;
+}
+
+export async function releaseRoomRuntimeLease(
+	db: D1Database,
+	roomId: string,
+	leaseId: string,
+): Promise<void> {
+	await db
+		.prepare("DELETE FROM room_runtime_leases WHERE room_id = ? AND lease_id = ?")
+		.bind(roomId, leaseId)
+		.run();
+}
+
+export async function beginRoomCleanup(
+	db: D1Database,
+	roomId: string,
+	rootSessionId: string | null,
+	expectedStatuses: RoomStatus[],
+): Promise<boolean> {
+	if (!expectedStatuses.length) return false;
+	const now = Date.now();
+	const result = await db
+		.prepare(
+			`UPDATE rooms SET crabfleet_root_session_id = ?, status = 'cleanup-ending', updated_at = ?
+       WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})
+         AND NOT EXISTS (
+           SELECT 1 FROM room_runtime_leases
+           WHERE room_id = rooms.id AND expires_at > ?
+         )`,
+		)
+		.bind(rootSessionId, now, roomId, ...expectedStatuses, now)
 		.run();
 	return result.meta.changes === 1;
 }
@@ -761,6 +909,11 @@ export function participantForTask(
 	ownerParticipantId: string | null,
 ): Participant | undefined {
 	return participants.find((participant) => participant.id === ownerParticipantId);
+}
+
+function newRevision(): number {
+	const words = crypto.getRandomValues(new Uint32Array(2));
+	return ((words[0] ?? 0) & 0x1fffff) * 0x100000000 + (words[1] ?? 0);
 }
 
 function roomFromRow(row: RoomRow): Room {

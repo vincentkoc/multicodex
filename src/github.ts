@@ -32,6 +32,7 @@ export async function ensureRoomBranches(
 async function githubJson<T = unknown>(env: Env, path: string, init: RequestInit = {}): Promise<T> {
 	const response = await fetch(`https://api.github.com${path}`, {
 		...init,
+		signal: init.signal ?? AbortSignal.timeout(15_000),
 		headers: {
 			accept: "application/vnd.github+json",
 			authorization: `Bearer ${env.GITHUB_TOKEN}`,

@@ -92,10 +92,12 @@ export function App() {
 		let socket: WebSocket | null = null;
 		let retry: number | null = null;
 		let disposed = false;
+		let syncSequence = 0;
 		const syncRoom = () => {
+			const sequence = ++syncSequence;
 			readRoom(roomId, identity?.participantToken)
 				.then((value) => {
-					if (!disposed) setSnapshot(value);
+					if (!disposed && sequence === syncSequence) setSnapshot(value);
 				})
 				.catch((cause: Error) => {
 					if (!disposed) setError(cause.message);
@@ -687,6 +689,18 @@ function HostControls({
 			<button class="button danger" disabled={Boolean(busy)} onClick={() => action(cleanupAction)}>
 				<CircleStop size={16} />
 				retry workspace cleanup
+			</button>
+		);
+	}
+	if (snapshot.room.status === "provisioning") {
+		return (
+			<button
+				class="button danger"
+				disabled={Boolean(busy)}
+				onClick={() => action("retry-cleanup")}
+			>
+				<CircleStop size={16} />
+				cancel stalled launch
 			</button>
 		);
 	}

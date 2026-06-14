@@ -30,13 +30,16 @@ test("cleanup retry preserves failed launches while end excludes unsafe lifecycl
 
 	assert.match(retrySource, /snapshot\.room\.status !== "cleanup-planning"/);
 	assert.match(retrySource, /resetRoomProvisioning/);
+	assert.match(retrySource, /claimStaleProvisioningCleanup/);
+	assert.match(retrySource, /room provisioning is still active/);
 	assert.doesNotMatch(endSource, /"cleanup-planning"/);
 	assert.match(endSource, /snapshot\.room\.status === "provisioning"/);
-	assert.match(endSource, /room provisioning must finish before cleanup/);
+	assert.match(endSource, /active provisioning can be cancelled after its lease expires/);
 	assert.doesNotMatch(
 		endSource.slice(endSource.indexOf("const endableStatuses")),
 		/"provisioning"/,
 	);
+	assert.match(endSource, /beginRoomCleanup/);
 });
 
 test("failed launch cleanup always broadcasts its durable recovery state", async () => {
@@ -58,6 +61,7 @@ test("WebSocket reconnects resync the current room snapshot", async () => {
 
 	assert.match(socketSource, /socket\.onopen = syncRoom/);
 	assert.match(socketSource, /if \(payload\.type === "changed"\) syncRoom\(\)/);
+	assert.match(socketSource, /sequence === syncSequence/);
 });
 
 test("conductor turns are claimed before model execution and cannot nudge workspaces", async () => {
@@ -93,6 +97,41 @@ test("plan approval revalidates the current repository allowlist", async () => {
 
 	assert.ok(approvalSource.indexOf("repoAllowed") < approvalSource.indexOf("approveRoomPlan"));
 	assert.match(approvalSource, /room repository is no longer enabled/);
+	assert.match(approvalSource, /recordProvisioningBinding/);
+});
+
+test("failed launch cleanup must claim lifecycle ownership before stopping workspaces", async () => {
+	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
+	const start = source.indexOf("async function cleanupFailedLaunch");
+	const end = source.indexOf("async function nudgeParticipant", start);
+	const cleanupSource = source.slice(start, end);
+
+	assert.match(cleanupSource, /const claimed = await markRoomCleanup/);
+	assert.match(cleanupSource, /if \(!claimed\) return/);
+	assert.ok(
+		cleanupSource.indexOf("if (!claimed) return") < cleanupSource.indexOf("stopRoomCrabboxes"),
+	);
+	assert.doesNotMatch(cleanupSource, /\["provisioning", "building"/);
+});
+
+test("nudges reserve the runtime lifecycle before external delivery", async () => {
+	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
+	const start = source.indexOf("async function nudgeParticipant");
+	const end = source.indexOf("async function broadcastSnapshot", start);
+	const nudgeSource = source.slice(start, end);
+
+	assert.match(nudgeSource, /claimRoomRuntimeLease/);
+	assert.ok(nudgeSource.indexOf("claimRoomRuntimeLease") < nudgeSource.indexOf("sendCrabboxNudge"));
+	assert.match(nudgeSource, /finally \{\s*await releaseRoomRuntimeLease/);
+});
+
+test("runtime refresh surfaces terminal Crabfleet sessions", async () => {
+	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
+	const start = source.indexOf("const refreshMatch");
+	const end = source.indexOf("const nudgeMatch", start);
+	const refreshSource = source.slice(start, end);
+
+	assert.match(refreshSource, /participantStateForCrabfleetStatus/);
 });
 
 test("local dev enables simulation without changing the production default", async () => {

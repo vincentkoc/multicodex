@@ -16,6 +16,10 @@ export type CrabboxBinding = {
 };
 
 export type ParticipantCrabboxBinding = { participantId: string; binding: CrabboxBinding };
+export type ProvisioningBindingObserver = (
+	item: ParticipantCrabboxBinding,
+	bindings: ParticipantCrabboxBinding[],
+) => Promise<void>;
 
 export class PartialProvisioningError extends Error {
 	readonly bindings: ParticipantCrabboxBinding[];
@@ -39,18 +43,31 @@ export function crabfleetSimulationEnabled(value: string | undefined): boolean {
 	return value === "true";
 }
 
+export function participantStateForCrabfleetStatus(
+	status: string,
+	current: Participant["state"],
+): Participant["state"] {
+	if (status === "ready") return "working";
+	if (status === "failed") return "blocked";
+	if (status === "stopped" || status === "expired") return "left";
+	return current;
+}
+
 export async function provisionRoomCrabboxes(
 	env: Env,
 	room: Room,
 	participants: Participant[],
 	tasks: Task[],
+	onBinding?: ProvisioningBindingObserver,
 ): Promise<ParticipantCrabboxBinding[]> {
 	const active = participants.filter((participant) => participant.kind !== "observer");
 	const host = active.find((participant) => participant.id === room.hostParticipantId) ?? active[0];
 	if (!host) throw new HttpError(400, "room has no active participant");
 	if (!env.CRABFLEET_SERVICE_TOKEN) {
 		if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) {
-			return simulatedBindings(room, active);
+			const bindings = simulatedBindings(room, active);
+			for (const item of bindings) await onBinding?.(item, bindings);
+			return bindings;
 		}
 		throw new HttpError(503, "Crabfleet service token is not configured");
 	}
@@ -67,9 +84,10 @@ export async function provisionRoomCrabboxes(
 	});
 	const bindings = [{ participantId: host.id, binding: root }];
 	try {
+		await onBinding?.(bindings[0]!, bindings);
 		for (const participant of active.filter((item) => item.id !== host.id)) {
 			const task = tasks.find((item) => item.ownerParticipantId === participant.id);
-			bindings.push({
+			const item = {
 				participantId: participant.id,
 				binding: await createCrabbox(env, {
 					owner,
@@ -84,9 +102,13 @@ export async function provisionRoomCrabboxes(
 						? taskPrompt(room.brief, participant, task)
 						: "Complete your assigned room task.",
 				}),
-			});
+			};
+			bindings.push(item);
+			await onBinding?.(item, bindings);
 		}
-		return await waitForUsableRoomCrabboxes(env, bindings);
+		const ready = await waitForUsableRoomCrabboxes(env, bindings);
+		for (const item of ready) await onBinding?.(item, ready);
+		return ready;
 	} catch (error) {
 		if (error instanceof PartialProvisioningError) throw error;
 		throw new PartialProvisioningError(error, bindings);
@@ -126,6 +148,7 @@ export async function sendCrabboxNudge(
 			method: "POST",
 			body: JSON.stringify({ rootSessionId, message, enter: true }),
 			headers: { "content-type": "application/json" },
+			signal: AbortSignal.timeout(20_000),
 		},
 	);
 	await responseJson(response);
@@ -251,6 +274,7 @@ async function crabfleetFetch(env: Env, path: string, init: RequestInit = {}): P
 		new URL(path, env.CRABFLEET_API_URL || "https://crabfleet.openclaw.ai"),
 		{
 			...init,
+			signal: init.signal ?? AbortSignal.timeout(20_000),
 			headers: {
 				authorization: `Bearer ${env.CRABFLEET_SERVICE_TOKEN}`,
 				...init.headers,

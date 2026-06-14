@@ -5,6 +5,7 @@ import {
 	crabfleetOwner,
 	crabfleetRuntime,
 	crabfleetSimulationEnabled,
+	participantStateForCrabfleetStatus,
 	PartialProvisioningError,
 	provisionRoomCrabboxes,
 	readRoomCrabboxes,
@@ -21,12 +22,18 @@ test("Crabfleet runtime selection keeps crabbox as the conservative fallback", (
 	assert.equal(crabfleetOwner("Event Service"), "event-service");
 	assert.equal(crabfleetSimulationEnabled("true"), true);
 	assert.equal(crabfleetSimulationEnabled(undefined), false);
+	assert.equal(participantStateForCrabfleetStatus("ready", "joined"), "working");
+	assert.equal(participantStateForCrabfleetStatus("failed", "working"), "blocked");
+	assert.equal(participantStateForCrabfleetStatus("expired", "working"), "left");
+	assert.equal(participantStateForCrabfleetStatus("stopped", "working"), "left");
+	assert.equal(participantStateForCrabfleetStatus("provisioning", "joined"), "joined");
 });
 
 test("partial room provisioning returns every created session for durable cleanup", async () => {
 	const originalFetch = globalThis.fetch;
 	let creates = 0;
 	const owners: string[] = [];
+	const persisted: string[] = [];
 	globalThis.fetch = async (input, init) => {
 		const path = new URL(String(input)).pathname;
 		if (path === "/api/openclaw/crabboxes" && init?.method === "POST") {
@@ -58,6 +65,9 @@ test("partial room provisioning returns every created session for durable cleanu
 					participant("failure"),
 				],
 				[],
+				async ({ binding }) => {
+					persisted.push(binding.session.id);
+				},
 			),
 			(error) => {
 				assert.ok(error instanceof PartialProvisioningError);
@@ -72,6 +82,7 @@ test("partial room provisioning returns every created session for durable cleanu
 		globalThis.fetch = originalFetch;
 	}
 	assert.deepEqual(owners, ["event-service", "event-service", "event-service"]);
+	assert.deepEqual(persisted, ["root", "child"]);
 });
 
 test("room cleanup discovers late child sessions and waits for terminal state", async () => {

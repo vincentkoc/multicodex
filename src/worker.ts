@@ -3,6 +3,7 @@ import { activeRoomLimit, eventAccessAuthorized } from "./access.ts";
 import { runConductorTurn } from "./conductor.ts";
 import {
 	PartialProvisioningError,
+	participantStateForCrabfleetStatus,
 	provisionRoomCrabboxes,
 	readRoomCrabboxes,
 	sendCrabboxNudge,
@@ -41,11 +42,17 @@ import {
 	addMessage,
 	addParticipant,
 	approveRoomPlan,
+	beginRoomCleanup,
 	claimConductorTurn,
+	claimRoomRuntimeLease,
+	claimStaleProvisioningCleanup,
 	createRoom,
 	endRoom,
 	markRoomCleanup,
 	readRoomSnapshot,
+	recordProvisioningBinding,
+	releaseRoomRuntimeLease,
+	renewProvisioningLease,
 	replacePlan,
 	requireRoomParticipant,
 	resetRoomProvisioning,
@@ -66,6 +73,9 @@ const messageStatuses: RoomStatus[] = [
 	"presenting",
 ];
 const runtimeRefreshStatuses: RoomStatus[] = ["building", "integrating", "presenting"];
+const runtimeNudgeStatuses: RoomStatus[] = ["building", "integrating"];
+const provisioningLeaseMilliseconds = 2 * 60 * 1000;
+const runtimeActionLeaseMilliseconds = 30_000;
 
 export default {
 	async fetch(request, env, context): Promise<Response> {
@@ -237,7 +247,16 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const active = snapshot.participants.filter((participant) => participant.kind !== "observer");
 		const plan = planForParticipants(`${roomId}:${snapshot.room.briefRevision + 1}`, active);
 		const participants = participantsWithAssignments(snapshot.participants, plan.assignments);
-		if (!(await replacePlan(env.DB, roomId, plan.brief, participants, []))) {
+		if (
+			!(await replacePlan(
+				env.DB,
+				roomId,
+				snapshot.room.briefRevision,
+				plan.brief,
+				participants,
+				[],
+			))
+		) {
 			throw new HttpError(409, "room is no longer accepting planning changes");
 		}
 		await addMessage(env.DB, roomId, {
@@ -264,7 +283,16 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const active = snapshot.participants.filter((participant) => participant.kind !== "observer");
 		const plan = planForBrief(snapshot.room.brief, active);
 		const participants = participantsWithAssignments(snapshot.participants, plan.assignments);
-		if (!(await replacePlan(env.DB, roomId, plan.brief, participants, plan.tasks))) {
+		if (
+			!(await replacePlan(
+				env.DB,
+				roomId,
+				snapshot.room.briefRevision,
+				plan.brief,
+				participants,
+				plan.tasks,
+			))
+		) {
 			throw new HttpError(409, "room is no longer accepting planning changes");
 		}
 		await addMessage(env.DB, roomId, {
@@ -305,33 +333,51 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		let bindings: Awaited<ReturnType<typeof provisionRoomCrabboxes>> = [];
 		try {
 			await ensureRoomBranches(env, snapshot.room, snapshot.participants);
+			if (!(await renewProvisioningLease(env.DB, roomId))) {
+				throw new HttpError(409, "room launch was cancelled");
+			}
 			bindings = await provisionRoomCrabboxes(
 				env,
 				snapshot.room,
 				snapshot.participants,
 				snapshot.tasks,
+				async ({ participantId, binding }) => {
+					const rootSessionId = binding.session.rootSessionId || binding.session.id;
+					if (
+						!(await recordProvisioningBinding(env.DB, roomId, rootSessionId, {
+							participantId,
+							sessionId: binding.session.id,
+							browserUrl: binding.browserUrl,
+							summary: binding.session.summary,
+							state: binding.session.status === "ready" ? "ready" : "working",
+						}))
+					) {
+						throw new HttpError(409, "room launch was cancelled");
+					}
+				},
 			);
-			for (const { participantId: id, binding } of bindings) {
-				await updateParticipantRuntime(env.DB, id, {
-					sessionId: binding.session.id,
-					browserUrl: binding.browserUrl,
-					summary: binding.session.summary,
-					state: binding.session.status === "ready" ? "ready" : "working",
-				});
-			}
 			const rootSessionId =
 				bindings[0]?.binding.session.rootSessionId || bindings[0]?.binding.session.id || null;
+			if (
+				!(await addMessage(
+					env.DB,
+					roomId,
+					{
+						authorKind: "system",
+						authorId: "system",
+						targetKind: "system",
+						targetId: null,
+						body: `${bindings.length} Codex workspace${bindings.length === 1 ? "" : "s"} launched.`,
+						replyToId: null,
+					},
+					["provisioning"],
+				))
+			) {
+				throw new HttpError(409, "room launch was cancelled");
+			}
 			if (!(await updateRoomRuntime(env.DB, roomId, rootSessionId, "building", ["provisioning"]))) {
 				throw new HttpError(409, "room launch was cancelled");
 			}
-			await addMessage(env.DB, roomId, {
-				authorKind: "system",
-				authorId: "system",
-				targetKind: "system",
-				targetId: null,
-				body: `${bindings.length} Codex workspace${bindings.length === 1 ? "" : "s"} launched.`,
-				replyToId: null,
-			});
 		} catch (error) {
 			if (error instanceof PartialProvisioningError) bindings = error.bindings;
 			try {
@@ -365,7 +411,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 					participant.id,
 					{
 						summary: binding.session.summary,
-						state: binding.session.status === "ready" ? "working" : participant.state,
+						state: participantStateForCrabfleetStatus(binding.session.status, participant.state),
 					},
 					{ roomId, expectedStatuses: runtimeRefreshStatuses },
 				);
@@ -471,6 +517,19 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const roomId = decodeURIComponent(retryCleanupMatch[1] ?? "");
 		const host = await requireHost(env.DB, roomId, participantToken(request));
 		let snapshot = await readRoomSnapshot(env.DB, roomId);
+		if (snapshot.room.status === "provisioning") {
+			if (
+				!(await claimStaleProvisioningCleanup(
+					env.DB,
+					roomId,
+					Date.now() - provisioningLeaseMilliseconds,
+				))
+			) {
+				throw new HttpError(409, "room provisioning is still active");
+			}
+			snapshot = await readRoomSnapshot(env.DB, roomId);
+			context.waitUntil(broadcastSnapshot(env, snapshot));
+		}
 		if (snapshot.room.status !== "cleanup-planning") {
 			throw new HttpError(409, "room is not waiting for launch cleanup");
 		}
@@ -496,7 +555,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		let snapshot = await readRoomSnapshot(env.DB, roomId);
 		if (snapshot.room.status === "ended") return json(snapshotForViewer(snapshot, host.id));
 		if (snapshot.room.status === "provisioning") {
-			throw new HttpError(409, "room provisioning must finish before cleanup");
+			throw new HttpError(409, "active provisioning can be cancelled after its lease expires");
 		}
 		const endableStatuses = [
 			"setup",
@@ -507,13 +566,9 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			"cleanup-ending",
 		] as const;
 		if (
-			!(await updateRoomRuntime(
-				env.DB,
-				roomId,
-				snapshot.room.crabfleetRootSessionId,
-				"cleanup-ending",
-				[...endableStatuses],
-			))
+			!(await beginRoomCleanup(env.DB, roomId, snapshot.room.crabfleetRootSessionId, [
+				...endableStatuses,
+			]))
 		) {
 			throw new HttpError(409, "room state changed before cleanup");
 		}
@@ -633,14 +688,15 @@ async function cleanupFailedLaunch(
 		summary: binding.session.summary,
 		state: (binding.session.status === "ready" ? "ready" : "working") as Participant["state"],
 	}));
-	await markRoomCleanup(
+	const claimed = await markRoomCleanup(
 		env.DB,
 		roomId,
 		rootSessionId,
 		"cleanup-planning",
-		["provisioning", "building", "cleanup-planning"],
+		["provisioning", "cleanup-planning"],
 		cleanupBindings,
 	);
+	if (!claimed) return;
 	try {
 		await stopRoomCrabboxes(
 			env,
@@ -678,36 +734,57 @@ async function nudgeParticipant(
 ): Promise<void> {
 	if (!targetParticipantId || !message || !reason)
 		throw new HttpError(400, "participant, message, and reason are required");
-	const snapshot = await readRoomSnapshot(env.DB, roomId);
+	let snapshot = await readRoomSnapshot(env.DB, roomId);
 	if (!roomAllowsRuntimeNudge(snapshot.room.status)) {
 		throw new HttpError(409, "room runtime is not active");
 	}
-	const target = snapshot.participants.find(
-		(participant) => participant.id === targetParticipantId,
-	);
+	let target = snapshot.participants.find((participant) => participant.id === targetParticipantId);
 	if (!target?.crabfleetSessionId) throw new HttpError(400, "participant workspace is not ready");
 	if (!snapshot.room.crabfleetRootSessionId) throw new HttpError(400, "room runtime is not ready");
-	await sendCrabboxNudge(
-		env,
-		snapshot.room.crabfleetRootSessionId,
-		target.crabfleetSessionId,
-		message,
+	const leaseId = await claimRoomRuntimeLease(
+		env.DB,
+		roomId,
+		"session_nudge",
+		runtimeNudgeStatuses,
+		runtimeActionLeaseMilliseconds,
 	);
-	await addConductorAction(env.DB, roomId, {
-		kind: "session_nudge",
-		targetIds: [target.id],
-		reason,
-		evidenceRefs: [],
-		approvalState: "approved",
-	});
-	await addMessage(env.DB, roomId, {
-		authorKind: "conductor",
-		authorId: "conductor",
-		targetKind: "participant",
-		targetId: target.id,
-		body: `Nudged ${target.displayName}: ${reason}`,
-		replyToId: null,
-	});
+	if (!leaseId) throw new HttpError(409, "room runtime is busy or ending");
+	try {
+		snapshot = await readRoomSnapshot(env.DB, roomId);
+		if (!roomAllowsRuntimeNudge(snapshot.room.status)) {
+			throw new HttpError(409, "room runtime is not active");
+		}
+		target = snapshot.participants.find((participant) => participant.id === targetParticipantId);
+		if (!target?.crabfleetSessionId) {
+			throw new HttpError(400, "participant workspace is not ready");
+		}
+		if (!snapshot.room.crabfleetRootSessionId) {
+			throw new HttpError(400, "room runtime is not ready");
+		}
+		await sendCrabboxNudge(
+			env,
+			snapshot.room.crabfleetRootSessionId,
+			target.crabfleetSessionId,
+			message,
+		);
+		await addConductorAction(env.DB, roomId, {
+			kind: "session_nudge",
+			targetIds: [target.id],
+			reason,
+			evidenceRefs: [],
+			approvalState: "approved",
+		});
+		await addMessage(env.DB, roomId, {
+			authorKind: "conductor",
+			authorId: "conductor",
+			targetKind: "participant",
+			targetId: target.id,
+			body: `Nudged ${target.displayName}: ${reason}`,
+			replyToId: null,
+		});
+	} finally {
+		await releaseRoomRuntimeLease(env.DB, roomId, leaseId);
+	}
 }
 
 async function broadcastSnapshot(env: Env, snapshot: RoomSnapshot): Promise<void> {

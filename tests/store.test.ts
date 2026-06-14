@@ -80,6 +80,31 @@ test("plan approval atomically binds the validated revision and participant cove
 	assert.match(approvalSource, /COUNT\(\*\) FROM tasks/);
 	assert.match(approvalSource, /participant\.kind != 'observer'/);
 	assert.match(approvalSource, /task\.owner_participant_id = participant\.id/);
+	assert.match(approvalSource, /state = 'cut'/);
+});
+
+test("plan replacement fences every write to its claimed revision", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function replacePlan");
+	const end = source.indexOf("export async function approveRoomPlan", start);
+	const replacementSource = source.slice(start, end);
+
+	assert.match(replacementSource, /expectedBriefRevision/);
+	assert.match(replacementSource, /nextBriefRevision/);
+	assert.match(replacementSource, /AND brief_revision = \?/);
+	assert.match(replacementSource, /brief_revision = \?/);
+});
+
+test("runtime leases fence cleanup and stale provisioning can be claimed", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const staleStart = source.indexOf("export async function claimStaleProvisioningCleanup");
+	const cleanupEnd = source.indexOf("export async function updateParticipantRuntime", staleStart);
+	const lifecycleSource = source.slice(staleStart, cleanupEnd);
+
+	assert.match(lifecycleSource, /status = 'provisioning' AND updated_at <= \?/);
+	assert.match(lifecycleSource, /INSERT OR IGNORE INTO room_runtime_leases/);
+	assert.match(lifecycleSource, /NOT EXISTS \(\s*SELECT 1 FROM room_runtime_leases/);
+	assert.match(lifecycleSource, /expires_at > \?/);
 });
 
 test("conductor claims atomically enforce room cooldown and hourly budget", async () => {
