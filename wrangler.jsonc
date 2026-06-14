@@ -41,6 +41,7 @@
 		"CRABFLEET_RUNTIME": "container",
 		"DEFAULT_REPO": "vincentkoc/multicodex",
 		"MAX_ACTIVE_ROOMS": "20",
+		"MULTICODEX_SIMULATION_MODE": "false",
 		"OPENAI_MODEL": "gpt-5.4-mini",
 	},
 }

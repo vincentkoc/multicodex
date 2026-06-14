@@ -47,10 +47,25 @@ test("builder joins atomically invalidate stale plans and enforce the five-seat 
 	const addParticipantSource = source.slice(start, end);
 
 	assert.match(addParticipantSource, /input\.kind === "observer" \? 24 : 5/);
+	assert.match(
+		addParticipantSource,
+		/status NOT IN \('cleanup-planning', 'cleanup-ending', 'ended'\)/,
+	);
 	assert.match(addParticipantSource, /DELETE FROM tasks/);
 	assert.match(addParticipantSource, /SET task_id = NULL/);
 	assert.match(addParticipantSource, /brief_revision = brief_revision \+ 1/);
 	assert.match(addParticipantSource, /const \[result\] = await db\.batch\(statements\)/);
+});
+
+test("task updates are atomically fenced against terminal rooms", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function updateTaskState");
+	const end = source.indexOf("export async function addDecision", start);
+	const taskSource = source.slice(start, end);
+
+	assert.match(taskSource, /EXISTS \(/);
+	assert.match(taskSource, /status IN/);
+	assert.match(taskSource, /return result\.meta\.changes === 1/);
 });
 
 test("plan approval atomically binds the validated revision and participant coverage", async () => {

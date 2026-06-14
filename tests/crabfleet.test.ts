@@ -4,6 +4,7 @@ import test from "node:test";
 import {
 	crabfleetOwner,
 	crabfleetRuntime,
+	crabfleetSimulationEnabled,
 	PartialProvisioningError,
 	provisionRoomCrabboxes,
 	stopRoomCrabboxes,
@@ -17,6 +18,8 @@ test("Crabfleet runtime selection keeps crabbox as the conservative fallback", (
 	assert.equal(crabfleetRuntime("unknown"), "crabbox");
 	assert.equal(crabfleetOwner(undefined), "multicodex");
 	assert.equal(crabfleetOwner("Event Service"), "event-service");
+	assert.equal(crabfleetSimulationEnabled("true"), true);
+	assert.equal(crabfleetSimulationEnabled(undefined), false);
 });
 
 test("partial room provisioning returns every created session for durable cleanup", async () => {
@@ -99,6 +102,63 @@ test("room cleanup discovers late child sessions and waits for terminal state", 
 
 	assert.deepEqual([...stopped].sort(), ["child", "late-child", "root"]);
 	assert.ok(reads >= 4);
+});
+
+test("Crabfleet cleanup fails closed without credentials unless simulation is explicit", async () => {
+	await assert.rejects(stopRoomCrabboxes({} as Env, "root", ["root"]), /token is not configured/);
+	await stopRoomCrabboxes({ MULTICODEX_SIMULATION_MODE: "true" } as unknown as Env, "root", [
+		"root",
+	]);
+});
+
+test("terminal Crabfleet create responses fail launch with cleanup evidence", async () => {
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = async () => Response.json(crabbox("root", "failed"));
+	try {
+		await assert.rejects(
+			provisionRoomCrabboxes(
+				{ CRABFLEET_SERVICE_TOKEN: "test" } as Env,
+				room,
+				[participant("host")],
+				[],
+			),
+			(error) => {
+				assert.ok(error instanceof PartialProvisioningError);
+				assert.deepEqual(
+					error.bindings.map(({ binding }) => binding.session.status),
+					["failed"],
+				);
+				return true;
+			},
+		);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test("pending Crabfleet sessions must become ready before launch", async () => {
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = async (input, init) => {
+		const path = new URL(String(input)).pathname;
+		if (path === "/api/openclaw/crabboxes" && init?.method === "POST") {
+			return Response.json(crabbox("root", "provisioning"));
+		}
+		if (path === "/api/openclaw/session-roots/root") {
+			return Response.json({ crabboxes: [crabbox("root", "ready")] });
+		}
+		return new Response("not found", { status: 404 });
+	};
+	try {
+		const bindings = await provisionRoomCrabboxes(
+			{ CRABFLEET_SERVICE_TOKEN: "test" } as Env,
+			room,
+			[participant("host")],
+			[],
+		);
+		assert.equal(bindings[0]?.binding.session.status, "ready");
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
 });
 
 const room: Room = {

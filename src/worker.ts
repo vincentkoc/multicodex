@@ -37,6 +37,7 @@ import {
 import { RoomHub } from "./room-hub.ts";
 import {
 	addConductorAction,
+	addDecision,
 	addMessage,
 	addParticipant,
 	approveRoomPlan,
@@ -403,7 +404,22 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const body = await readJson<{ state?: TaskState }>(request);
 		const states: TaskState[] = ["planned", "ready", "active", "blocked", "review", "done", "cut"];
 		if (!body.state || !states.includes(body.state)) throw new HttpError(400, "invalid task state");
-		await updateTaskState(env.DB, roomId, taskId, body.state);
+		if (body.state === "cut" && actor.id !== snapshot.room.hostParticipantId) {
+			throw new HttpError(403, "host approval required to cut a task");
+		}
+		if (!(await updateTaskState(env.DB, roomId, taskId, body.state, messageStatuses))) {
+			throw new HttpError(409, "room is no longer accepting task updates");
+		}
+		if (body.state === "cut") {
+			await addDecision(env.DB, roomId, {
+				title: `Cut ${task.title}`,
+				decision: `${task.title} was removed from the room scope.`,
+				reason: "Host approved the scope cut.",
+				authorKind: "human",
+				authorId: actor.id,
+				affectedTaskIds: [task.id],
+			});
+		}
 		if (body.state === "blocked")
 			await conductorTurnBestEffort(
 				env,

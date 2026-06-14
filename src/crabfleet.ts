@@ -35,6 +35,10 @@ export function crabfleetOwner(value: string | undefined): string {
 	return slugify(value || "multicodex", "multicodex");
 }
 
+export function crabfleetSimulationEnabled(value: string | undefined): boolean {
+	return value === "true";
+}
+
 export async function provisionRoomCrabboxes(
 	env: Env,
 	room: Room,
@@ -44,7 +48,12 @@ export async function provisionRoomCrabboxes(
 	const active = participants.filter((participant) => participant.kind !== "observer");
 	const host = active.find((participant) => participant.id === room.hostParticipantId) ?? active[0];
 	if (!host) throw new HttpError(400, "room has no active participant");
-	if (!env.CRABFLEET_SERVICE_TOKEN) return simulatedBindings(room, active);
+	if (!env.CRABFLEET_SERVICE_TOKEN) {
+		if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) {
+			return simulatedBindings(room, active);
+		}
+		throw new HttpError(503, "Crabfleet service token is not configured");
+	}
 	const owner = crabfleetOwner(env.CRABFLEET_OWNER);
 	const hostTask = tasks.find((task) => task.ownerParticipantId === host.id);
 	const root = await createCrabbox(env, {
@@ -77,8 +86,9 @@ export async function provisionRoomCrabboxes(
 				}),
 			});
 		}
-		return bindings;
+		return await waitForUsableRoomCrabboxes(env, bindings);
 	} catch (error) {
+		if (error instanceof PartialProvisioningError) throw error;
 		throw new PartialProvisioningError(error, bindings);
 	}
 }
@@ -87,7 +97,10 @@ export async function readRoomCrabboxes(
 	env: Env,
 	rootSessionId: string,
 ): Promise<CrabboxBinding[]> {
-	if (!env.CRABFLEET_SERVICE_TOKEN) return [];
+	if (!env.CRABFLEET_SERVICE_TOKEN) {
+		if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) return [];
+		throw new HttpError(503, "Crabfleet service token is not configured");
+	}
 	const response = await crabfleetFetch(
 		env,
 		`/api/openclaw/session-roots/${encodeURIComponent(rootSessionId)}`,
@@ -102,7 +115,10 @@ export async function sendCrabboxNudge(
 	sessionId: string,
 	message: string,
 ): Promise<void> {
-	if (!env.CRABFLEET_SERVICE_TOKEN) return;
+	if (!env.CRABFLEET_SERVICE_TOKEN) {
+		if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) return;
+		throw new HttpError(503, "Crabfleet service token is not configured");
+	}
 	const response = await crabfleetFetch(
 		env,
 		`/api/openclaw/crabboxes/${encodeURIComponent(sessionId)}/message`,
@@ -120,7 +136,10 @@ export async function stopRoomCrabboxes(
 	rootSessionId: string,
 	sessionIds: string[],
 ): Promise<void> {
-	if (!env.CRABFLEET_SERVICE_TOKEN) return;
+	if (!env.CRABFLEET_SERVICE_TOKEN) {
+		if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) return;
+		throw new HttpError(503, "Crabfleet service token is not configured");
+	}
 	const deadline = Date.now() + 30_000;
 	const known = new Map<string, CrabfleetSession | null>(sessionIds.map((id) => [id, null]));
 	const stopRequested = new Set<string>();
@@ -161,6 +180,41 @@ export async function stopRoomCrabboxes(
 }
 
 const terminalCrabfleetStatuses = new Set(["stopped", "expired", "failed"]);
+
+async function waitForUsableRoomCrabboxes(
+	env: Env,
+	initial: ParticipantCrabboxBinding[],
+): Promise<ParticipantCrabboxBinding[]> {
+	const deadline = Date.now() + 30_000;
+	let bindings = initial;
+	while (Date.now() < deadline) {
+		const failed = bindings.find(({ binding }) =>
+			terminalCrabfleetStatuses.has(binding.session.status),
+		);
+		if (failed) {
+			throw new PartialProvisioningError(
+				new HttpError(502, `Crabfleet session ${failed.binding.session.status} before launch`),
+				bindings,
+			);
+		}
+		if (bindings.every(({ binding }) => binding.session.status === "ready")) return bindings;
+		const rootSessionId =
+			bindings[0]?.binding.session.rootSessionId || bindings[0]?.binding.session.id;
+		if (!rootSessionId) break;
+		await delay(250);
+		const refreshed = new Map(
+			(await readRoomCrabboxes(env, rootSessionId)).map((binding) => [binding.session.id, binding]),
+		);
+		bindings = bindings.map((item) => ({
+			...item,
+			binding: refreshed.get(item.binding.session.id) ?? item.binding,
+		}));
+	}
+	throw new PartialProvisioningError(
+		new HttpError(502, "Crabfleet sessions did not become ready before launch"),
+		bindings,
+	);
+}
 
 function delay(milliseconds: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, milliseconds));

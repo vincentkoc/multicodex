@@ -237,7 +237,9 @@ export async function addParticipant(
        WHERE EXISTS (
          SELECT 1 FROM rooms
          WHERE id = ? AND ${
-						input.kind === "observer" ? "status != 'ended'" : "status IN ('setup', 'planning')"
+						input.kind === "observer"
+							? "status NOT IN ('cleanup-planning', 'cleanup-ending', 'ended')"
+							: "status IN ('setup', 'planning')"
 					}
        )
        AND (
@@ -623,11 +625,22 @@ export async function updateTaskState(
 	roomId: string,
 	taskId: string,
 	state: TaskState,
-): Promise<void> {
-	await db
-		.prepare("UPDATE tasks SET state = ?, updated_at = ? WHERE id = ? AND room_id = ?")
-		.bind(state, Date.now(), taskId, roomId)
+	expectedStatuses: RoomStatus[],
+): Promise<boolean> {
+	if (!expectedStatuses.length) return false;
+	const result = await db
+		.prepare(
+			`UPDATE tasks SET state = ?, updated_at = ?
+       WHERE id = ? AND room_id = ?
+         AND EXISTS (
+           SELECT 1 FROM rooms WHERE id = ? AND status IN (${expectedStatuses
+							.map(() => "?")
+							.join(", ")})
+         )`,
+		)
+		.bind(state, Date.now(), taskId, roomId, roomId, ...expectedStatuses)
 		.run();
+	return result.meta.changes === 1;
 }
 
 export async function addDecision(

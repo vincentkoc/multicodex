@@ -44,3 +44,18 @@ test("conductor turns are claimed before model execution and cannot nudge worksp
 	);
 	assert.doesNotMatch(conductorSource, /tools\.nudge|nudgeParticipant/);
 });
+
+test("only the host can cut an approved task and the cut is recorded", async () => {
+	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
+	const start = source.indexOf("const taskMatch");
+	const end = source.indexOf("const presentMatch", start);
+	const taskSource = source.slice(start, end);
+
+	assert.match(
+		taskSource,
+		/body\.state === "cut" && actor\.id !== snapshot\.room\.hostParticipantId/,
+	);
+	assert.match(taskSource, /host approval required to cut a task/);
+	assert.match(taskSource, /await addDecision/);
+	assert.match(taskSource, /affectedTaskIds: \[task\.id\]/);
+});
