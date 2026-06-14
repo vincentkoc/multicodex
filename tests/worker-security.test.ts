@@ -152,6 +152,9 @@ test("room entry persists only minimal identity with tab-scoped fallback", async
 
 	assert.match(enterSource, /const identity = minimalRoomIdentity\(nextIdentity\)/);
 	assert.match(enterSource, /const persisted = persistIdentity/);
+	assert.match(enterSource, /roomIdFromPath\(\) === next\.room\.id/);
+	assert.match(enterSource, /history\.replaceState/);
+	assert.match(enterSource, /history\.pushState/);
 	assert.match(enterSource, /return persisted/);
 	assert.match(persistenceSource, /JSON\.stringify\(identity\)/);
 	assert.match(persistenceSource, /localStorage\.setItem/);
@@ -321,6 +324,19 @@ test("scheduled reconciliation retries cleanup and expires runtime rooms", async
 	assert.match(expirySource, /resetRoomProvisioning/);
 	assert.match(expirySource, /await endRoom/);
 	assert.match(expirySource, /finally \{\s*await releaseRoomRuntimeLease/);
+});
+
+test("launch preparation renews provisioning while GitHub branches are created", async () => {
+	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
+	const start = source.indexOf("const approveMatch");
+	const end = source.indexOf("const refreshMatch", start);
+	const launchSource = source.slice(start, end);
+
+	assert.match(
+		launchSource,
+		/ensureRoomBranches\(env, snapshot\.room, snapshot\.participants, async \(\) =>/,
+	);
+	assert.match(launchSource, /renewProvisioningLease\(env\.DB, roomId\)/);
 });
 
 test("message history is paginated through the existing viewer redaction policy", async () => {

@@ -143,3 +143,24 @@ test("branch provisioning accepts a creation race only after exact ref verificat
 		globalThis.fetch = originalFetch;
 	}
 });
+
+test("branch provisioning heartbeats across network-bound preparation", async () => {
+	const originalFetch = globalThis.fetch;
+	const responses = [
+		Response.json({ object: { sha: "base-sha" } }),
+		Response.json({}, { status: 404 }),
+		Response.json({ object: { sha: "base-sha" } }),
+		Response.json({ object: { sha: "base-sha" } }),
+	];
+	let heartbeats = 0;
+	globalThis.fetch = async () => responses.shift()!;
+	try {
+		await ensureRoomBranches(githubEnv(), room, [], async () => {
+			heartbeats += 1;
+		});
+		assert.equal(responses.length, 0);
+		assert.ok(heartbeats >= 6);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});

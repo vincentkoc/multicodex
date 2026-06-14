@@ -419,10 +419,11 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		snapshot = await readRoomSnapshot(env.DB, roomId);
 		let bindings: Awaited<ReturnType<typeof provisionRoomCrabboxes>> = [];
 		try {
-			await ensureRoomBranches(env, snapshot.room, snapshot.participants);
-			if (!(await renewProvisioningLease(env.DB, roomId))) {
-				throw new HttpError(409, "room launch was cancelled");
-			}
+			await ensureRoomBranches(env, snapshot.room, snapshot.participants, async () => {
+				if (!(await renewProvisioningLease(env.DB, roomId))) {
+					throw new HttpError(409, "room launch was cancelled");
+				}
+			});
 			bindings = await provisionRoomCrabboxes(
 				env,
 				snapshot.room,

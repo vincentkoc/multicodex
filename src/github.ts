@@ -25,7 +25,9 @@ export async function ensureRoomBranches(
 	env: Env,
 	room: Room,
 	participants: Participant[],
+	heartbeat: () => Promise<void> = async () => {},
 ): Promise<void> {
+	await heartbeat();
 	if (!env.GITHUB_TOKEN) {
 		if (String(env.MULTICODEX_SIMULATION_MODE) === "true") return;
 		throw new HttpError(503, "GitHub token is not configured");
@@ -33,14 +35,17 @@ export async function ensureRoomBranches(
 	const [owner, repo] = room.repo.split("/");
 	if (!owner || !repo) throw new HttpError(400, "repo must be owner/name");
 	const baseSha = await readBranchSha(env, owner, repo, room.baseBranch);
+	await heartbeat();
 	if (!baseSha) throw new HttpError(502, "GitHub base branch was not found");
 	const branches = [
 		room.integrationBranch,
 		...participants.flatMap((participant) => (participant.branch ? [participant.branch] : [])),
 	];
 	for (const branch of new Set(branches)) {
+		await heartbeat();
 		const ownership = await readBranchOwnership(env.DB, branch);
 		const existingSha = await readBranchSha(env, owner, repo, branch);
+		await heartbeat();
 		if (ownership) {
 			if (ownership.room_id !== room.id) {
 				throw new HttpError(409, `GitHub branch ${branch} belongs to another room`);
@@ -53,6 +58,7 @@ export async function ensureRoomBranches(
 				throw new HttpError(409, `GitHub branch ${branch} is not owned by this room`);
 			}
 			await claimBranchOwnership(env, room.id, owner, repo, branch, baseSha);
+			await heartbeat();
 			continue;
 		}
 		try {
@@ -67,7 +73,9 @@ export async function ensureRoomBranches(
 		} catch (error) {
 			if (!(error instanceof GitHubRequestError) || error.upstreamStatus !== 422) throw error;
 		}
+		await heartbeat();
 		await claimBranchOwnership(env, room.id, owner, repo, branch, baseSha);
+		await heartbeat();
 	}
 }
 

@@ -140,7 +140,12 @@ export function App() {
 	function enterRoom(next: RoomSnapshot, nextIdentity: RoomIdentity): boolean {
 		const identity = minimalRoomIdentity(nextIdentity);
 		const persisted = persistIdentity(next.room.id, identity);
-		history.pushState({ roomId: next.room.id }, "", `/rooms/${next.room.id}`);
+		const cleanPath = `/rooms/${next.room.id}`;
+		if (roomIdFromPath() === next.room.id) {
+			history.replaceState({ roomId: next.room.id }, "", cleanPath);
+		} else {
+			history.pushState({ roomId: next.room.id }, "", cleanPath);
+		}
 		setRoomId(next.room.id);
 		setIdentity(identity);
 		setSnapshot(next);
