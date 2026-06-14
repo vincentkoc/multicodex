@@ -47,7 +47,7 @@ export function participantStateForCrabfleetStatus(
 	status: string,
 	current: Participant["state"],
 ): Participant["state"] {
-	if (status === "ready") return "working";
+	if (usableCrabfleetStatuses.has(status)) return "working";
 	if (status === "failed") return "blocked";
 	if (status === "stopped" || status === "expired") return "left";
 	return current;
@@ -72,12 +72,15 @@ export async function provisionRoomCrabboxes(
 		throw new HttpError(503, "Crabfleet service token is not configured");
 	}
 	const owner = crabfleetOwner(env.CRABFLEET_OWNER);
+	const requestId = (participantId: string) =>
+		`multicodex:${room.id}:${room.updatedAt}:${participantId}`;
 	const hostTask = tasks.find((task) => task.ownerParticipantId === host.id);
 	const root = await createCrabbox(env, {
 		owner,
 		repo: room.repo,
 		branch: host.branch || room.integrationBranch,
 		baseBranch: room.baseBranch,
+		requestId: requestId(host.id),
 		purpose: hostTask?.title || "room integration",
 		summary: "starting room integration",
 		prompt: hostTask ? taskPrompt(room.brief, host, hostTask) : "Coordinate the room integration.",
@@ -94,6 +97,7 @@ export async function provisionRoomCrabboxes(
 					repo: room.repo,
 					branch: participant.branch || room.integrationBranch,
 					baseBranch: room.baseBranch,
+					requestId: requestId(participant.id),
 					parentSessionId: root.session.id,
 					rootSessionId: root.session.id,
 					purpose: task?.title || participant.roleId || "room task",
@@ -157,52 +161,39 @@ export async function sendCrabboxNudge(
 export async function stopRoomCrabboxes(
 	env: Env,
 	rootSessionId: string,
-	sessionIds: string[],
+	_sessionIds: string[],
 ): Promise<void> {
 	if (!env.CRABFLEET_SERVICE_TOKEN) {
 		if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) return;
 		throw new HttpError(503, "Crabfleet service token is not configured");
 	}
-	const deadline = Date.now() + 30_000;
-	const known = new Map<string, CrabfleetSession | null>(sessionIds.map((id) => [id, null]));
-	const stopRequested = new Set<string>();
-	let terminalReads = 0;
-	while (Date.now() < deadline) {
-		const bindings = await readRoomCrabboxes(env, rootSessionId);
-		for (const binding of bindings) known.set(binding.session.id, binding.session);
-		const activeIds = [...known.entries()]
-			.filter(([, session]) => !session || !terminalCrabfleetStatuses.has(session.status))
-			.map(([id]) => id);
-		const newStops = activeIds.filter((id) => !stopRequested.has(id));
-		await Promise.all(
-			newStops.map(async (sessionId) => {
-				stopRequested.add(sessionId);
-				const response = await crabfleetFetch(
-					env,
-					`/api/openclaw/crabboxes/${encodeURIComponent(sessionId)}/actions`,
-					{
-						method: "POST",
-						body: JSON.stringify({ rootSessionId, action: "stop" }),
-						headers: { "content-type": "application/json" },
-					},
-				);
-				const binding = await responseJson<CrabboxBinding>(response);
-				known.set(binding.session.id, binding.session);
-			}),
-		);
-		const allTerminal =
-			known.size > 0 &&
-			[...known.values()].every(
-				(session) => session && terminalCrabfleetStatuses.has(session.status),
-			);
-		terminalReads = allTerminal && newStops.length === 0 ? terminalReads + 1 : 0;
-		if (terminalReads >= 2) return;
-		await delay(250);
+	const response = await crabfleetFetch(
+		env,
+		`/api/openclaw/session-roots/${encodeURIComponent(rootSessionId)}/actions`,
+		{
+			method: "POST",
+			body: JSON.stringify({ action: "stop" }),
+			headers: { "content-type": "application/json" },
+			signal: AbortSignal.timeout(75_000),
+		},
+	);
+	const result = await responseJson<{
+		rootSessionId?: string;
+		admissionClosed?: boolean;
+		crabboxes?: CrabboxBinding[];
+	}>(response);
+	if (
+		result.rootSessionId !== rootSessionId ||
+		result.admissionClosed !== true ||
+		!Array.isArray(result.crabboxes) ||
+		result.crabboxes.some((binding) => !terminalCrabfleetStatuses.has(binding.session.status))
+	) {
+		throw new HttpError(502, "Crabfleet cleanup did not reach a terminal state");
 	}
-	throw new HttpError(502, "Crabfleet cleanup did not reach a terminal state");
 }
 
 const terminalCrabfleetStatuses = new Set(["stopped", "expired", "failed"]);
+const usableCrabfleetStatuses = new Set(["ready", "attached", "detached"]);
 
 async function waitForUsableRoomCrabboxes(
 	env: Env,
@@ -220,7 +211,9 @@ async function waitForUsableRoomCrabboxes(
 				bindings,
 			);
 		}
-		if (bindings.every(({ binding }) => binding.session.status === "ready")) return bindings;
+		if (bindings.every(({ binding }) => usableCrabfleetStatuses.has(binding.session.status))) {
+			return bindings;
+		}
 		const rootSessionId =
 			bindings[0]?.binding.session.rootSessionId || bindings[0]?.binding.session.id;
 		if (!rootSessionId) break;
@@ -250,6 +243,7 @@ async function createCrabbox(
 		repo: string;
 		branch: string;
 		baseBranch: string;
+		requestId: string;
 		parentSessionId?: string;
 		rootSessionId?: string;
 		purpose: string;

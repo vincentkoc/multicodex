@@ -57,6 +57,7 @@ import {
 	requireRoomParticipant,
 	resetRoomProvisioning,
 	updateParticipantRuntime,
+	updateConductorActionApprovalState,
 	updateRoomRuntime,
 	updateTaskState,
 } from "./store.ts";
@@ -761,19 +762,29 @@ async function nudgeParticipant(
 		if (!snapshot.room.crabfleetRootSessionId) {
 			throw new HttpError(400, "room runtime is not ready");
 		}
-		await sendCrabboxNudge(
-			env,
-			snapshot.room.crabfleetRootSessionId,
-			target.crabfleetSessionId,
-			message,
-		);
-		await addConductorAction(env.DB, roomId, {
+		const actionId = await addConductorAction(env.DB, roomId, {
 			kind: "session_nudge",
 			targetIds: [target.id],
 			reason,
 			evidenceRefs: [],
-			approvalState: "approved",
+			approvalState: "requested",
 		});
+		try {
+			await sendCrabboxNudge(
+				env,
+				snapshot.room.crabfleetRootSessionId,
+				target.crabfleetSessionId,
+				message,
+			);
+		} catch (error) {
+			await updateConductorActionApprovalState(env.DB, roomId, actionId, "denied").catch(
+				() => undefined,
+			);
+			throw error;
+		}
+		if (!(await updateConductorActionApprovalState(env.DB, roomId, actionId, "approved"))) {
+			throw new HttpError(409, "nudge delivery record changed");
+		}
 		await addMessage(env.DB, roomId, {
 			authorKind: "conductor",
 			authorId: "conductor",

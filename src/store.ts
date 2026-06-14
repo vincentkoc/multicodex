@@ -821,7 +821,8 @@ export async function addConductorAction(
 	db: D1Database,
 	roomId: string,
 	input: Omit<ConductorAction, "id" | "roomId" | "createdAt">,
-): Promise<void> {
+): Promise<string> {
+	const id = newId("action");
 	await db
 		.prepare(
 			`INSERT INTO conductor_actions
@@ -829,7 +830,7 @@ export async function addConductorAction(
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		)
 		.bind(
-			newId("action"),
+			id,
 			roomId,
 			input.kind,
 			encodeJson(input.targetIds),
@@ -839,6 +840,24 @@ export async function addConductorAction(
 			Date.now(),
 		)
 		.run();
+	return id;
+}
+
+export async function updateConductorActionApprovalState(
+	db: D1Database,
+	roomId: string,
+	actionId: string,
+	approvalState: ConductorAction["approvalState"],
+): Promise<boolean> {
+	const result = await db
+		.prepare(
+			`UPDATE conductor_actions
+       SET approval_state = ?
+       WHERE id = ? AND room_id = ? AND approval_state = 'requested'`,
+		)
+		.bind(approvalState, actionId, roomId)
+		.run();
+	return result.meta.changes === 1;
 }
 
 export async function claimConductorTurn(

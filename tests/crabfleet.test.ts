@@ -23,6 +23,8 @@ test("Crabfleet runtime selection keeps crabbox as the conservative fallback", (
 	assert.equal(crabfleetSimulationEnabled("true"), true);
 	assert.equal(crabfleetSimulationEnabled(undefined), false);
 	assert.equal(participantStateForCrabfleetStatus("ready", "joined"), "working");
+	assert.equal(participantStateForCrabfleetStatus("attached", "joined"), "working");
+	assert.equal(participantStateForCrabfleetStatus("detached", "joined"), "working");
 	assert.equal(participantStateForCrabfleetStatus("failed", "working"), "blocked");
 	assert.equal(participantStateForCrabfleetStatus("expired", "working"), "left");
 	assert.equal(participantStateForCrabfleetStatus("stopped", "working"), "left");
@@ -33,12 +35,15 @@ test("partial room provisioning returns every created session for durable cleanu
 	const originalFetch = globalThis.fetch;
 	let creates = 0;
 	const owners: string[] = [];
+	const requestIds: string[] = [];
 	const persisted: string[] = [];
 	globalThis.fetch = async (input, init) => {
 		const path = new URL(String(input)).pathname;
 		if (path === "/api/openclaw/crabboxes" && init?.method === "POST") {
 			creates += 1;
-			owners.push((JSON.parse(String(init.body)) as { owner: string }).owner);
+			const body = JSON.parse(String(init.body)) as { owner: string; requestId: string };
+			owners.push(body.owner);
+			requestIds.push(body.requestId);
 			if (creates === 3) return new Response("provisioning failed", { status: 500 });
 			const id = creates === 1 ? "root" : "child";
 			return Response.json({
@@ -82,27 +87,27 @@ test("partial room provisioning returns every created session for durable cleanu
 		globalThis.fetch = originalFetch;
 	}
 	assert.deepEqual(owners, ["event-service", "event-service", "event-service"]);
+	assert.deepEqual(requestIds, [
+		"multicodex:room:1:host",
+		"multicodex:room:1:child",
+		"multicodex:room:1:failure",
+	]);
 	assert.deepEqual(persisted, ["root", "child"]);
 });
 
-test("room cleanup discovers late child sessions and waits for terminal state", async () => {
+test("room cleanup delegates admission freeze and recursive stop to the root action", async () => {
 	const originalFetch = globalThis.fetch;
-	const stopped = new Set<string>();
-	let reads = 0;
+	let rootStops = 0;
 	globalThis.fetch = async (input, init) => {
 		const path = new URL(String(input)).pathname;
-		if (path === "/api/openclaw/session-roots/root") {
-			reads += 1;
-			const ids = reads >= 2 ? ["root", "child", "late-child"] : ["root", "child"];
+		if (path === "/api/openclaw/session-roots/root/actions" && init?.method === "POST") {
+			rootStops += 1;
+			assert.deepEqual(JSON.parse(String(init.body)), { action: "stop" });
 			return Response.json({
-				crabboxes: ids.map((id) => crabbox(id, stopped.has(id) ? "stopped" : "ready")),
+				rootSessionId: "root",
+				admissionClosed: true,
+				crabboxes: ["root", "child", "late-child"].map((id) => crabbox(id, "stopped")),
 			});
-		}
-		const action = path.match(/^\/api\/openclaw\/crabboxes\/([^/]+)\/actions$/);
-		if (action && init?.method === "POST") {
-			const id = decodeURIComponent(action[1]!);
-			stopped.add(id);
-			return Response.json(crabbox(id, "stopped"));
 		}
 		return new Response("not found", { status: 404 });
 	};
@@ -112,8 +117,7 @@ test("room cleanup discovers late child sessions and waits for terminal state", 
 		globalThis.fetch = originalFetch;
 	}
 
-	assert.deepEqual([...stopped].sort(), ["child", "late-child", "root"]);
-	assert.ok(reads >= 4);
+	assert.equal(rootStops, 1);
 });
 
 test("Crabfleet cleanup fails closed without credentials unless simulation is explicit", async () => {
@@ -121,6 +125,19 @@ test("Crabfleet cleanup fails closed without credentials unless simulation is ex
 	await stopRoomCrabboxes({ MULTICODEX_SIMULATION_MODE: "true" } as unknown as Env, "root", [
 		"root",
 	]);
+});
+
+test("Crabfleet cleanup fails closed on an incomplete root-stop response", async () => {
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = async () => Response.json({ rootSessionId: "root", admissionClosed: true });
+	try {
+		await assert.rejects(
+			stopRoomCrabboxes({ CRABFLEET_SERVICE_TOKEN: "test" } as Env, "root", ["root"]),
+			/cleanup did not reach a terminal state/,
+		);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
 });
 
 test("terminal Crabfleet create responses fail launch with cleanup evidence", async () => {
@@ -148,7 +165,7 @@ test("terminal Crabfleet create responses fail launch with cleanup evidence", as
 	}
 });
 
-test("pending Crabfleet sessions must become ready before launch", async () => {
+test("pending Crabfleet sessions accept any usable state before launch", async () => {
 	const originalFetch = globalThis.fetch;
 	globalThis.fetch = async (input, init) => {
 		const path = new URL(String(input)).pathname;
@@ -156,7 +173,7 @@ test("pending Crabfleet sessions must become ready before launch", async () => {
 			return Response.json(crabbox("root", "provisioning"));
 		}
 		if (path === "/api/openclaw/session-roots/root") {
-			return Response.json({ crabboxes: [crabbox("root", "ready")] });
+			return Response.json({ crabboxes: [crabbox("root", "attached")] });
 		}
 		return new Response("not found", { status: 404 });
 	};
@@ -167,7 +184,7 @@ test("pending Crabfleet sessions must become ready before launch", async () => {
 			[participant("host")],
 			[],
 		);
-		assert.equal(bindings[0]?.binding.session.status, "ready");
+		assert.equal(bindings[0]?.binding.session.status, "attached");
 	} finally {
 		globalThis.fetch = originalFetch;
 	}

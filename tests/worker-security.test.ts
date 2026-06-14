@@ -121,7 +121,17 @@ test("nudges reserve the runtime lifecycle before external delivery", async () =
 	const nudgeSource = source.slice(start, end);
 
 	assert.match(nudgeSource, /claimRoomRuntimeLease/);
+	assert.ok(nudgeSource.indexOf("addConductorAction") < nudgeSource.indexOf("sendCrabboxNudge"));
+	assert.match(nudgeSource, /approvalState: "requested"/);
 	assert.ok(nudgeSource.indexOf("claimRoomRuntimeLease") < nudgeSource.indexOf("sendCrabboxNudge"));
+	assert.match(
+		nudgeSource,
+		/updateConductorActionApprovalState\(env\.DB, roomId, actionId, "denied"\)/,
+	);
+	assert.match(
+		nudgeSource,
+		/updateConductorActionApprovalState\(env\.DB, roomId, actionId, "approved"\)/,
+	);
 	assert.match(nudgeSource, /finally \{\s*await releaseRoomRuntimeLease/);
 });
 

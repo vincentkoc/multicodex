@@ -118,3 +118,13 @@ test("conductor claims atomically enforce room cooldown and hourly budget", asyn
 	assert.match(claimSource, /\) < 12/);
 	assert.match(claimSource, /status NOT IN \('cleanup-planning', 'cleanup-ending', 'ended'\)/);
 });
+
+test("conductor action delivery states transition only from requested", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function updateConductorActionApprovalState");
+	const end = source.indexOf("export async function claimConductorTurn", start);
+	const updateSource = source.slice(start, end);
+
+	assert.match(updateSource, /approval_state = 'requested'/);
+	assert.match(updateSource, /result\.meta\.changes === 1/);
+});
