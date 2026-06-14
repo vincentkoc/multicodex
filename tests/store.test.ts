@@ -75,6 +75,8 @@ test("room creation persists the resolved repository base branch", async () => {
 	assert.match(createSource, /input\.baseBranch/);
 	assert.match(createSource, /replayCreatedRoom/);
 	assert.match(createSource, /creation_request_id/);
+	assert.match(createSource, /builder_invite_token/);
+	assert.match(createSource, /builderInviteToken/);
 	assert.match(createSource, /INSERT OR IGNORE INTO rooms/);
 	assert.match(createSource, /status IN \('setup', 'planning'\) AND updated_at < \?/);
 	assert.match(createSource, /SELECT COUNT\(\*\) FROM rooms WHERE status != 'ended'/);
@@ -91,7 +93,20 @@ test("room creation replay recovers the original host capability", async () => {
 	assert.match(replaySource, /WHERE creation_request_id = \?/);
 	assert.match(replaySource, /host_participant_id/);
 	assert.match(replaySource, /access_token/);
+	assert.match(replaySource, /builder_invite_token/);
 	assert.match(replaySource, /readRoomSnapshot/);
+});
+
+test("expired runtime rooms are discoverable for durable cleanup", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function listExpiredRuntimeRoomIds");
+	const end = source.indexOf("export function participantBranch", start);
+	const expirySource = source.slice(start, end);
+
+	assert.match(expirySource, /ends_at IS NOT NULL AND ends_at <= \?/);
+	assert.match(expirySource, /'provisioning'/);
+	assert.match(expirySource, /'cleanup-ending'/);
+	assert.match(expirySource, /LIMIT \?/);
 });
 
 test("task updates are atomically fenced against terminal rooms", async () => {

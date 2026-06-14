@@ -37,13 +37,15 @@ test("room creation and joins are recoverable", async () => {
 	assert.match(joinSource, /requestId/);
 	assert.match(joinSource, /maxAiSeats/);
 	assert.match(joinSource, /kind !== "observer"/);
-	assert.match(joinSource, /eventAccessAuthorized/);
+	assert.match(joinSource, /roomBuilderInviteAuthorized/);
 	assert.doesNotMatch(joinSource, /await addMessage/);
 	assert.match(client, /loadJoinRequestId/);
 	assert.match(client, /clearJoinRequestId/);
 	assert.match(client, /loadCreateRequestId/);
 	assert.match(client, /clearCreateRequestId/);
-	assert.match(client, /eventCode: kind === "human"/);
+	assert.match(client, /inviteToken: kind === "human"/);
+	assert.match(client, /builderInviteTokenFromUrl/);
+	assert.match(client, /identity\.builderInviteToken/);
 });
 
 test("participant messages fan out before asynchronous conductor work", async () => {
@@ -285,4 +287,34 @@ test("local dev enables simulation without changing the production default", asy
 	assert.match(script, /MULTICODEX_SIMULATION_MODE:true/);
 	assert.match(config, /"MULTICODEX_SIMULATION_MODE": "false"/);
 	assert.match(readme, /enables simulation only for the local Wrangler/);
+});
+
+test("scheduled expiry owns cleanup through room end", async () => {
+	const [worker, config] = await Promise.all([
+		readFile(new URL("../src/worker.ts", import.meta.url), "utf8"),
+		readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
+	]);
+	const start = worker.indexOf("async function expireRuntimeRooms");
+	const end = worker.indexOf("function participantsWithAssignments", start);
+	const expirySource = worker.slice(start, end);
+
+	assert.match(config, /"crons": \["\*\/2 \* \* \* \*"\]/);
+	assert.match(worker, /context\.waitUntil\(expireRuntimeRooms\(env\)\)/);
+	assert.match(expirySource, /listExpiredRuntimeRoomIds/);
+	assert.match(expirySource, /claimStaleProvisioningCleanup/);
+	assert.match(expirySource, /beginRoomCleanup/);
+	assert.match(expirySource, /recoverRoomRootCrabbox/);
+	assert.match(expirySource, /stopRoomCrabboxes/);
+	assert.match(expirySource, /await endRoom/);
+	assert.match(expirySource, /finally \{\s*await releaseRoomRuntimeLease/);
+});
+
+test("public terminal room links render the preserved recap", async () => {
+	const source = await readFile(new URL("../src/client/App.tsx", import.meta.url), "utf8");
+	const start = source.indexOf("const validIdentity");
+	const end = source.indexOf("function CreateRoom", start);
+	const routingSource = source.slice(start, end);
+
+	assert.match(routingSource, /\["cleanup-planning", "cleanup-ending", "ended"\]/);
+	assert.ok(routingSource.indexOf("<Recap") < routingSource.indexOf("<JoinRoom"));
 });

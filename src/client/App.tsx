@@ -153,17 +153,37 @@ export function App() {
 	if (loading && !snapshot) return <LoadingRoom />;
 	if (error && !snapshot) return <ErrorRoom message={error} />;
 	if (!snapshot) return null;
+	const validIdentity =
+		identity &&
+		snapshot.participants.some((participant) => participant.id === identity.participantId)
+			? identity
+			: null;
 	if (
-		!identity ||
-		!snapshot.participants.some((participant) => participant.id === identity.participantId)
+		!validIdentity &&
+		["cleanup-planning", "cleanup-ending", "ended"].includes(snapshot.room.status)
 	) {
+		return (
+			<Recap
+				snapshot={snapshot}
+				roleMap={new Map(roleCatalog.map((role) => [role.id, role]))}
+				onBack={() => {
+					history.pushState({}, "", "/");
+					setRoomId(null);
+					setSnapshot(null);
+				}}
+				backLabel="home"
+				busy=""
+			/>
+		);
+	}
+	if (!validIdentity) {
 		return <JoinRoom snapshot={snapshot} onEnter={enterRoom} />;
 	}
 
 	return (
 		<RoomWorkbench
 			snapshot={snapshot}
-			identity={identity}
+			identity={validIdentity}
 			roleCatalog={roleCatalog}
 			onSnapshot={setSnapshot}
 			onError={setError}
@@ -277,8 +297,11 @@ function JoinRoom({
 }) {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
-	const [kind, setKind] = useState<"human" | "observer">("human");
+	const inviteToken = useMemo(builderInviteTokenFromUrl, [snapshot.room.id]);
+	const [kind, setKind] = useState<"human" | "observer">(inviteToken ? "human" : "observer");
 	const joinRequestId = useMemo(() => loadJoinRequestId(snapshot.room.id), [snapshot.room.id]);
+
+	useEffect(() => setKind(inviteToken ? "human" : "observer"), [inviteToken]);
 
 	async function submit(event: SubmitEvent) {
 		event.preventDefault();
@@ -291,7 +314,7 @@ function JoinRoom({
 				githubLogin: String(data.get("githubLogin") || ""),
 				kind,
 				requestId: joinRequestId,
-				eventCode: kind === "human" ? String(data.get("eventCode") || "").trim() : undefined,
+				inviteToken: kind === "human" ? inviteToken : undefined,
 			});
 			onEnter(result.snapshot, result);
 			clearJoinRequestId(snapshot.room.id);
@@ -348,16 +371,10 @@ function JoinRoom({
 							)
 						}
 					>
-						<option value="human">Builder</option>
+						{inviteToken && <option value="human">Builder</option>}
 						<option value="observer">Observer</option>
 					</select>
 				</label>
-				{kind === "human" && (
-					<label>
-						Event code
-						<input name="eventCode" type="password" required maxLength={200} autoComplete="off" />
-					</label>
-				)}
 				{error && <InlineError message={error} />}
 				<button class="button primary wide" type="submit" disabled={busy}>
 					<UserPlus size={17} />
@@ -414,7 +431,11 @@ function RoomWorkbench({
 	}
 
 	async function copyInvite() {
-		await navigator.clipboard.writeText(location.href);
+		const invite = new URL(`/rooms/${snapshot.room.id}`, location.origin);
+		if (isHost && identity.builderInviteToken) {
+			invite.searchParams.set("invite", identity.builderInviteToken);
+		}
+		await navigator.clipboard.writeText(invite.toString());
 		setCopied(true);
 		window.setTimeout(() => setCopied(false), 1600);
 	}
@@ -1105,12 +1126,14 @@ function Recap({
 	snapshot,
 	roleMap,
 	onBack,
+	backLabel = "workbench",
 	onEnd,
 	busy,
 }: {
 	snapshot: RoomSnapshot;
 	roleMap: Map<string, Catalog["roles"][number]>;
 	onBack: () => void;
+	backLabel?: string;
 	onEnd?: () => void;
 	busy: string;
 }) {
@@ -1122,7 +1145,7 @@ function Recap({
 				<Brand compact />
 				<button class="button ghost" onClick={onBack}>
 					<LayoutDashboard size={16} />
-					workbench
+					{backLabel}
 				</button>
 			</header>
 			<section class="recap-hero">
@@ -1315,6 +1338,11 @@ function roomIdFromPath(): string | null {
 	return location.pathname.match(/^\/rooms\/([^/]+)$/)?.[1]
 		? decodeURIComponent(location.pathname.split("/")[2]!)
 		: null;
+}
+
+function builderInviteTokenFromUrl(): string | undefined {
+	const token = new URLSearchParams(location.search).get("invite")?.trim();
+	return token || undefined;
 }
 
 function identityKey(roomId: string): string {

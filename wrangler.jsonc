@@ -30,6 +30,9 @@
 			"new_sqlite_classes": ["RoomHub"],
 		},
 	],
+	"triggers": {
+		"crons": ["*/2 * * * *"],
+	},
 	"observability": {
 		"enabled": true,
 		"head_sampling_rate": 1,

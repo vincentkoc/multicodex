@@ -50,6 +50,7 @@ import {
 	claimStaleProvisioningCleanup,
 	createRoom,
 	endRoom,
+	listExpiredRuntimeRoomIds,
 	markRoomCleanup,
 	readRoomSnapshot,
 	recordProvisioningBinding,
@@ -59,6 +60,7 @@ import {
 	replacePlan,
 	requireRoomParticipant,
 	resetRoomProvisioning,
+	roomBuilderInviteAuthorized,
 	updateParticipantRuntime,
 	updateConductorActionApprovalState,
 	updateRoomRuntime,
@@ -108,6 +110,9 @@ export default {
 			return json({ error: message }, status);
 		}
 	},
+	async scheduled(_controller, env, context): Promise<void> {
+		context.waitUntil(expireRuntimeRooms(env));
+	},
 } satisfies ExportedHandler<Env>;
 
 async function route(request: Request, env: Env, context: ExecutionContext): Promise<Response> {
@@ -136,6 +141,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 				snapshot: snapshotForViewer(replay.snapshot, replay.snapshot.room.hostParticipantId),
 				participantId: replay.snapshot.room.hostParticipantId,
 				participantToken: replay.participantToken,
+				builderInviteToken: replay.builderInviteToken,
 			});
 		}
 		const title = clean(body.title, 100) || "OpenAI event room";
@@ -162,6 +168,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 				snapshot: snapshotForViewer(created.snapshot, created.snapshot.room.hostParticipantId),
 				participantId: created.snapshot.room.hostParticipantId,
 				participantToken: created.participantToken,
+				builderInviteToken: created.builderInviteToken,
 			},
 			201,
 		);
@@ -194,17 +201,18 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			githubLogin?: string;
 			kind?: "human" | "ai" | "observer";
 			requestId?: string;
+			inviteToken?: string;
 		}>(request);
 		const displayName = clean(body.displayName, 80);
 		if (!displayName) throw new HttpError(400, "display name is required");
 		const requestId = clean(body.requestId, 100);
 		if (requestId.length < 20) throw new HttpError(400, "join request id is required");
 		const kind = body.kind === "observer" || body.kind === "ai" ? body.kind : "human";
-		if (
-			kind !== "observer" &&
-			!eventAccessAuthorized(request.headers.get("x-multicodex-event-code"), env.EVENT_ACCESS_CODE)
-		) {
-			throw new HttpError(401, "valid event code required for an active seat");
+		if (kind !== "observer") {
+			const inviteToken = clean(body.inviteToken, 100);
+			if (!(await roomBuilderInviteAuthorized(env.DB, roomId, inviteToken))) {
+				throw new HttpError(401, "valid room invite required for an active seat");
+			}
 		}
 		const joined = await addParticipant(env.DB, roomId, {
 			displayName,
@@ -720,6 +728,108 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 
 	if (url.pathname.startsWith("/api/")) throw new HttpError(404, "not found");
 	return env.ASSETS.fetch(request);
+}
+
+async function expireRuntimeRooms(env: Env): Promise<void> {
+	for (const roomId of await listExpiredRuntimeRoomIds(env.DB, Date.now())) {
+		try {
+			await expireRuntimeRoom(env, roomId);
+		} catch (error) {
+			console.error(
+				JSON.stringify({
+					event: "room_expiry_failed",
+					roomId,
+					message: error instanceof Error ? error.message : "unknown error",
+				}),
+			);
+		}
+	}
+}
+
+async function expireRuntimeRoom(env: Env, roomId: string): Promise<void> {
+	let snapshot = await readRoomSnapshot(env.DB, roomId);
+	const now = Date.now();
+	if (
+		snapshot.room.endsAt === null ||
+		snapshot.room.endsAt > now ||
+		snapshot.room.status === "ended"
+	)
+		return;
+	if (snapshot.room.status === "provisioning") {
+		if (
+			!(await claimStaleProvisioningCleanup(env.DB, roomId, now - provisioningLeaseMilliseconds))
+		) {
+			return;
+		}
+		snapshot = await readRoomSnapshot(env.DB, roomId);
+	}
+	const expectedStatuses: RoomStatus[] = [
+		"building",
+		"integrating",
+		"presenting",
+		"cleanup-planning",
+		"cleanup-ending",
+	];
+	const cleanupLeaseId = await beginRoomCleanup(
+		env.DB,
+		roomId,
+		snapshot.room.crabfleetRootSessionId,
+		expectedStatuses,
+		cleanupActionLeaseMilliseconds,
+	);
+	if (!cleanupLeaseId) return;
+	try {
+		snapshot = await readRoomSnapshot(env.DB, roomId);
+		if (!snapshot.room.crabfleetRootSessionId) {
+			const root = await recoverRoomRootCrabbox(
+				env,
+				snapshot.room,
+				snapshot.participants,
+				snapshot.tasks,
+			);
+			if (
+				!(await markRoomCleanup(
+					env.DB,
+					roomId,
+					root.binding.session.rootSessionId || root.binding.session.id,
+					"cleanup-ending",
+					["cleanup-ending"],
+					[
+						{
+							participantId: root.participantId,
+							sessionId: root.binding.session.id,
+							browserUrl: root.binding.browserUrl,
+							summary: root.binding.session.summary,
+							state: participantStateForCrabfleetStatus(root.binding.session.status, "joined"),
+						},
+					],
+				))
+			) {
+				throw new HttpError(409, "room expiry state changed during root recovery");
+			}
+			snapshot = await readRoomSnapshot(env.DB, roomId);
+		}
+		await stopRoomCrabboxes(
+			env,
+			snapshot.room.crabfleetRootSessionId!,
+			snapshot.participants.flatMap((item) =>
+				item.crabfleetSessionId ? [item.crabfleetSessionId] : [],
+			),
+		);
+		if (await endRoom(env.DB, roomId)) {
+			await addMessage(env.DB, roomId, {
+				authorKind: "conductor",
+				authorId: "conductor",
+				targetKind: "room",
+				targetId: null,
+				body: "Sprint expired. Workspaces were stopped and the final state was preserved.",
+				replyToId: null,
+			});
+		}
+	} finally {
+		await releaseRoomRuntimeLease(env.DB, roomId, cleanupLeaseId);
+		await broadcastSnapshot(env, await readRoomSnapshot(env.DB, roomId));
+	}
 }
 
 function participantsWithAssignments(

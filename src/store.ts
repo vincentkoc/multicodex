@@ -26,6 +26,7 @@ type RoomRow = {
 	integration_branch: string;
 	crabfleet_root_session_id: string | null;
 	creation_request_id: string | null;
+	builder_invite_token: string | null;
 	brief_json: string;
 	brief_revision: number;
 	duration_minutes: number;
@@ -118,13 +119,18 @@ export async function createRoom(
 		staleBefore: number;
 		requestId: string;
 	},
-): Promise<{ snapshot: RoomSnapshot; participantToken: string }> {
+): Promise<{
+	snapshot: RoomSnapshot;
+	participantToken: string;
+	builderInviteToken: string | null;
+}> {
 	const replay = await replayCreatedRoom(db, input.requestId);
 	if (replay) return replay;
 	const now = Date.now();
 	const roomId = newId("room");
 	const hostId = newId("person");
 	const participantToken = newId("seat");
+	const builderInviteToken = newId("invite");
 	const slug = `${slugify(input.title).slice(0, 40)}-${roomId.slice(-6)}`;
 	const integrationBranch = `multicodex/${slug}/integration`;
 	const [, roomResult] = await db.batch([
@@ -138,8 +144,8 @@ export async function createRoom(
 			.prepare(
 				`INSERT OR IGNORE INTO rooms
           (id, slug, title, status, host_participant_id, repo, base_branch, integration_branch,
-           creation_request_id, duration_minutes, created_at, updated_at)
-         SELECT ?, ?, ?, 'setup', ?, ?, ?, ?, ?, ?, ?, ?
+           creation_request_id, builder_invite_token, duration_minutes, created_at, updated_at)
+         SELECT ?, ?, ?, 'setup', ?, ?, ?, ?, ?, ?, ?, ?, ?
          WHERE (
            SELECT COUNT(*) FROM rooms WHERE status != 'ended'
          ) < ?`,
@@ -153,6 +159,7 @@ export async function createRoom(
 				input.baseBranch,
 				integrationBranch,
 				input.requestId,
+				builderInviteToken,
 				input.durationMinutes,
 				now,
 				now,
@@ -185,24 +192,47 @@ export async function createRoom(
 		if (replay) return replay;
 		throw new HttpError(429, "active room limit reached");
 	}
-	return { snapshot: await readRoomSnapshot(db, roomId), participantToken };
+	return { snapshot: await readRoomSnapshot(db, roomId), participantToken, builderInviteToken };
 }
 
 export async function replayCreatedRoom(
 	db: D1Database,
 	requestId: string,
-): Promise<{ snapshot: RoomSnapshot; participantToken: string } | null> {
+): Promise<{
+	snapshot: RoomSnapshot;
+	participantToken: string;
+	builderInviteToken: string | null;
+} | null> {
 	const room = await db
-		.prepare("SELECT id, host_participant_id FROM rooms WHERE creation_request_id = ?")
+		.prepare(
+			"SELECT id, host_participant_id, builder_invite_token FROM rooms WHERE creation_request_id = ?",
+		)
 		.bind(requestId)
-		.first<{ id: string; host_participant_id: string }>();
+		.first<{ id: string; host_participant_id: string; builder_invite_token: string | null }>();
 	if (!room) return null;
 	const host = await db
 		.prepare("SELECT access_token FROM participants WHERE id = ? AND room_id = ?")
 		.bind(room.host_participant_id, room.id)
 		.first<{ access_token: string | null }>();
 	if (!host?.access_token) throw new HttpError(409, "room creation is incomplete");
-	return { snapshot: await readRoomSnapshot(db, room.id), participantToken: host.access_token };
+	return {
+		snapshot: await readRoomSnapshot(db, room.id),
+		participantToken: host.access_token,
+		builderInviteToken: room.builder_invite_token,
+	};
+}
+
+export async function roomBuilderInviteAuthorized(
+	db: D1Database,
+	roomId: string,
+	inviteToken: string,
+): Promise<boolean> {
+	if (!inviteToken) return false;
+	const room = await db
+		.prepare("SELECT id FROM rooms WHERE id = ? AND builder_invite_token = ?")
+		.bind(roomId, inviteToken)
+		.first<{ id: string }>();
+	return Boolean(room);
 }
 
 export async function readRoomSnapshot(db: D1Database, roomId: string): Promise<RoomSnapshot> {
@@ -1117,6 +1147,25 @@ export async function endRoom(db: D1Database, roomId: string): Promise<boolean> 
 		.bind(Date.now(), roomId)
 		.run();
 	return result.meta.changes === 1;
+}
+
+export async function listExpiredRuntimeRoomIds(
+	db: D1Database,
+	now: number,
+	limit = 20,
+): Promise<string[]> {
+	const result = await db
+		.prepare(
+			`SELECT id FROM rooms
+       WHERE ends_at IS NOT NULL AND ends_at <= ?
+         AND status IN ('provisioning', 'building', 'integrating', 'presenting',
+                        'cleanup-planning', 'cleanup-ending')
+       ORDER BY ends_at ASC
+       LIMIT ?`,
+		)
+		.bind(now, Math.max(1, Math.min(100, limit)))
+		.all<{ id: string }>();
+	return result.results.map((row) => row.id);
 }
 
 export function participantBranch(

@@ -53,3 +53,13 @@ test("room-owned GitHub refs are recorded durably", async () => {
 	assert.match(migration, /PRIMARY KEY \(room_id, branch\)/);
 	assert.match(migration, /UNIQUE \(branch\)/);
 });
+
+test("room builder invitations are durable capabilities", async () => {
+	const migration = await readFile(
+		new URL("../migrations/0008_room_builder_invites.sql", import.meta.url),
+		"utf8",
+	);
+
+	assert.match(migration, /builder_invite_token TEXT/);
+	assert.match(migration, /UNIQUE INDEX idx_rooms_builder_invite_token/);
+});

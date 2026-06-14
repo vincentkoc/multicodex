@@ -18,6 +18,7 @@ export type Catalog = {
 export type RoomIdentity = {
 	participantId: string;
 	participantToken: string;
+	builderInviteToken?: string | null;
 };
 
 type RequestOptions = {
@@ -65,15 +66,10 @@ export function joinRoom(
 		githubLogin: string;
 		kind: "human" | "observer";
 		requestId: string;
-		eventCode?: string;
+		inviteToken?: string;
 	},
 ): Promise<{ snapshot: RoomSnapshot } & RoomIdentity> {
-	const { eventCode, ...body } = input;
-	return request(`/api/rooms/${encodeURIComponent(roomId)}/join`, {
-		method: "POST",
-		body,
-		eventCode,
-	});
+	return request(`/api/rooms/${encodeURIComponent(roomId)}/join`, { method: "POST", body: input });
 }
 
 export function catalog(): Promise<Catalog> {
