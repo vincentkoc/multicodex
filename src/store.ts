@@ -171,30 +171,43 @@ export async function createRoom(
 }
 
 export async function readRoomSnapshot(db: D1Database, roomId: string): Promise<RoomSnapshot> {
-	const [roomResult, participants, messages, tasks, decisions, conductorActions] =
-		await Promise.all([
-			db.prepare("SELECT * FROM rooms WHERE id = ?").bind(roomId).first<RoomRow>(),
-			db
-				.prepare("SELECT * FROM participants WHERE room_id = ? ORDER BY created_at ASC")
-				.bind(roomId)
-				.all<ParticipantRow>(),
-			db
-				.prepare("SELECT * FROM room_messages WHERE room_id = ? ORDER BY created_at DESC LIMIT 500")
-				.bind(roomId)
-				.all<MessageRow>(),
-			db
-				.prepare("SELECT * FROM tasks WHERE room_id = ? ORDER BY created_at ASC")
-				.bind(roomId)
-				.all<TaskRow>(),
-			db
-				.prepare("SELECT * FROM decisions WHERE room_id = ? ORDER BY created_at ASC")
-				.bind(roomId)
-				.all<DecisionRow>(),
-			db
-				.prepare("SELECT * FROM conductor_actions WHERE room_id = ? ORDER BY created_at ASC")
-				.bind(roomId)
-				.all<ActionRow>(),
-		]);
+	const [
+		roomResult,
+		participants,
+		messages,
+		tasks,
+		decisions,
+		conductorActions,
+		runtimeRedactions,
+	] = await Promise.all([
+		db.prepare("SELECT * FROM rooms WHERE id = ?").bind(roomId).first<RoomRow>(),
+		db
+			.prepare("SELECT * FROM participants WHERE room_id = ? ORDER BY created_at ASC")
+			.bind(roomId)
+			.all<ParticipantRow>(),
+		db
+			.prepare("SELECT * FROM room_messages WHERE room_id = ? ORDER BY created_at DESC LIMIT 500")
+			.bind(roomId)
+			.all<MessageRow>(),
+		db
+			.prepare("SELECT * FROM tasks WHERE room_id = ? ORDER BY created_at ASC")
+			.bind(roomId)
+			.all<TaskRow>(),
+		db
+			.prepare("SELECT * FROM decisions WHERE room_id = ? ORDER BY created_at ASC")
+			.bind(roomId)
+			.all<DecisionRow>(),
+		db
+			.prepare("SELECT * FROM conductor_actions WHERE room_id = ? ORDER BY created_at ASC")
+			.bind(roomId)
+			.all<ActionRow>(),
+		db
+			.prepare(
+				"SELECT identifier FROM room_runtime_redactions WHERE room_id = ? ORDER BY created_at ASC",
+			)
+			.bind(roomId)
+			.all<{ identifier: string }>(),
+	]);
 	if (!roomResult) throw new HttpError(404, "room not found");
 	return {
 		room: roomFromRow(roomResult),
@@ -203,6 +216,7 @@ export async function readRoomSnapshot(db: D1Database, roomId: string): Promise<
 		tasks: tasks.results.map(taskFromRow),
 		decisions: decisions.results.map(decisionFromRow),
 		conductorActions: conductorActions.results.map(actionFromRow),
+		runtimeRedactions: runtimeRedactions.results.map((row) => row.identifier),
 	};
 }
 
@@ -505,6 +519,30 @@ export async function approveRoomPlan(
 export async function resetRoomProvisioning(db: D1Database, roomId: string): Promise<void> {
 	const now = Date.now();
 	await db.batch([
+		db
+			.prepare(
+				`INSERT OR IGNORE INTO room_runtime_redactions (room_id, identifier, created_at)
+         SELECT id, crabfleet_root_session_id, ?
+         FROM rooms
+         WHERE id = ? AND crabfleet_root_session_id IS NOT NULL AND crabfleet_root_session_id != ''`,
+			)
+			.bind(now, roomId),
+		db
+			.prepare(
+				`INSERT OR IGNORE INTO room_runtime_redactions (room_id, identifier, created_at)
+         SELECT room_id, crabfleet_session_id, ?
+         FROM participants
+         WHERE room_id = ? AND crabfleet_session_id IS NOT NULL AND crabfleet_session_id != ''`,
+			)
+			.bind(now, roomId),
+		db
+			.prepare(
+				`INSERT OR IGNORE INTO room_runtime_redactions (room_id, identifier, created_at)
+         SELECT room_id, browser_url, ?
+         FROM participants
+         WHERE room_id = ? AND browser_url IS NOT NULL AND browser_url != ''`,
+			)
+			.bind(now, roomId),
 		db
 			.prepare(
 				`UPDATE rooms
@@ -815,6 +853,62 @@ export async function updateTaskState(
 		.bind(state, Date.now(), taskId, roomId, expectedState, roomId, ...expectedStatuses)
 		.run();
 	return result.meta.changes === 1;
+}
+
+export async function updateTaskStateWithDecision(
+	db: D1Database,
+	roomId: string,
+	taskId: string,
+	state: TaskState,
+	expectedState: TaskState,
+	expectedStatuses: RoomStatus[],
+	decision: Omit<Decision, "id" | "roomId" | "createdAt">,
+): Promise<boolean> {
+	if (!expectedStatuses.length) return false;
+	const decisionId = newId("decision");
+	const now = Date.now();
+	const [decisionResult, taskResult] = await db.batch([
+		db
+			.prepare(
+				`INSERT INTO decisions
+          (id, room_id, title, decision, reason, author_kind, author_id, affected_task_ids_json, created_at)
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+         WHERE EXISTS (
+           SELECT 1
+           FROM tasks
+           WHERE id = ? AND room_id = ? AND state = ?
+             AND EXISTS (
+               SELECT 1 FROM rooms WHERE id = ? AND status IN (${expectedStatuses
+									.map(() => "?")
+									.join(", ")})
+             )
+         )`,
+			)
+			.bind(
+				decisionId,
+				roomId,
+				decision.title,
+				decision.decision,
+				decision.reason,
+				decision.authorKind,
+				decision.authorId,
+				encodeJson(decision.affectedTaskIds),
+				now,
+				taskId,
+				roomId,
+				expectedState,
+				roomId,
+				...expectedStatuses,
+			),
+		db
+			.prepare(
+				`UPDATE tasks SET state = ?, updated_at = ?
+         WHERE id = ? AND room_id = ? AND state = ?
+           AND EXISTS (SELECT 1 FROM decisions WHERE id = ? AND room_id = ?)`,
+			)
+			.bind(state, now, taskId, roomId, expectedState, decisionId, roomId),
+	]);
+	return decisionResult?.meta.changes === 1 && taskResult?.meta.changes === 1;
 }
 
 export async function addDecision(

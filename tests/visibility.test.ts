@@ -40,7 +40,19 @@ const snapshot = {
 		createdAt: 1,
 		updatedAt: 1,
 	})),
-	messages: [],
+	messages: [
+		{
+			id: "message",
+			roomId: "room",
+			authorKind: "human" as const,
+			authorId: "host",
+			targetKind: "room" as const,
+			targetId: null,
+			body: "retired-runtime-secret must stay private",
+			replyToId: null,
+			createdAt: 1,
+		},
+	],
 	tasks: [],
 	decisions: [],
 	conductorActions: [
@@ -55,6 +67,7 @@ const snapshot = {
 			createdAt: 1,
 		},
 	],
+	runtimeRedactions: ["retired-runtime-secret"],
 } satisfies RoomSnapshot;
 
 test("public snapshots hide every runtime capability", () => {
@@ -64,9 +77,10 @@ test("public snapshots hide every runtime capability", () => {
 	assert.ok(visible.participants.every((participant) => participant.browserUrl === null));
 	assert.deepEqual(visible.conductorActions[0]?.targetIds, ["guest"]);
 	assert.deepEqual(visible.conductorActions[0]?.evidenceRefs, []);
+	assert.deepEqual(visible.runtimeRedactions, []);
 	assert.doesNotMatch(
 		JSON.stringify(visible),
-		/root-secret|host-session-secret|guest-session-secret/,
+		/root-secret|host-session-secret|guest-session-secret|retired-runtime-secret/,
 	);
 });
 

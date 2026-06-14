@@ -10,6 +10,7 @@ export function runtimeRedactor(snapshot: RoomSnapshot): (value: string) => stri
 			participant.crabfleetSessionId,
 			participant.browserUrl,
 		]),
+		...snapshot.runtimeRedactions,
 	]
 		.filter((value): value is string => Boolean(value))
 		.sort((left, right) => right.length - left.length);

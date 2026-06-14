@@ -12,3 +12,13 @@ test("runtime leases are durable and expire", async () => {
 	assert.match(migration, /lease_id TEXT NOT NULL UNIQUE/);
 	assert.match(migration, /expires_at INTEGER NOT NULL/);
 });
+
+test("retired runtime identifiers remain available for redaction", async () => {
+	const migration = await readFile(
+		new URL("../migrations/0004_runtime_redactions.sql", import.meta.url),
+		"utf8",
+	);
+
+	assert.match(migration, /PRIMARY KEY \(room_id, identifier\)/);
+	assert.match(migration, /identifier TEXT NOT NULL/);
+});

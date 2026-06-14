@@ -105,7 +105,8 @@ test("only the host can cut an approved task and the cut is recorded", async () 
 	assert.match(taskSource, /scopeChange && actor\.id !== snapshot\.room\.hostParticipantId/);
 	assert.match(taskSource, /host approval required to cut a task/);
 	assert.match(taskSource, /body\.state === "cut" \|\| task\.state === "cut"/);
-	assert.match(taskSource, /await addDecision/);
+	assert.match(taskSource, /await updateTaskStateWithDecision/);
+	assert.doesNotMatch(taskSource, /await addDecision/);
 	assert.match(taskSource, /affectedTaskIds: \[task\.id\]/);
 });
 
@@ -151,8 +152,9 @@ test("nudges reserve the runtime lifecycle before external delivery", async () =
 	assert.ok(nudgeSource.indexOf("claimRoomRuntimeLease") < nudgeSource.indexOf("sendCrabboxNudge"));
 	assert.match(
 		nudgeSource,
-		/updateConductorActionApprovalState\(env\.DB, roomId, actionId, "denied"\)/,
+		/updateConductorActionApprovalState\(\s*env\.DB,\s*roomId,\s*actionId,\s*"delivery_unknown"/,
 	);
+	assert.doesNotMatch(nudgeSource, /actionId, "denied"/);
 	assert.match(
 		nudgeSource,
 		/updateConductorActionApprovalState\(env\.DB, roomId, actionId, "approved"\)/,

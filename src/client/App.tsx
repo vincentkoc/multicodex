@@ -973,7 +973,10 @@ function ActivityLog({ snapshot }: { snapshot: RoomSnapshot }) {
 			at: action.createdAt,
 			icon: <Zap size={15} />,
 			label: action.kind.replaceAll("_", " "),
-			detail: action.reason,
+			detail:
+				action.kind === "session_nudge"
+					? `${action.reason} / ${action.approvalState.replaceAll("_", " ")}`
+					: action.reason,
 		})),
 	].sort((a, b) => b.at - a.at);
 	if (!entries.length) {

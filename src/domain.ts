@@ -114,7 +114,7 @@ export type ConductorAction = {
 	targetIds: string[];
 	reason: string;
 	evidenceRefs: string[];
-	approvalState: "not_required" | "requested" | "approved" | "denied";
+	approvalState: "not_required" | "requested" | "approved" | "denied" | "delivery_unknown";
 	createdAt: number;
 };
 
@@ -125,4 +125,5 @@ export type RoomSnapshot = {
 	tasks: Task[];
 	decisions: Decision[];
 	conductorActions: ConductorAction[];
+	runtimeRedactions: string[];
 };

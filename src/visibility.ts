@@ -25,6 +25,7 @@ export function snapshotForViewer(
 				targetIds: action.targetIds.filter((id) => publicIds.has(id)),
 				evidenceRefs: action.evidenceRefs.filter((id) => publicIds.has(id)),
 			})),
+			runtimeRedactions: [],
 		},
 		runtimeRedactor(snapshot),
 	) as RoomSnapshot;

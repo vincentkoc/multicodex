@@ -122,6 +122,7 @@ test("conductor redacts Crabfleet runtime identifiers from model input and publi
 		"IS-903",
 		"IS-904",
 		"IS-999",
+		"retired-runtime-token",
 	]) {
 		assert.doesNotMatch(requests.join("\n"), new RegExp(identifier));
 		assert.doesNotMatch(published, new RegExp(identifier));
@@ -178,7 +179,7 @@ function conductorSnapshot(): RoomSnapshot {
 				authorId: "host",
 				targetKind: "conductor",
 				targetId: null,
-				body: "What is happening with IS-999?",
+				body: "What is happening with IS-999 and retired-runtime-token?",
 				replyToId: null,
 				createdAt: 1,
 			},
@@ -186,5 +187,6 @@ function conductorSnapshot(): RoomSnapshot {
 		tasks: [],
 		decisions: [],
 		conductorActions: [],
+		runtimeRedactions: ["retired-runtime-token"],
 	};
 }

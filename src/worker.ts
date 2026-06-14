@@ -40,7 +40,6 @@ import {
 import { RoomHub } from "./room-hub.ts";
 import {
 	addConductorAction,
-	addDecision,
 	addMessage,
 	addParticipant,
 	approveRoomPlan,
@@ -62,6 +61,7 @@ import {
 	updateConductorActionApprovalState,
 	updateRoomRuntime,
 	updateTaskState,
+	updateTaskStateWithDecision,
 } from "./store.ts";
 import { snapshotForViewer } from "./visibility.ts";
 
@@ -468,19 +468,28 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		if (scopeChange && actor.id !== snapshot.room.hostParticipantId) {
 			throw new HttpError(403, "host approval required to cut a task");
 		}
-		if (!(await updateTaskState(env.DB, roomId, taskId, body.state, task.state, messageStatuses))) {
+		const restoring = task.state === "cut";
+		const taskUpdated =
+			scopeChange && body.state !== task.state
+				? await updateTaskStateWithDecision(
+						env.DB,
+						roomId,
+						taskId,
+						body.state,
+						task.state,
+						messageStatuses,
+						{
+							title: `${restoring ? "Restore" : "Cut"} ${task.title}`,
+							decision: `${task.title} was ${restoring ? "restored to" : "removed from"} the room scope.`,
+							reason: `Host approved the scope ${restoring ? "restoration" : "cut"}.`,
+							authorKind: "human",
+							authorId: actor.id,
+							affectedTaskIds: [task.id],
+						},
+					)
+				: await updateTaskState(env.DB, roomId, taskId, body.state, task.state, messageStatuses);
+		if (!taskUpdated) {
 			throw new HttpError(409, "room is no longer accepting task updates");
-		}
-		if (scopeChange && body.state !== task.state) {
-			const restoring = task.state === "cut";
-			await addDecision(env.DB, roomId, {
-				title: `${restoring ? "Restore" : "Cut"} ${task.title}`,
-				decision: `${task.title} was ${restoring ? "restored to" : "removed from"} the room scope.`,
-				reason: `Host approved the scope ${restoring ? "restoration" : "cut"}.`,
-				authorKind: "human",
-				authorId: actor.id,
-				affectedTaskIds: [task.id],
-			});
 		}
 		if (body.state === "blocked")
 			await conductorTurnBestEffort(
@@ -842,7 +851,7 @@ async function nudgeParticipant(
 				message,
 			);
 		} catch (error) {
-			await updateConductorActionApprovalState(env.DB, roomId, actionId, "denied").catch(
+			await updateConductorActionApprovalState(env.DB, roomId, actionId, "delivery_unknown").catch(
 				() => undefined,
 			);
 			throw error;

@@ -208,7 +208,7 @@ export async function sendCrabboxNudge(
 export async function stopRoomCrabboxes(
 	env: Env,
 	rootSessionId: string,
-	_sessionIds: string[],
+	sessionIds: string[],
 ): Promise<void> {
 	if (!env.CRABFLEET_SERVICE_TOKEN) {
 		if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) return;
@@ -229,11 +229,18 @@ export async function stopRoomCrabboxes(
 		admissionClosed?: boolean;
 		crabboxes?: CrabboxBinding[];
 	}>(response);
+	const terminalSessionIds = new Set(
+		result.crabboxes
+			?.filter((binding) => terminalCrabfleetStatuses.has(binding.session.status))
+			.map((binding) => binding.session.id) ?? [],
+	);
+	const knownSessionIds = new Set([rootSessionId, ...sessionIds]);
 	if (
 		result.rootSessionId !== rootSessionId ||
 		result.admissionClosed !== true ||
 		!Array.isArray(result.crabboxes) ||
-		result.crabboxes.some((binding) => !terminalCrabfleetStatuses.has(binding.session.status))
+		result.crabboxes.some((binding) => !terminalCrabfleetStatuses.has(binding.session.status)) ||
+		[...knownSessionIds].some((sessionId) => !terminalSessionIds.has(sessionId))
 	) {
 		throw new HttpError(502, "Crabfleet cleanup did not reach a terminal state");
 	}

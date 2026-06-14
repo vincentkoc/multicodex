@@ -70,6 +70,21 @@ test("task updates are atomically fenced against terminal rooms", async () => {
 	assert.match(taskSource, /return result\.meta\.changes === 1/);
 });
 
+test("scope-changing task updates atomically record their decision", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function updateTaskStateWithDecision");
+	const end = source.indexOf("export async function addDecision", start);
+	const taskSource = source.slice(start, end);
+
+	assert.match(taskSource, /const \[decisionResult, taskResult\] = await db\.batch/);
+	assert.ok(taskSource.indexOf("INSERT INTO decisions") < taskSource.indexOf("UPDATE tasks"));
+	assert.match(taskSource, /EXISTS \(SELECT 1 FROM decisions WHERE id = \? AND room_id = \?\)/);
+	assert.match(
+		taskSource,
+		/decisionResult\?\.meta\.changes === 1 && taskResult\?\.meta\.changes === 1/,
+	);
+});
+
 test("plan approval atomically binds the validated revision and participant coverage", async () => {
 	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
 	const start = source.indexOf("export async function approveRoomPlan");
@@ -120,6 +135,11 @@ test("failed launch reset rotates the provisioning replay generation", async () 
 	const resetSource = source.slice(start, end);
 
 	assert.match(resetSource, /brief_revision = brief_revision \+ 1/);
+	assert.match(resetSource, /INSERT OR IGNORE INTO room_runtime_redactions/);
+	assert.ok(
+		resetSource.indexOf("room_runtime_redactions") <
+			resetSource.indexOf("crabfleet_root_session_id = NULL"),
+	);
 });
 
 test("conductor claims atomically enforce room cooldown and hourly budget", async () => {

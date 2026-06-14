@@ -103,5 +103,6 @@ function plannedSnapshot(): RoomSnapshot {
 		],
 		decisions: [],
 		conductorActions: [],
+		runtimeRedactions: [],
 	};
 }
