@@ -1,0 +1,1271 @@
+import {
+	ArrowRight,
+	Bot,
+	Check,
+	CircleStop,
+	Clipboard,
+	Code2,
+	Copy,
+	ExternalLink,
+	GitBranch,
+	LayoutDashboard,
+	MonitorPlay,
+	RefreshCw,
+	Rocket,
+	Send,
+	Shuffle,
+	Sparkles,
+	TimerReset,
+	UserPlus,
+	Users,
+	WandSparkles,
+	X,
+	Zap,
+} from "lucide-preact";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import type {
+	Participant,
+	RoomMessage,
+	RoomSnapshot,
+	RoomStatus,
+	Task,
+	TaskState,
+} from "../domain.ts";
+import {
+	catalog,
+	type Catalog,
+	createRoom,
+	joinRoom,
+	nudgeParticipant,
+	postMessage,
+	readRoom,
+	type RoomIdentity,
+	roomAction,
+	roomSocketUrl,
+	setTaskState,
+} from "./api.ts";
+
+type View = "workbench" | "recap";
+type Target = { kind: "room" | "conductor" | "participant"; id?: string };
+type NudgeDraft = { participant: Participant; message: string; reason: string };
+
+const taskStates: TaskState[] = ["ready", "active", "blocked", "review", "done", "cut"];
+const roleFallbacks = ["#e24a33", "#2563eb", "#16825d", "#d99b16", "#8b5cf6"];
+
+export function App() {
+	const [roomId, setRoomId] = useState(roomIdFromPath());
+	const [identity, setIdentity] = useState<RoomIdentity | null>(() =>
+		roomId ? loadIdentity(roomId) : null,
+	);
+	const [snapshot, setSnapshot] = useState<RoomSnapshot | null>(null);
+	const [roleCatalog, setRoleCatalog] = useState<Catalog["roles"]>([]);
+	const [error, setError] = useState("");
+	const [loading, setLoading] = useState(Boolean(roomId));
+
+	useEffect(() => {
+		catalog()
+			.then((value) => setRoleCatalog(value.roles))
+			.catch(() => setRoleCatalog([]));
+	}, []);
+
+	useEffect(() => {
+		if (!roomId) return;
+		let disposed = false;
+		setLoading(true);
+		readRoom(roomId, identity?.participantToken)
+			.then((value) => {
+				if (!disposed) setSnapshot(value);
+			})
+			.catch((cause: Error) => {
+				if (!disposed) setError(cause.message);
+			})
+			.finally(() => {
+				if (!disposed) setLoading(false);
+			});
+		return () => {
+			disposed = true;
+		};
+	}, [roomId, identity?.participantToken]);
+
+	useEffect(() => {
+		if (!roomId || !snapshot) return;
+		let socket: WebSocket | null = null;
+		let retry: number | null = null;
+		let disposed = false;
+		const connect = () => {
+			socket = new WebSocket(roomSocketUrl(roomId));
+			socket.onmessage = (event) => {
+				if (event.data === "pong") return;
+				const payload = JSON.parse(String(event.data)) as { type: string };
+				if (payload.type === "changed") {
+					readRoom(roomId, identity?.participantToken)
+						.then(setSnapshot)
+						.catch((cause: Error) => setError(cause.message));
+				}
+			};
+			socket.onclose = () => {
+				if (!disposed) retry = window.setTimeout(connect, 1200);
+			};
+		};
+		connect();
+		return () => {
+			disposed = true;
+			if (retry) window.clearTimeout(retry);
+			socket?.close();
+		};
+	}, [roomId, Boolean(snapshot), identity?.participantToken]);
+
+	function enterRoom(next: RoomSnapshot, nextIdentity: RoomIdentity) {
+		localStorage.setItem(identityKey(next.room.id), JSON.stringify(nextIdentity));
+		history.pushState({}, "", `/rooms/${next.room.id}`);
+		setRoomId(next.room.id);
+		setIdentity(nextIdentity);
+		setSnapshot(next);
+		setError("");
+	}
+
+	if (!roomId) return <CreateRoom onEnter={enterRoom} />;
+	if (loading && !snapshot) return <LoadingRoom />;
+	if (error && !snapshot) return <ErrorRoom message={error} />;
+	if (!snapshot) return null;
+	if (
+		!identity ||
+		!snapshot.participants.some((participant) => participant.id === identity.participantId)
+	) {
+		return <JoinRoom snapshot={snapshot} onEnter={enterRoom} />;
+	}
+
+	return (
+		<RoomWorkbench
+			snapshot={snapshot}
+			identity={identity}
+			roleCatalog={roleCatalog}
+			onSnapshot={setSnapshot}
+			onError={setError}
+			error={error}
+		/>
+	);
+}
+
+function CreateRoom({
+	onEnter,
+}: {
+	onEnter: (snapshot: RoomSnapshot, identity: RoomIdentity) => void;
+}) {
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState("");
+
+	async function submit(event: SubmitEvent) {
+		event.preventDefault();
+		const data = new FormData(event.currentTarget as HTMLFormElement);
+		setBusy(true);
+		setError("");
+		try {
+			const result = await createRoom({
+				title: String(data.get("title") || "OpenAI event build"),
+				hostName: String(data.get("hostName") || "Host"),
+				repo: String(data.get("repo") || "openclaw/crabfleet"),
+				durationMinutes: Number(data.get("durationMinutes") || 30),
+			});
+			onEnter(result.snapshot, result);
+		} catch (cause) {
+			setError(errorMessage(cause));
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	return (
+		<main class="entry-shell">
+			<section class="entry-stage">
+				<Brand />
+				<div class="entry-art" aria-hidden="true">
+					<div class="entry-art-grid">
+						{["brief", "design", "backend", "demo"].map((label, index) => (
+							<div class={`entry-lane lane-${index}`} key={label}>
+								<span>{label}</span>
+								<Code2 size={22} />
+							</div>
+						))}
+					</div>
+					<div class="entry-conductor">
+						<WandSparkles size={20} />
+						<span>conductor</span>
+						<i />
+					</div>
+				</div>
+			</section>
+			<section class="entry-form-wrap">
+				<div class="entry-form-header">
+					<span class="eyebrow">new room</span>
+					<h1>start the build</h1>
+					<p>one team room, one Codex workspace per person.</p>
+				</div>
+				<form class="entry-form" onSubmit={submit}>
+					<label>
+						Room name
+						<input name="title" defaultValue="OpenAI event build" required maxLength={100} />
+					</label>
+					<label>
+						Your name
+						<input name="hostName" placeholder="Vincent" required maxLength={80} />
+					</label>
+					<label>
+						GitHub repo
+						<input name="repo" defaultValue="openclaw/crabfleet" required maxLength={160} />
+					</label>
+					<label>
+						Sprint
+						<select name="durationMinutes" defaultValue="30">
+							<option value="10">10 minutes</option>
+							<option value="20">20 minutes</option>
+							<option value="30">30 minutes</option>
+							<option value="45">45 minutes</option>
+							<option value="60">60 minutes</option>
+						</select>
+					</label>
+					{error && <InlineError message={error} />}
+					<button class="button primary wide" type="submit" disabled={busy}>
+						<Rocket size={17} />
+						{busy ? "starting..." : "create room"}
+					</button>
+				</form>
+			</section>
+		</main>
+	);
+}
+
+function JoinRoom({
+	snapshot,
+	onEnter,
+}: {
+	snapshot: RoomSnapshot;
+	onEnter: (snapshot: RoomSnapshot, identity: RoomIdentity) => void;
+}) {
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState("");
+
+	async function submit(event: SubmitEvent) {
+		event.preventDefault();
+		const data = new FormData(event.currentTarget as HTMLFormElement);
+		setBusy(true);
+		setError("");
+		try {
+			const result = await joinRoom(snapshot.room.id, {
+				displayName: String(data.get("displayName") || ""),
+				githubLogin: String(data.get("githubLogin") || ""),
+				kind: data.get("kind") === "observer" ? "observer" : "human",
+			});
+			onEnter(result.snapshot, result);
+		} catch (cause) {
+			setError(errorMessage(cause));
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	return (
+		<main class="join-shell">
+			<section class="join-context">
+				<Brand />
+				<span class={`status-pill status-${snapshot.room.status}`}>{snapshot.room.status}</span>
+				<h1>{snapshot.room.title}</h1>
+				<p>
+					{snapshot.room.brief.productGoal ||
+						"the conductor is waiting to shape the build with the team."}
+				</p>
+				<div class="join-people">
+					{snapshot.participants.map((participant, index) => (
+						<span
+							key={participant.id}
+							style={{ "--role": roleFallbacks[index % roleFallbacks.length] }}
+						>
+							{initials(participant.displayName)}
+						</span>
+					))}
+					<strong>{snapshot.participants.length} in room</strong>
+				</div>
+			</section>
+			<form class="join-form" onSubmit={submit}>
+				<span class="eyebrow">join room</span>
+				<h2>take a seat</h2>
+				<label>
+					Display name
+					<input name="displayName" required autoFocus maxLength={80} />
+				</label>
+				<label>
+					GitHub handle
+					<input name="githubLogin" placeholder="optional" maxLength={80} />
+				</label>
+				<label>
+					Seat
+					<select name="kind" defaultValue="human">
+						<option value="human">Builder</option>
+						<option value="observer">Observer</option>
+					</select>
+				</label>
+				{error && <InlineError message={error} />}
+				<button class="button primary wide" type="submit" disabled={busy}>
+					<UserPlus size={17} />
+					{busy ? "joining..." : "join build"}
+				</button>
+			</form>
+		</main>
+	);
+}
+
+function RoomWorkbench({
+	snapshot,
+	identity,
+	roleCatalog,
+	onSnapshot,
+	onError,
+	error,
+}: {
+	snapshot: RoomSnapshot;
+	identity: RoomIdentity;
+	roleCatalog: Catalog["roles"];
+	onSnapshot: (snapshot: RoomSnapshot) => void;
+	onError: (error: string) => void;
+	error: string;
+}) {
+	const [view, setView] = useState<View>(
+		snapshot.room.status === "presenting" ? "recap" : "workbench",
+	);
+	const [busy, setBusy] = useState("");
+	const [copied, setCopied] = useState(false);
+	const [nudge, setNudge] = useState<NudgeDraft | null>(null);
+	const { participantId, participantToken } = identity;
+	const me = snapshot.participants.find((participant) => participant.id === participantId)!;
+	const isHost = snapshot.room.hostParticipantId === participantId;
+	const roleMap = useMemo(() => new Map(roleCatalog.map((role) => [role.id, role])), [roleCatalog]);
+
+	async function action(label: string, run: () => Promise<RoomSnapshot>) {
+		setBusy(label);
+		onError("");
+		try {
+			onSnapshot(await run());
+		} catch (cause) {
+			onError(errorMessage(cause));
+		} finally {
+			setBusy("");
+		}
+	}
+
+	async function copyInvite() {
+		await navigator.clipboard.writeText(location.href);
+		setCopied(true);
+		window.setTimeout(() => setCopied(false), 1600);
+	}
+
+	async function changeTask(task: Task, state: TaskState) {
+		await action(`task-${task.id}`, () =>
+			setTaskState(snapshot.room.id, participantToken, task.id, state),
+		);
+	}
+
+	async function sendNudge() {
+		if (!nudge) return;
+		await action("nudge", () =>
+			nudgeParticipant(snapshot.room.id, participantToken, {
+				participantId: nudge.participant.id,
+				message: nudge.message,
+				reason: nudge.reason,
+			}),
+		);
+		setNudge(null);
+	}
+
+	const timer = useRoomTimer(snapshot.room.endsAt);
+
+	if (view === "recap") {
+		return (
+			<Recap
+				snapshot={snapshot}
+				roleMap={roleMap}
+				onBack={() => setView("workbench")}
+				onEnd={
+					isHost && snapshot.room.status !== "ended"
+						? () => action("end", () => roomAction(snapshot.room.id, participantToken, "end"))
+						: undefined
+				}
+				busy={busy}
+			/>
+		);
+	}
+
+	return (
+		<div class="app-shell">
+			<header class="topbar">
+				<Brand compact />
+				<div class="room-title">
+					<span class={`live-dot live-${snapshot.room.status}`} />
+					<div>
+						<strong>{snapshot.room.title}</strong>
+						<span>
+							{snapshot.room.repo} · {snapshot.room.status}
+						</span>
+					</div>
+				</div>
+				<RoomProgress status={snapshot.room.status} />
+				<div class="topbar-actions">
+					<span class={`timer ${timer.urgent ? "urgent" : ""}`}>
+						<TimerReset size={15} /> {timer.label}
+					</span>
+					<button class="icon-button" title="copy invite link" onClick={copyInvite}>
+						{copied ? <Check size={17} /> : <Copy size={17} />}
+					</button>
+					<button class="button ghost" onClick={() => setView("recap")}>
+						<MonitorPlay size={16} />
+						recap
+					</button>
+				</div>
+			</header>
+
+			{error && (
+				<div class="error-strip">
+					<span>{error}</span>
+					<button class="icon-button" title="dismiss error" onClick={() => onError("")}>
+						<X size={15} />
+					</button>
+				</div>
+			)}
+
+			<main class="workbench">
+				<aside class="team-panel">
+					<div class="panel-heading">
+						<div>
+							<span class="eyebrow">team</span>
+							<h2>{snapshot.participants.length} seats</h2>
+						</div>
+						<button class="icon-button" title="copy invite link" onClick={copyInvite}>
+							<UserPlus size={17} />
+						</button>
+					</div>
+					<div class="conductor-seat">
+						<span class="avatar conductor-avatar">
+							<WandSparkles size={17} />
+						</span>
+						<div>
+							<strong>conductor</strong>
+							<span>watching dependencies</span>
+						</div>
+						<span class="presence online" />
+					</div>
+					<div class="participant-list">
+						{snapshot.participants.map((participant, index) => {
+							const role = participant.roleId ? roleMap.get(participant.roleId) : undefined;
+							const color = role?.color || roleFallbacks[index % roleFallbacks.length];
+							return (
+								<article class="participant-row" style={{ "--role": color }} key={participant.id}>
+									<span class="avatar">{initials(participant.displayName)}</span>
+									<div class="participant-copy">
+										<div>
+											<strong>{participant.displayName}</strong>
+											{participant.id === me.id && <span class="you-label">you</span>}
+										</div>
+										<span>{role?.label || participant.kind}</span>
+										{participant.runtimeSummary && <p>{participant.runtimeSummary}</p>}
+									</div>
+									<span class={`state-mark state-${participant.state}`} title={participant.state} />
+									{(participant.browserUrl ||
+										(isHost &&
+											snapshot.room.status !== "setup" &&
+											snapshot.room.status !== "planning" &&
+											participant.kind !== "observer")) && (
+										<div class="row-actions">
+											{participant.browserUrl && (
+												<a
+													class="icon-button"
+													href={participant.browserUrl}
+													target="_blank"
+													title="open Codex workspace"
+												>
+													<ExternalLink size={15} />
+												</a>
+											)}
+											{isHost &&
+												snapshot.room.status !== "setup" &&
+												snapshot.room.status !== "planning" &&
+												participant.kind !== "observer" && (
+													<button
+														class="icon-button"
+														title={`nudge ${participant.displayName}`}
+														onClick={() =>
+															setNudge({
+																participant,
+																message:
+																	"Share your current contract and flag anything blocking integration.",
+																reason: "Keep the integration lane current.",
+															})
+														}
+													>
+														<Zap size={15} />
+													</button>
+												)}
+										</div>
+									)}
+								</article>
+							);
+						})}
+					</div>
+					<div class="branch-block">
+						<GitBranch size={16} />
+						<div>
+							<span>integration branch</span>
+							<code>{snapshot.room.integrationBranch}</code>
+						</div>
+					</div>
+				</aside>
+
+				<section class="mission-panel">
+					<div class="mission-toolbar">
+						<div>
+							<span class="eyebrow">current mission</span>
+							<h1>{ideaTitle(snapshot)}</h1>
+						</div>
+						{isHost && (
+							<HostControls
+								snapshot={snapshot}
+								busy={busy}
+								action={(name) =>
+									action(name, () => roomAction(snapshot.room.id, participantToken, name))
+								}
+								onRecap={() => setView("recap")}
+							/>
+						)}
+					</div>
+
+					<section class="brief-band">
+						<div class="brief-promise">
+							<span class="brief-index">01</span>
+							<div>
+								<span class="eyebrow">product promise</span>
+								<p>
+									{snapshot.room.brief.productGoal ||
+										"talk with the team, then shuffle or draft the first plan."}
+								</p>
+							</div>
+						</div>
+						<div class="brief-demo">
+							<Sparkles size={18} />
+							<div>
+								<span class="eyebrow">demo moment</span>
+								<p>
+									{snapshot.room.brief.demoMoment ||
+										"the conductor catches a mismatch before integration."}
+								</p>
+							</div>
+						</div>
+					</section>
+
+					<section class="lanes-section">
+						<div class="section-heading">
+							<div>
+								<span class="eyebrow">build lanes</span>
+								<h2>
+									{snapshot.tasks.length
+										? `${snapshot.tasks.length} scoped tasks`
+										: "waiting for a plan"}
+								</h2>
+							</div>
+							{["building", "integrating", "presenting"].includes(snapshot.room.status) && (
+								<button
+									class="button ghost"
+									disabled={busy === "refresh"}
+									onClick={() =>
+										action("refresh", () =>
+											roomAction(snapshot.room.id, participantToken, "refresh"),
+										)
+									}
+								>
+									<RefreshCw size={15} />
+									refresh
+								</button>
+							)}
+						</div>
+						{snapshot.tasks.length ? (
+							<div class="task-board">
+								{snapshot.tasks.map((task, index) => (
+									<TaskLane
+										key={task.id}
+										task={task}
+										owner={snapshot.participants.find(
+											(participant) => participant.id === task.ownerParticipantId,
+										)}
+										color={
+											roleMap.get(
+												snapshot.participants.find(
+													(participant) => participant.id === task.ownerParticipantId,
+												)?.roleId || "",
+											)?.color || roleFallbacks[index % roleFallbacks.length]!
+										}
+										canEdit={isHost || task.ownerParticipantId === me.id}
+										onState={(state) => changeTask(task, state)}
+									/>
+								))}
+							</div>
+						) : (
+							<EmptyPlan isHost={isHost} />
+						)}
+					</section>
+
+					<section class="activity-section">
+						<div class="section-heading">
+							<div>
+								<span class="eyebrow">conductor log</span>
+								<h2>visible orchestration</h2>
+							</div>
+							<span class="count-badge">
+								{snapshot.conductorActions.length + snapshot.decisions.length}
+							</span>
+						</div>
+						<ActivityLog snapshot={snapshot} />
+					</section>
+				</section>
+
+				<ChatPanel
+					snapshot={snapshot}
+					participantId={participantId}
+					participantToken={participantToken}
+					onSnapshot={onSnapshot}
+					onError={onError}
+				/>
+			</main>
+
+			{nudge && (
+				<NudgeDialog
+					draft={nudge}
+					busy={busy === "nudge"}
+					onChange={setNudge}
+					onClose={() => setNudge(null)}
+					onSend={sendNudge}
+				/>
+			)}
+		</div>
+	);
+}
+
+function HostControls({
+	snapshot,
+	busy,
+	action,
+	onRecap,
+}: {
+	snapshot: RoomSnapshot;
+	busy: string;
+	action: (action: "shuffle" | "plan" | "approve-plan" | "present" | "end") => void;
+	onRecap: () => void;
+}) {
+	const launched = ["building", "integrating", "presenting", "ended"].includes(
+		snapshot.room.status,
+	);
+	if (snapshot.room.status === "ended") {
+		return (
+			<button class="button primary" onClick={onRecap}>
+				<MonitorPlay size={16} />
+				open recap
+			</button>
+		);
+	}
+	if (launched) {
+		return (
+			<button
+				class="button primary"
+				disabled={Boolean(busy)}
+				onClick={() => {
+					action("present");
+					onRecap();
+				}}
+			>
+				<MonitorPlay size={16} />
+				present
+			</button>
+		);
+	}
+	return (
+		<div class="host-controls">
+			<button class="button ghost" disabled={Boolean(busy)} onClick={() => action("shuffle")}>
+				<Shuffle size={15} />
+				shuffle
+			</button>
+			<button class="button ghost" disabled={Boolean(busy)} onClick={() => action("plan")}>
+				<Clipboard size={15} />
+				draft plan
+			</button>
+			<button
+				class="button primary"
+				disabled={Boolean(busy) || !snapshot.tasks.length}
+				onClick={() => action("approve-plan")}
+			>
+				<Rocket size={16} />
+				{busy === "approve-plan" ? "launching..." : "launch Codex"}
+			</button>
+		</div>
+	);
+}
+
+function TaskLane({
+	task,
+	owner,
+	color,
+	canEdit,
+	onState,
+}: {
+	task: Task;
+	owner?: Participant;
+	color: string;
+	canEdit: boolean;
+	onState: (state: TaskState) => void;
+}) {
+	return (
+		<article class="task-lane" style={{ "--role": color }}>
+			<div class="task-topline">
+				<span class={`task-state task-${task.state}`}>{task.state}</span>
+				<span class="task-owner">{owner?.displayName || "unassigned"}</span>
+			</div>
+			<h3>{task.title}</h3>
+			<p>{task.description}</p>
+			<div class="path-list">
+				{task.ownsPaths.map((path) => (
+					<code key={path}>{path}</code>
+				))}
+			</div>
+			<div class="task-footer">
+				{task.branch && (
+					<span title={task.branch}>
+						<GitBranch size={13} />
+						{shortBranch(task.branch)}
+					</span>
+				)}
+				{canEdit && (
+					<select
+						value={task.state}
+						aria-label={`state for ${task.title}`}
+						onChange={(event) => onState(event.currentTarget.value as TaskState)}
+					>
+						{taskStates.map((state) => (
+							<option key={state} value={state}>
+								{state}
+							</option>
+						))}
+					</select>
+				)}
+			</div>
+		</article>
+	);
+}
+
+function ChatPanel({
+	snapshot,
+	participantId,
+	participantToken,
+	onSnapshot,
+	onError,
+}: {
+	snapshot: RoomSnapshot;
+	participantId: string;
+	participantToken: string;
+	onSnapshot: (snapshot: RoomSnapshot) => void;
+	onError: (message: string) => void;
+}) {
+	const [target, setTarget] = useState<Target>({ kind: "room" });
+	const [text, setText] = useState("");
+	const [sending, setSending] = useState(false);
+	const timeline = useRef<HTMLDivElement>(null);
+
+	useEffect(() => {
+		timeline.current?.scrollTo({ top: timeline.current.scrollHeight, behavior: "smooth" });
+	}, [snapshot.messages.length]);
+
+	async function submit(event: SubmitEvent) {
+		event.preventDefault();
+		if (!text.trim()) return;
+		setSending(true);
+		onError("");
+		try {
+			const updated = await postMessage(snapshot.room.id, participantToken, {
+				body: text,
+				targetKind: target.kind,
+				targetId: target.id || null,
+			});
+			onSnapshot(updated);
+			setText("");
+		} catch (cause) {
+			onError(errorMessage(cause));
+		} finally {
+			setSending(false);
+		}
+	}
+
+	return (
+		<aside class="chat-panel">
+			<div class="panel-heading chat-heading">
+				<div>
+					<span class="eyebrow">room line</span>
+					<h2>team + conductor</h2>
+				</div>
+				<span class="presence online" />
+			</div>
+			<div class="timeline" ref={timeline}>
+				{snapshot.messages.map((message) => (
+					<Message
+						key={message.id}
+						message={message}
+						participants={snapshot.participants}
+						mine={message.authorId === participantId}
+					/>
+				))}
+			</div>
+			<form class="composer" onSubmit={submit}>
+				<div class="target-control">
+					<button
+						type="button"
+						class={target.kind === "room" ? "active" : ""}
+						onClick={() => setTarget({ kind: "room" })}
+					>
+						<Users size={14} /> team
+					</button>
+					<button
+						type="button"
+						class={target.kind === "conductor" ? "active" : ""}
+						onClick={() => setTarget({ kind: "conductor" })}
+					>
+						<WandSparkles size={14} /> conductor
+					</button>
+					<select
+						value={target.kind === "participant" ? target.id : ""}
+						aria-label="message a teammate"
+						onChange={(event) =>
+							setTarget(
+								event.currentTarget.value
+									? { kind: "participant", id: event.currentTarget.value }
+									: { kind: "room" },
+							)
+						}
+					>
+						<option value="">teammate</option>
+						{snapshot.participants
+							.filter((participant) => participant.id !== participantId)
+							.map((participant) => (
+								<option key={participant.id} value={participant.id}>
+									{participant.displayName}
+								</option>
+							))}
+					</select>
+				</div>
+				<textarea
+					value={text}
+					onInput={(event) => setText(event.currentTarget.value)}
+					placeholder={
+						target.kind === "conductor" ? "ask the conductor..." : "say it to the room..."
+					}
+					rows={3}
+					maxLength={2000}
+				/>
+				<div class="composer-footer">
+					<span>{targetLabel(target, snapshot.participants)}</span>
+					<button
+						class="icon-button primary-icon"
+						title="send message"
+						disabled={sending || !text.trim()}
+					>
+						<Send size={17} />
+					</button>
+				</div>
+			</form>
+		</aside>
+	);
+}
+
+function Message({
+	message,
+	participants,
+	mine,
+}: {
+	message: RoomMessage;
+	participants: Participant[];
+	mine: boolean;
+}) {
+	const author =
+		message.authorKind === "conductor"
+			? "conductor"
+			: message.authorKind === "system"
+				? "room"
+				: participants.find((participant) => participant.id === message.authorId)?.displayName ||
+					"participant";
+	const target =
+		message.targetKind === "participant"
+			? participants.find((participant) => participant.id === message.targetId)?.displayName
+			: message.targetKind;
+	return (
+		<article class={`message message-${message.authorKind} ${mine ? "message-mine" : ""}`}>
+			<div class="message-meta">
+				<strong>{author}</strong>
+				<span>to {target}</span>
+				<time>{formatTime(message.createdAt)}</time>
+			</div>
+			<p>{message.body}</p>
+		</article>
+	);
+}
+
+function ActivityLog({ snapshot }: { snapshot: RoomSnapshot }) {
+	const entries = [
+		...snapshot.decisions.map((decision) => ({
+			id: decision.id,
+			at: decision.createdAt,
+			icon: <Check size={15} />,
+			label: decision.title,
+			detail: decision.reason,
+		})),
+		...snapshot.conductorActions.map((action) => ({
+			id: action.id,
+			at: action.createdAt,
+			icon: <Zap size={15} />,
+			label: action.kind.replaceAll("_", " "),
+			detail: action.reason,
+		})),
+	].sort((a, b) => b.at - a.at);
+	if (!entries.length) {
+		return <p class="quiet-empty">decisions, nudges, and conflict calls will appear here.</p>;
+	}
+	return (
+		<div class="activity-list">
+			{entries.slice(0, 6).map((entry) => (
+				<article key={entry.id}>
+					<span>{entry.icon}</span>
+					<div>
+						<strong>{entry.label}</strong>
+						<p>{entry.detail}</p>
+					</div>
+					<time>{formatTime(entry.at)}</time>
+				</article>
+			))}
+		</div>
+	);
+}
+
+function NudgeDialog({
+	draft,
+	busy,
+	onChange,
+	onClose,
+	onSend,
+}: {
+	draft: NudgeDraft;
+	busy: boolean;
+	onChange: (draft: NudgeDraft) => void;
+	onClose: () => void;
+	onSend: () => void;
+}) {
+	return (
+		<div class="dialog-backdrop" onClick={onClose}>
+			<section
+				class="dialog"
+				role="dialog"
+				aria-modal="true"
+				aria-labelledby="nudge-title"
+				onClick={(event) => event.stopPropagation()}
+			>
+				<div class="dialog-heading">
+					<div>
+						<span class="eyebrow">visible intervention</span>
+						<h2 id="nudge-title">nudge {draft.participant.displayName}</h2>
+					</div>
+					<button class="icon-button" title="close" onClick={onClose}>
+						<X size={16} />
+					</button>
+				</div>
+				<label>
+					Codex message
+					<textarea
+						rows={4}
+						value={draft.message}
+						onInput={(event) => onChange({ ...draft, message: event.currentTarget.value })}
+					/>
+				</label>
+				<label>
+					Room-visible reason
+					<input
+						value={draft.reason}
+						onInput={(event) => onChange({ ...draft, reason: event.currentTarget.value })}
+					/>
+				</label>
+				<button
+					class="button primary wide"
+					disabled={busy || !draft.message.trim() || !draft.reason.trim()}
+					onClick={onSend}
+				>
+					<Zap size={16} />
+					{busy ? "sending..." : "send nudge"}
+				</button>
+			</section>
+		</div>
+	);
+}
+
+function Recap({
+	snapshot,
+	roleMap,
+	onBack,
+	onEnd,
+	busy,
+}: {
+	snapshot: RoomSnapshot;
+	roleMap: Map<string, Catalog["roles"][number]>;
+	onBack: () => void;
+	onEnd?: () => void;
+	busy: string;
+}) {
+	const done = snapshot.tasks.filter((task) => task.state === "done").length;
+	const interventions = snapshot.decisions.length + snapshot.conductorActions.length;
+	return (
+		<main class="recap-shell">
+			<header class="recap-header">
+				<Brand compact />
+				<button class="button ghost" onClick={onBack}>
+					<LayoutDashboard size={16} />
+					workbench
+				</button>
+			</header>
+			<section class="recap-hero">
+				<span class="eyebrow">MultiCodex room recap</span>
+				<h1>{snapshot.room.title}</h1>
+				<p>{snapshot.room.brief.productGoal || "a coordinated team build."}</p>
+				<div class="recap-stats">
+					<div>
+						<strong>
+							{
+								snapshot.participants.filter((participant) => participant.kind !== "observer")
+									.length
+							}
+						</strong>
+						<span>build lanes</span>
+					</div>
+					<div>
+						<strong>
+							{done}/{snapshot.tasks.length}
+						</strong>
+						<span>tasks done</span>
+					</div>
+					<div>
+						<strong>{interventions}</strong>
+						<span>visible calls</span>
+					</div>
+					<div>
+						<strong>{snapshot.messages.length}</strong>
+						<span>room events</span>
+					</div>
+				</div>
+			</section>
+			<section class="recap-grid">
+				<div class="recap-section">
+					<span class="eyebrow">the team</span>
+					<h2>parallel lanes, one result</h2>
+					<div class="recap-team">
+						{snapshot.participants
+							.filter((participant) => participant.kind !== "observer")
+							.map((participant, index) => {
+								const role = roleMap.get(participant.roleId || "");
+								return (
+									<article
+										key={participant.id}
+										style={{ "--role": role?.color || roleFallbacks[index % roleFallbacks.length] }}
+									>
+										<span class="avatar">{initials(participant.displayName)}</span>
+										<div>
+											<strong>{participant.displayName}</strong>
+											<span>{role?.label || participant.roleId || "builder"}</span>
+											<p>{participant.runtimeSummary || "lane ready for the final recap."}</p>
+										</div>
+									</article>
+								);
+							})}
+					</div>
+				</div>
+				<div class="recap-section">
+					<span class="eyebrow">demo moment</span>
+					<h2>{snapshot.room.brief.demoMoment || "the project converges."}</h2>
+					<div class="recap-decisions">
+						{[...snapshot.decisions, ...snapshot.conductorActions].slice(-5).map((entry) => (
+							<article key={entry.id}>
+								<span>{"kind" in entry ? <Zap size={15} /> : <Check size={15} />}</span>
+								<div>
+									<strong>{"kind" in entry ? entry.kind.replaceAll("_", " ") : entry.title}</strong>
+									<p>{"reason" in entry ? entry.reason : ""}</p>
+								</div>
+							</article>
+						))}
+						{!interventions && <p class="quiet-empty">no conductor interventions recorded yet.</p>}
+					</div>
+					{onEnd && (
+						<button class="button danger" disabled={Boolean(busy)} onClick={onEnd}>
+							<CircleStop size={16} />
+							end room + workspaces
+						</button>
+					)}
+				</div>
+			</section>
+		</main>
+	);
+}
+
+function RoomProgress({ status }: { status: RoomStatus }) {
+	const steps: RoomStatus[] = ["setup", "planning", "building", "presenting"];
+	const current =
+		status === "provisioning"
+			? 2
+			: status === "integrating"
+				? 3
+				: status === "ended"
+					? 4
+					: steps.indexOf(status);
+	return (
+		<div class="room-progress" aria-label={`room status ${status}`}>
+			{steps.map((step, index) => (
+				<span key={step} class={index <= current ? "complete" : ""}>
+					{index < current ? <Check size={11} /> : index + 1}
+					<i>{step}</i>
+				</span>
+			))}
+		</div>
+	);
+}
+
+function Brand({ compact = false }: { compact?: boolean }) {
+	return (
+		<div class={`brand ${compact ? "brand-compact" : ""}`}>
+			<span class="brand-mark">
+				<Code2 size={compact ? 18 : 23} />
+				<Users size={compact ? 13 : 16} />
+			</span>
+			<strong>MultiCodex</strong>
+			{!compact && <span>team build control room</span>}
+		</div>
+	);
+}
+
+function EmptyPlan({ isHost }: { isHost: boolean }) {
+	return (
+		<div class="empty-plan">
+			<div class="empty-diagram">
+				<span>
+					<Bot size={18} />
+				</span>
+				<i />
+				<span>
+					<Users size={18} />
+				</span>
+				<i />
+				<span>
+					<Code2 size={18} />
+				</span>
+			</div>
+			<strong>
+				{isHost ? "shuffle an idea or draft the team plan" : "the host is shaping the first plan"}
+			</strong>
+			<p>each active seat receives a role, scoped task, branch, and Codex workspace.</p>
+		</div>
+	);
+}
+
+function LoadingRoom() {
+	return (
+		<main class="state-shell">
+			<Brand />
+			<RefreshCw class="spin" size={24} />
+			<p>opening room...</p>
+		</main>
+	);
+}
+
+function ErrorRoom({ message }: { message: string }) {
+	return (
+		<main class="state-shell">
+			<Brand />
+			<h1>room unavailable</h1>
+			<p>{message}</p>
+			<a class="button primary" href="/">
+				start a room <ArrowRight size={16} />
+			</a>
+		</main>
+	);
+}
+
+function InlineError({ message }: { message: string }) {
+	return <p class="inline-error">{message}</p>;
+}
+
+function useRoomTimer(endsAt: number | null) {
+	const [now, setNow] = useState(Date.now());
+	useEffect(() => {
+		const timer = window.setInterval(() => setNow(Date.now()), 1000);
+		return () => window.clearInterval(timer);
+	}, []);
+	if (!endsAt) return { label: "not started", urgent: false };
+	const remaining = Math.max(0, endsAt - now);
+	const minutes = Math.floor(remaining / 60_000);
+	const seconds = Math.floor((remaining % 60_000) / 1000);
+	return {
+		label: `${minutes}:${String(seconds).padStart(2, "0")}`,
+		urgent: remaining < 5 * 60_000,
+	};
+}
+
+function roomIdFromPath(): string | null {
+	return location.pathname.match(/^\/rooms\/([^/]+)$/)?.[1]
+		? decodeURIComponent(location.pathname.split("/")[2]!)
+		: null;
+}
+
+function identityKey(roomId: string): string {
+	return `multicodex.identity.${roomId}`;
+}
+
+function loadIdentity(roomId: string): RoomIdentity | null {
+	try {
+		const value = JSON.parse(
+			localStorage.getItem(identityKey(roomId)) || "null",
+		) as RoomIdentity | null;
+		return value?.participantId && value.participantToken ? value : null;
+	} catch {
+		return null;
+	}
+}
+
+function initials(name: string): string {
+	return name
+		.split(/\s+/)
+		.slice(0, 2)
+		.map((part) => part[0])
+		.join("")
+		.toUpperCase();
+}
+
+function shortBranch(branch: string): string {
+	const parts = branch.split("/");
+	return parts.slice(-2).join("/");
+}
+
+function ideaTitle(snapshot: RoomSnapshot): string {
+	const goal = snapshot.room.brief.productGoal;
+	if (!goal) return "shape the build";
+	return goal.split(/[.!?]/)[0] || "team build";
+}
+
+function targetLabel(target: Target, participants: Participant[]): string {
+	if (target.kind === "conductor") return "visible to room · asks conductor";
+	if (target.kind === "participant") {
+		return `visible to room · mentions ${participants.find((person) => person.id === target.id)?.displayName || "teammate"}`;
+	}
+	return "visible to everyone";
+}
+
+function formatTime(value: number): string {
+	return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(value);
+}
+
+function errorMessage(cause: unknown): string {
+	return cause instanceof Error ? cause.message : "something went wrong";
+}
