@@ -123,13 +123,14 @@ test("failed launch cleanup always broadcasts its durable recovery state", async
 
 test("WebSocket reconnects resync the current room snapshot", async () => {
 	const source = await readFile(new URL("../src/client/App.tsx", import.meta.url), "utf8");
-	const start = source.indexOf("const syncRoom");
+	const start = source.indexOf("const refreshRoom");
 	const end = source.indexOf("function enterRoom", start);
 	const socketSource = source.slice(start, end);
 
 	assert.match(socketSource, /socket\.onopen = syncRoom/);
 	assert.match(socketSource, /if \(payload\.type === "changed"\) syncRoom\(\)/);
-	assert.match(socketSource, /sequence === syncSequence/);
+	assert.match(socketSource, /snapshotRequestSequence/);
+	assert.match(socketSource, /sequence === snapshotRequestSequence\.current/);
 });
 
 test("browser history navigation resynchronizes room state", async () => {
@@ -163,6 +164,8 @@ test("room entry persists only minimal identity with tab-scoped fallback", async
 	assert.doesNotMatch(persistenceSource, /JSON\.stringify\(nextIdentity\)/);
 	assert.match(source, /if \(onEnter\(result\.snapshot, result\)\) clearCreateRequestId\(\)/);
 	assert.match(source, /if \(onEnter\(result\.snapshot, result\)\) clearJoinRequestId/);
+	assert.match(source, /validParticipant\?\.kind === "observer"/);
+	assert.match(source, /observerCanUseBuilderInvite/);
 });
 
 test("observer controls stay read-only and presentation waits for success", async () => {
@@ -338,6 +341,29 @@ test("launch preparation renews provisioning while GitHub branches are created",
 		/ensureRoomBranches\(env, snapshot\.room, snapshot\.participants, async \(\) =>/,
 	);
 	assert.match(launchSource, /renewProvisioningLease\(env\.DB, roomId\)/);
+	assert.match(launchSource, /await broadcastSnapshot\(env, snapshot\)/);
+});
+
+test("mutations refresh through the central snapshot sequence and recap actions match room state", async () => {
+	const source = await readFile(new URL("../src/client/App.tsx", import.meta.url), "utf8");
+	const workbenchStart = source.indexOf("function RoomWorkbench");
+	const workbenchEnd = source.indexOf("function HostControls", workbenchStart);
+	const workbenchSource = source.slice(workbenchStart, workbenchEnd);
+	const chatStart = source.indexOf("function ChatPanel");
+	const chatEnd = source.indexOf("function Message", chatStart);
+	const chatSource = source.slice(chatStart, chatEnd);
+
+	assert.match(workbenchSource, /await run\(\);\s*await onRefresh\(\)/);
+	assert.doesNotMatch(workbenchSource, /onSnapshot/);
+	assert.match(chatSource, /await postMessage/);
+	assert.match(chatSource, /await onRefresh\(\)/);
+	assert.doesNotMatch(chatSource, /onSnapshot/);
+	assert.match(workbenchSource, /snapshot\.room\.status === "cleanup-planning"/);
+	assert.match(
+		workbenchSource,
+		/roomAction\(snapshot\.room\.id, participantToken, "retry-cleanup"\)/,
+	);
+	assert.match(workbenchSource, /error=\{error\}/);
 });
 
 test("chat history preserves rotated live messages and recap events use chronology", async () => {

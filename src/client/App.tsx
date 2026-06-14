@@ -22,7 +22,7 @@ import {
 	X,
 	Zap,
 } from "lucide-preact";
-import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type {
 	Participant,
 	RoomMessage,
@@ -62,10 +62,12 @@ export function App() {
 	const [roleCatalog, setRoleCatalog] = useState<Catalog["roles"]>([]);
 	const [error, setError] = useState("");
 	const [loading, setLoading] = useState(Boolean(roomId));
+	const snapshotRequestSequence = useRef(0);
 
 	useEffect(() => {
 		const synchronizeHistory = () => {
 			const nextRoomId = roomIdFromPath();
+			snapshotRequestSequence.current += 1;
 			setRoomId(nextRoomId);
 			setIdentity(nextRoomId ? loadIdentity(nextRoomId) : null);
 			setSnapshot(null);
@@ -82,14 +84,24 @@ export function App() {
 			.catch(() => setRoleCatalog([]));
 	}, []);
 
+	const refreshRoom = useCallback(async (): Promise<void> => {
+		if (!roomId) return;
+		const sequence = ++snapshotRequestSequence.current;
+		try {
+			const value = await readRoom(roomId, identity?.participantToken);
+			if (sequence === snapshotRequestSequence.current && roomIdFromPath() === roomId) {
+				setSnapshot(value);
+			}
+		} catch (cause) {
+			if (sequence === snapshotRequestSequence.current) throw cause;
+		}
+	}, [roomId, identity?.participantToken]);
+
 	useEffect(() => {
 		if (!roomId) return;
 		let disposed = false;
 		setLoading(true);
-		readRoom(roomId, identity?.participantToken)
-			.then((value) => {
-				if (!disposed) setSnapshot(value);
-			})
+		refreshRoom()
 			.catch((cause: Error) => {
 				if (!disposed) setError(cause.message);
 			})
@@ -99,23 +111,17 @@ export function App() {
 		return () => {
 			disposed = true;
 		};
-	}, [roomId, identity?.participantToken]);
+	}, [roomId, identity?.participantToken, refreshRoom]);
 
 	useEffect(() => {
 		if (!roomId || !snapshot) return;
 		let socket: WebSocket | null = null;
 		let retry: number | null = null;
 		let disposed = false;
-		let syncSequence = 0;
 		const syncRoom = () => {
-			const sequence = ++syncSequence;
-			readRoom(roomId, identity?.participantToken)
-				.then((value) => {
-					if (!disposed && sequence === syncSequence) setSnapshot(value);
-				})
-				.catch((cause: Error) => {
-					if (!disposed) setError(cause.message);
-				});
+			refreshRoom().catch((cause: Error) => {
+				if (!disposed) setError(cause.message);
+			});
 		};
 		const connect = () => {
 			socket = new WebSocket(roomSocketUrl(roomId));
@@ -135,7 +141,7 @@ export function App() {
 			if (retry) window.clearTimeout(retry);
 			socket?.close();
 		};
-	}, [roomId, Boolean(snapshot), identity?.participantToken]);
+	}, [roomId, Boolean(snapshot), refreshRoom]);
 
 	function enterRoom(next: RoomSnapshot, nextIdentity: RoomIdentity): boolean {
 		const identity = minimalRoomIdentity(nextIdentity);
@@ -146,6 +152,7 @@ export function App() {
 		} else {
 			history.pushState({ roomId: next.room.id }, "", cleanPath);
 		}
+		snapshotRequestSequence.current += 1;
 		setRoomId(next.room.id);
 		setIdentity(identity);
 		setSnapshot(next);
@@ -157,11 +164,10 @@ export function App() {
 	if (loading && !snapshot) return <LoadingRoom />;
 	if (error && !snapshot) return <ErrorRoom message={error} />;
 	if (!snapshot) return null;
-	const validIdentity =
-		identity &&
-		snapshot.participants.some((participant) => participant.id === identity.participantId)
-			? identity
-			: null;
+	const validParticipant = identity
+		? snapshot.participants.find((participant) => participant.id === identity.participantId)
+		: null;
+	const validIdentity = validParticipant ? identity : null;
 	if (
 		!validIdentity &&
 		["cleanup-planning", "cleanup-ending", "ended"].includes(snapshot.room.status)
@@ -180,7 +186,11 @@ export function App() {
 			/>
 		);
 	}
-	if (!validIdentity) {
+	const observerCanUseBuilderInvite =
+		validParticipant?.kind === "observer" &&
+		Boolean(builderInviteTokenFromUrl()) &&
+		["setup", "planning"].includes(snapshot.room.status);
+	if (!validIdentity || observerCanUseBuilderInvite) {
 		return <JoinRoom snapshot={snapshot} onEnter={enterRoom} />;
 	}
 
@@ -189,7 +199,7 @@ export function App() {
 			snapshot={snapshot}
 			identity={validIdentity}
 			roleCatalog={roleCatalog}
-			onSnapshot={setSnapshot}
+			onRefresh={refreshRoom}
 			onError={setError}
 			error={error}
 		/>
@@ -391,14 +401,14 @@ function RoomWorkbench({
 	snapshot,
 	identity,
 	roleCatalog,
-	onSnapshot,
+	onRefresh,
 	onError,
 	error,
 }: {
 	snapshot: RoomSnapshot;
 	identity: RoomIdentity;
 	roleCatalog: Catalog["roles"];
-	onSnapshot: (snapshot: RoomSnapshot) => void;
+	onRefresh: () => Promise<void>;
 	onError: (error: string) => void;
 	error: string;
 }) {
@@ -422,7 +432,8 @@ function RoomWorkbench({
 		setBusy(label);
 		onError("");
 		try {
-			onSnapshot(await run());
+			await run();
+			await onRefresh();
 			return true;
 		} catch (cause) {
 			onError(errorMessage(cause));
@@ -461,6 +472,30 @@ function RoomWorkbench({
 	}
 
 	const timer = useRoomTimer(snapshot.room.endsAt);
+	const recapAction = isHost
+		? snapshot.room.status === "provisioning" || snapshot.room.status === "cleanup-planning"
+			? {
+					label:
+						snapshot.room.status === "provisioning"
+							? "cancel stalled launch"
+							: "retry workspace cleanup",
+					run: () =>
+						action("retry-cleanup", () =>
+							roomAction(snapshot.room.id, participantToken, "retry-cleanup"),
+						),
+				}
+			: ["setup", "planning", "building", "integrating", "presenting", "cleanup-ending"].includes(
+						snapshot.room.status,
+				  )
+				? {
+						label:
+							snapshot.room.status === "cleanup-ending"
+								? "retry workspace cleanup"
+								: "end room + workspaces",
+						run: () => action("end", () => roomAction(snapshot.room.id, participantToken, "end")),
+					}
+				: undefined
+		: undefined;
 
 	if (view === "recap") {
 		return (
@@ -468,12 +503,9 @@ function RoomWorkbench({
 				snapshot={snapshot}
 				roleMap={roleMap}
 				onBack={() => setView("workbench")}
-				onEnd={
-					isHost && snapshot.room.status !== "ended"
-						? () => action("end", () => roomAction(snapshot.room.id, participantToken, "end"))
-						: undefined
-				}
+				action={recapAction}
 				busy={busy}
+				error={error}
 			/>
 		);
 	}
@@ -714,7 +746,7 @@ function RoomWorkbench({
 					snapshot={snapshot}
 					participantId={participantId}
 					participantToken={participantToken}
-					onSnapshot={onSnapshot}
+					onRefresh={onRefresh}
 					onError={onError}
 					readOnly={readOnly}
 				/>
@@ -867,14 +899,14 @@ function ChatPanel({
 	snapshot,
 	participantId,
 	participantToken,
-	onSnapshot,
+	onRefresh,
 	onError,
 	readOnly,
 }: {
 	snapshot: RoomSnapshot;
 	participantId: string;
 	participantToken: string;
-	onSnapshot: (snapshot: RoomSnapshot) => void;
+	onRefresh: () => Promise<void>;
 	onError: (message: string) => void;
 	readOnly: boolean;
 }) {
@@ -942,12 +974,12 @@ function ChatPanel({
 		setSending(true);
 		onError("");
 		try {
-			const updated = await postMessage(snapshot.room.id, participantToken, {
+			await postMessage(snapshot.room.id, participantToken, {
 				body: text,
 				targetKind: target.kind,
 				targetId: target.id || null,
 			});
-			onSnapshot(updated);
+			await onRefresh();
 			setText("");
 		} catch (cause) {
 			onError(errorMessage(cause));
@@ -1191,15 +1223,17 @@ function Recap({
 	roleMap,
 	onBack,
 	backLabel = "workbench",
-	onEnd,
+	action,
 	busy,
+	error = "",
 }: {
 	snapshot: RoomSnapshot;
 	roleMap: Map<string, Catalog["roles"][number]>;
 	onBack: () => void;
 	backLabel?: string;
-	onEnd?: () => void;
+	action?: { label: string; run: () => void };
 	busy: string;
+	error?: string;
 }) {
 	const done = snapshot.tasks.filter((task) => task.state === "done").length;
 	const interventions = snapshot.decisions.length + snapshot.conductorActions.length;
@@ -1285,10 +1319,11 @@ function Recap({
 						))}
 						{!interventions && <p class="quiet-empty">no conductor interventions recorded yet.</p>}
 					</div>
-					{onEnd && (
-						<button class="button danger" disabled={Boolean(busy)} onClick={onEnd}>
+					{error && <InlineError message={error} />}
+					{action && (
+						<button class="button danger" disabled={Boolean(busy)} onClick={action.run}>
 							<CircleStop size={16} />
-							end room + workspaces
+							{action.label}
 						</button>
 					)}
 				</div>
