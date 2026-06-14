@@ -1028,6 +1028,8 @@ textarea:focus {
 .activity-list {
 	background: var(--paper);
 	border: 1px solid var(--line);
+	max-height: 420px;
+	overflow: auto;
 }
 
 .activity-list article,
@@ -1311,6 +1313,11 @@ textarea:focus {
 .recap-team,
 .recap-decisions {
 	border: 1px solid var(--line);
+}
+
+.recap-decisions {
+	max-height: 520px;
+	overflow: auto;
 }
 
 .recap-team article {

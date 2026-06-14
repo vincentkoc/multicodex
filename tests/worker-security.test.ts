@@ -43,9 +43,10 @@ test("room creation and joins are recoverable", async () => {
 	assert.match(client, /clearJoinRequestId/);
 	assert.match(client, /loadCreateRequestId/);
 	assert.match(client, /clearCreateRequestId/);
-	assert.match(client, /inviteToken: kind === "human"/);
+	assert.match(client, /inviteToken: kind !== "observer"/);
 	assert.match(client, /builderInviteTokenFromUrl/);
 	assert.match(client, /identity\.builderInviteToken/);
+	assert.match(client, /<option value="ai">AI builder<\/option>/);
 });
 
 test("participant messages fan out before asynchronous conductor work", async () => {
@@ -378,7 +379,19 @@ test("chat history preserves rotated live messages and recap events use chronolo
 	assert.match(chatSource, /previousSnapshotMessages/);
 	assert.match(chatSource, /rotatedMessages/);
 	assert.match(chatSource, /mergeRoomMessages/);
-	assert.ok(recapSource.indexOf(".sort(") < recapSource.indexOf(".slice(-5)"));
+	assert.match(recapSource, /interventionTimeline/);
+	assert.match(recapSource, /\.sort\(/);
+	assert.doesNotMatch(recapSource, /\.slice\(-5\)/);
+});
+
+test("the full visible audit timeline remains inspectable", async () => {
+	const source = await readFile(new URL("../src/client/App.tsx", import.meta.url), "utf8");
+	const activityStart = source.indexOf("function ActivityLog");
+	const activityEnd = source.indexOf("function NudgeDialog", activityStart);
+	const activitySource = source.slice(activityStart, activityEnd);
+
+	assert.match(activitySource, /entries\.map/);
+	assert.doesNotMatch(activitySource, /entries\.slice/);
 });
 
 test("message history is paginated through the existing viewer redaction policy", async () => {

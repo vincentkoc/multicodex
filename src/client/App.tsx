@@ -311,7 +311,7 @@ function JoinRoom({
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
 	const inviteToken = useMemo(builderInviteTokenFromUrl, [snapshot.room.id]);
-	const [kind, setKind] = useState<"human" | "observer">(inviteToken ? "human" : "observer");
+	const [kind, setKind] = useState<"human" | "ai" | "observer">(inviteToken ? "human" : "observer");
 	const joinRequestId = useMemo(() => loadJoinRequestId(snapshot.room.id), [snapshot.room.id]);
 
 	useEffect(() => setKind(inviteToken ? "human" : "observer"), [inviteToken]);
@@ -327,7 +327,7 @@ function JoinRoom({
 				githubLogin: String(data.get("githubLogin") || ""),
 				kind,
 				requestId: joinRequestId,
-				inviteToken: kind === "human" ? inviteToken : undefined,
+				inviteToken: kind !== "observer" ? inviteToken : undefined,
 			});
 			if (onEnter(result.snapshot, result)) clearJoinRequestId(snapshot.room.id);
 		} catch (cause) {
@@ -375,15 +375,10 @@ function JoinRoom({
 					<select
 						name="kind"
 						value={kind}
-						onChange={(event) =>
-							setKind(
-								(event.currentTarget as HTMLSelectElement).value === "observer"
-									? "observer"
-									: "human",
-							)
-						}
+						onChange={(event) => setKind(event.currentTarget.value as "human" | "ai" | "observer")}
 					>
 						{inviteToken && <option value="human">Builder</option>}
+						{inviteToken && <option value="ai">AI builder</option>}
 						<option value="observer">Observer</option>
 					</select>
 				</label>
@@ -1145,7 +1140,7 @@ function ActivityLog({ snapshot }: { snapshot: RoomSnapshot }) {
 	}
 	return (
 		<div class="activity-list">
-			{entries.slice(0, 6).map((entry) => (
+			{entries.map((entry) => (
 				<article key={entry.id}>
 					<span>{entry.icon}</span>
 					<div>
@@ -1237,9 +1232,9 @@ function Recap({
 }) {
 	const done = snapshot.tasks.filter((task) => task.state === "done").length;
 	const interventions = snapshot.decisions.length + snapshot.conductorActions.length;
-	const recentInterventions = [...snapshot.decisions, ...snapshot.conductorActions]
-		.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
-		.slice(-5);
+	const interventionTimeline = [...snapshot.decisions, ...snapshot.conductorActions].sort(
+		(left, right) => right.createdAt - left.createdAt || right.id.localeCompare(left.id),
+	);
 	return (
 		<main class="recap-shell">
 			<header class="recap-header">
@@ -1308,7 +1303,7 @@ function Recap({
 					<span class="eyebrow">demo moment</span>
 					<h2>{snapshot.room.brief.demoMoment || "the project converges."}</h2>
 					<div class="recap-decisions">
-						{recentInterventions.map((entry) => (
+						{interventionTimeline.map((entry) => (
 							<article key={entry.id}>
 								<span>{"kind" in entry ? <Zap size={15} /> : <Check size={15} />}</span>
 								<div>

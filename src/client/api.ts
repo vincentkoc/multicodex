@@ -79,7 +79,7 @@ export function joinRoom(
 	input: {
 		displayName: string;
 		githubLogin: string;
-		kind: "human" | "observer";
+		kind: "human" | "ai" | "observer";
 		requestId: string;
 		inviteToken?: string;
 	},
