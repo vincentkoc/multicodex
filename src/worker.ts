@@ -29,6 +29,7 @@ import {
 } from "./http.ts";
 import { planForBrief, planForParticipants } from "./planning.ts";
 import { repoAllowed } from "./repos.ts";
+import { runtimeRedactor } from "./runtime-redaction.ts";
 import {
 	roomAllowsPlanning,
 	roomAllowsPresentation,
@@ -858,10 +859,14 @@ async function nudgeParticipant(
 		if (!snapshot.room.crabfleetRootSessionId) {
 			throw new HttpError(400, "room runtime is not ready");
 		}
+		const redact = runtimeRedactor(snapshot);
+		const auditedMessage = clean(redact(message), 2000);
+		const auditedReason = clean(redact(reason), 500);
+		const auditDetail = `Instruction: ${auditedMessage} Reason: ${auditedReason}`;
 		const actionId = await addConductorAction(env.DB, roomId, {
 			kind: "session_nudge",
 			targetIds: [target.id],
-			reason,
+			reason: auditDetail,
 			evidenceRefs: [],
 			approvalState: "requested",
 		});
@@ -886,7 +891,7 @@ async function nudgeParticipant(
 			authorId: "conductor",
 			targetKind: "participant",
 			targetId: target.id,
-			body: `Nudged ${target.displayName}: ${reason}`,
+			body: `Nudged ${target.displayName}: ${auditDetail}`,
 			replyToId: null,
 		});
 	} finally {

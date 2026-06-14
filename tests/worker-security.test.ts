@@ -129,6 +129,17 @@ test("browser history navigation resynchronizes room state", async () => {
 	assert.match(source, /setSnapshot\(null\)/);
 });
 
+test("room entry survives unavailable local storage", async () => {
+	const source = await readFile(new URL("../src/client/App.tsx", import.meta.url), "utf8");
+	const start = source.indexOf("function enterRoom");
+	const end = source.indexOf("if (!roomId)", start);
+	const enterSource = source.slice(start, end);
+
+	assert.match(enterSource, /try \{\s*localStorage\.setItem/);
+	assert.ok(enterSource.indexOf("localStorage.setItem") < enterSource.indexOf("setIdentity"));
+	assert.match(enterSource, /catch \{/);
+});
+
 test("observer controls stay read-only and presentation waits for success", async () => {
 	const source = await readFile(new URL("../src/client/App.tsx", import.meta.url), "utf8");
 
@@ -206,6 +217,10 @@ test("nudges reserve the runtime lifecycle before external delivery", async () =
 	assert.match(nudgeSource, /claimRoomRuntimeLease/);
 	assert.ok(nudgeSource.indexOf("addConductorAction") < nudgeSource.indexOf("sendCrabboxNudge"));
 	assert.match(nudgeSource, /approvalState: "requested"/);
+	assert.match(nudgeSource, /const auditedMessage = clean\(redact\(message\), 2000\)/);
+	assert.match(nudgeSource, /const auditDetail = `Instruction: \$\{auditedMessage\} Reason:/);
+	assert.ok(nudgeSource.indexOf("reason: auditDetail") < nudgeSource.indexOf("sendCrabboxNudge"));
+	assert.match(nudgeSource, /body: `Nudged \$\{target\.displayName\}: \$\{auditDetail\}`/);
 	assert.ok(nudgeSource.indexOf("claimRoomRuntimeLease") < nudgeSource.indexOf("sendCrabboxNudge"));
 	assert.match(
 		nudgeSource,

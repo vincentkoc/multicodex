@@ -44,6 +44,12 @@ export function planForBrief(
 	tasks: Array<Omit<Task, "roomId" | "createdAt" | "updatedAt">>;
 } {
 	const active = participants.filter((participant) => participant.kind !== "observer");
+	const selectedIdea = ideas.find((idea) => idea.id === brief.ideaId);
+	const effectiveBrief =
+		selectedIdea &&
+		(active.length < selectedIdea.minPeople || active.length > selectedIdea.maxPeople)
+			? shuffledBrief(`${selectedIdea.id}:${active.length}`, active.length)
+			: brief;
 	const assignedRoles = rolesForParticipants(active);
 	const integrationParticipant =
 		active.find((participant) => participant.kind !== "ai") ?? active[0] ?? null;
@@ -56,7 +62,7 @@ export function planForBrief(
 		roleId: assignedRoles[index]!.id,
 	}));
 	const criteriaByTask = active.map(() => [] as string[]);
-	const coreCriteria = brief.acceptanceCriteria ?? [];
+	const coreCriteria = effectiveBrief.acceptanceCriteria ?? [];
 	for (const [index, criterion] of coreCriteria.entries()) {
 		criteriaByTask[index % Math.max(active.length, 1)]?.push(criterion);
 	}
@@ -83,7 +89,9 @@ export function planForBrief(
 				index === integrationIndex
 					? [
 							"integrated branch runs",
-							brief.demoMoment ? `demo moment: ${brief.demoMoment}` : "demo moment is visible",
+							effectiveBrief.demoMoment
+								? `demo moment: ${effectiveBrief.demoMoment}`
+								: "demo moment is visible",
 							...taskCriteria,
 						]
 					: taskCriteria.length
@@ -93,7 +101,7 @@ export function planForBrief(
 			pullRequestUrl: null,
 		};
 	});
-	return { brief, assignments, tasks };
+	return { brief: effectiveBrief, assignments, tasks };
 }
 
 function rolesForParticipants(participants: Participant[]): RoleCard[] {

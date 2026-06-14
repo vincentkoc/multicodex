@@ -137,7 +137,11 @@ export function App() {
 	}, [roomId, Boolean(snapshot), identity?.participantToken]);
 
 	function enterRoom(next: RoomSnapshot, nextIdentity: RoomIdentity) {
-		localStorage.setItem(identityKey(next.room.id), JSON.stringify(nextIdentity));
+		try {
+			localStorage.setItem(identityKey(next.room.id), JSON.stringify(nextIdentity));
+		} catch {
+			// The in-memory identity still lets this tab enter the room.
+		}
 		history.pushState({ roomId: next.room.id }, "", `/rooms/${next.room.id}`);
 		setRoomId(next.room.id);
 		setIdentity(nextIdentity);

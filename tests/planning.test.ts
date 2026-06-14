@@ -92,6 +92,14 @@ test("planning replaces an explicitly selected idea when the team size is incomp
 	assert.equal(plan.brief.ideaId, "solo-demo-switchboard");
 });
 
+test("planning revalidates a stored catalog idea after the team size changes", () => {
+	const solo = planForParticipants("solo-demo-switchboard", participants.slice(0, 1));
+	const expanded = planForBrief(solo.brief, participants.slice(0, 2));
+
+	assert.notEqual(expanded.brief.ideaId, "solo-demo-switchboard");
+	assert.equal(expanded.tasks.length, 2);
+});
+
 test("planning from a stored brief preserves it and derives tasks from it", () => {
 	const brief: RoomBrief = {
 		ideaId: "stored-idea",
