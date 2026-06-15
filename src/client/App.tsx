@@ -32,7 +32,11 @@ import type {
 	Task,
 	TaskState,
 } from "../domain.ts";
-import { roomAllowsMessages, roomAllowsRuntimeNudge } from "../room-state.ts";
+import {
+	roomAllowsMessages,
+	roomAllowsRuntimeNudge,
+	roomAllowsRuntimeRefresh,
+} from "../room-state.ts";
 import {
 	ApiError,
 	catalog,
@@ -45,6 +49,7 @@ import {
 	postMessage,
 	readMessagesPage,
 	readRoom,
+	repairParticipantWorkspace,
 	type RoomIdentity,
 	roomAction,
 	roomSocketUrl,
@@ -697,6 +702,21 @@ function RoomWorkbench({
 		}
 	}
 
+	async function repairWorkspace(participant: Participant) {
+		if (
+			!window.confirm(
+				`Replace ${participant.displayName}'s workspace from the latest branch commit?`,
+			)
+		) {
+			return;
+		}
+		if (workspace?.participantId === participant.id) setWorkspace(null);
+		const repaired = await action(`repair-${participant.id}`, () =>
+			repairParticipantWorkspace(snapshot.room.id, participantToken, participant.id),
+		);
+		if (repaired && participant.id === me.id) await openWorkspace(participant);
+	}
+
 	const timer = useRoomTimer(snapshot.room.endsAt);
 	const recapAction = isHost
 		? snapshot.room.status === "provisioning" || snapshot.room.status === "cleanup-planning"
@@ -799,6 +819,11 @@ function RoomWorkbench({
 						{snapshot.participants.map((participant, index) => {
 							const role = participant.roleId ? roleMap.get(participant.roleId) : undefined;
 							const color = role?.color || roleFallbacks[index % roleFallbacks.length];
+							const canRepair =
+								roomAllowsRuntimeRefresh(snapshot.room.status) &&
+								participant.kind !== "observer" &&
+								participant.id !== snapshot.room.hostParticipantId &&
+								(isHost || participant.id === me.id);
 							return (
 								<article class="participant-row" style={{ "--role": color }} key={participant.id}>
 									<span class="avatar">{initials(participant.displayName)}</span>
@@ -811,7 +836,9 @@ function RoomWorkbench({
 										{participant.runtimeSummary && <p>{participant.runtimeSummary}</p>}
 									</div>
 									<span class={`state-mark state-${participant.state}`} title={participant.state} />
-									{(participant.browserUrl || (canNudge && participant.kind !== "observer")) && (
+									{(participant.browserUrl ||
+										canRepair ||
+										(canNudge && participant.kind !== "observer")) && (
 										<div class="row-actions">
 											{participant.browserUrl && (
 												<button
@@ -825,6 +852,19 @@ function RoomWorkbench({
 													) : (
 														<SquareTerminal size={15} />
 													)}
+												</button>
+											)}
+											{canRepair && (
+												<button
+													class="icon-button"
+													title={`replace ${participant.displayName}'s stale workspace`}
+													disabled={busy === `repair-${participant.id}`}
+													onClick={() => repairWorkspace(participant)}
+												>
+													<RefreshCw
+														class={busy === `repair-${participant.id}` ? "spin" : undefined}
+														size={15}
+													/>
 												</button>
 											)}
 											{canNudge && participant.kind !== "observer" && (

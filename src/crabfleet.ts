@@ -167,6 +167,59 @@ export async function provisionRoomCrabboxes(
 	}
 }
 
+export async function provisionParticipantCrabbox(
+	env: Env,
+	room: Room,
+	participant: Participant,
+	task: Task | undefined,
+	previousSessionId: string,
+): Promise<ParticipantCrabboxBinding> {
+	if (!room.crabfleetRootSessionId) throw new HttpError(409, "room runtime is not ready");
+	if (participant.kind === "observer") throw new HttpError(400, "observer has no workspace");
+	if (participant.crabfleetSessionId === room.crabfleetRootSessionId) {
+		throw new HttpError(409, "root workspace repair requires ending the room");
+	}
+	if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) {
+		const id = `SIM-${room.id.slice(-8)}-repair-${participant.id.slice(-8)}`;
+		return {
+			participantId: participant.id,
+			binding: {
+				session: {
+					id,
+					rootSessionId: room.crabfleetRootSessionId,
+					status: "ready",
+					summary: `Simulated ${participant.roleId || "participant"} workspace is ready`,
+					purpose: task?.title || participant.roleId || "room task",
+				},
+				browserUrl: `https://crabfleet.openclaw.ai/app/sessions/${id}`,
+			},
+		};
+	}
+	if (!env.CRABFLEET_SERVICE_TOKEN)
+		throw new HttpError(503, "Crabfleet service token is not configured");
+	const item = {
+		participantId: participant.id,
+		binding: await createCrabbox(
+			env,
+			crabboxCreateRequest(env, {
+				owner: crabfleetOwner(env.CRABFLEET_OWNER),
+				repo: room.repo,
+				branch: participant.branch || room.integrationBranch,
+				baseBranch: room.baseBranch,
+				requestId: `multicodex:${room.id}:repair:${participant.id}:${previousSessionId}`,
+				parentSessionId: room.crabfleetRootSessionId,
+				rootSessionId: room.crabfleetRootSessionId,
+				purpose: task?.title || participant.roleId || "room task",
+				summary: "repairing assigned task",
+				prompt: task
+					? taskPrompt(room.brief, participant, task)
+					: "Resume your assigned room task from the current branch.",
+			}),
+		),
+	};
+	return (await waitForUsableRoomCrabboxes(env, [item]))[0]!;
+}
+
 export async function recoverRoomRootCrabbox(
 	env: Env,
 	room: Room,

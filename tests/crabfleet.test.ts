@@ -11,6 +11,7 @@ import {
 	participantStateForCrabfleetStatus,
 	parseRootCrabboxRequest,
 	PartialProvisioningError,
+	provisionParticipantCrabbox,
 	provisionRoomCrabboxes,
 	readRoomCrabboxes,
 	readinessDeadlineMilliseconds,
@@ -355,6 +356,44 @@ test("Crabfleet child bindings must belong to the requested root", async () => {
 				return true;
 			},
 		);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test("participant repair provisions a replacement under the existing room root", async () => {
+	const originalFetch = globalThis.fetch;
+	let request: Record<string, unknown> | null = null;
+	globalThis.fetch = async (input, init) => {
+		assert.equal(new URL(String(input)).pathname, "/api/openclaw/crabboxes");
+		request = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		return Response.json(crabbox("replacement", "ready"));
+	};
+	try {
+		const target = { ...participant("child"), crabfleetSessionId: "stale" };
+		const binding = await provisionParticipantCrabbox(
+			{ CRABFLEET_SERVICE_TOKEN: "test" } as Env,
+			{ ...room, status: "building", crabfleetRootSessionId: "root" },
+			target,
+			undefined,
+			"stale",
+		);
+		assert.equal(binding.participantId, "child");
+		assert.equal(binding.binding.session.id, "replacement");
+		assert.deepEqual(request, {
+			owner: "multicodex",
+			repo: "example/repo",
+			branch: "multicodex/room/child",
+			baseBranch: "main",
+			requestId: "multicodex:room:repair:child:stale",
+			parentSessionId: "root",
+			rootSessionId: "root",
+			purpose: "room task",
+			summary: "repairing assigned task",
+			prompt: "Resume your assigned room task from the current branch.",
+			runtime: "crabbox",
+			profile: "default",
+		});
 	} finally {
 		globalThis.fetch = originalFetch;
 	}

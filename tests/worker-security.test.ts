@@ -57,6 +57,37 @@ test("workspace tickets are minted only for the authenticated participant under 
 	);
 });
 
+test("workspace repair is self-or-host scoped and lifecycle fenced", async () => {
+	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
+	const routeStart = source.indexOf("const repairMatch");
+	const routeEnd = source.indexOf("const nudgeMatch", routeStart);
+	const routeSource = source.slice(routeStart, routeEnd);
+	const helperStart = source.indexOf("async function repairParticipantWorkspace");
+	const helperEnd = source.indexOf("async function broadcastSnapshot", helperStart);
+	const helperSource = source.slice(helperStart, helperEnd);
+
+	assert.match(
+		routeSource,
+		/requireRoomParticipant\(\s*env\.DB,\s*roomId,\s*participantToken\(request\),\s*false/,
+	);
+	assert.match(routeSource, /repairParticipantWorkspace/);
+	assert.match(
+		helperSource,
+		/actor\.id !== target\.id && actor\.id !== snapshot\.room\.hostParticipantId/,
+	);
+	assert.match(
+		helperSource,
+		/target\.crabfleetSessionId === snapshot\.room\.crabfleetRootSessionId/,
+	);
+	assert.match(helperSource, /claimRoomRuntimeLease/);
+	assert.ok(
+		helperSource.indexOf("claimRoomRuntimeLease") <
+			helperSource.indexOf("provisionParticipantCrabbox"),
+	);
+	assert.match(helperSource, /replaceParticipantRuntime/);
+	assert.match(helperSource, /finally \{\s*await releaseRoomRuntimeLease/);
+});
+
 test("room creation and joins are recoverable", async () => {
 	const [worker, client] = await Promise.all([
 		readFile(new URL("../src/worker.ts", import.meta.url), "utf8"),
@@ -436,6 +467,22 @@ test("nudges reserve the runtime lifecycle before external delivery", async () =
 		/updateConductorActionApprovalState\(env\.DB, roomId, actionId, "approved"\)/,
 	);
 	assert.match(nudgeSource, /finally \{\s*await releaseRoomRuntimeLease/);
+});
+
+test("workspace repair is exposed for the current participant or host", async () => {
+	const source = await readFile(new URL("../src/client/App.tsx", import.meta.url), "utf8");
+
+	assert.match(source, /const canRepair =/);
+	assert.match(source, /participant\.id !== snapshot\.room\.hostParticipantId/);
+	assert.match(source, /\(isHost \|\| participant\.id === me\.id\)/);
+	assert.match(
+		source,
+		/repairParticipantWorkspace\(snapshot\.room\.id, participantToken, participant\.id\)/,
+	);
+	assert.match(
+		source,
+		/Replace \$\{participant\.displayName\}'s workspace from the latest branch commit/,
+	);
 });
 
 test("runtime refresh surfaces terminal Crabfleet sessions", async () => {

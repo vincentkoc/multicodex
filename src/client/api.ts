@@ -163,6 +163,18 @@ export function nudgeParticipant(
 	});
 }
 
+export function repairParticipantWorkspace(
+	roomId: string,
+	participantToken: string,
+	participantId: string,
+): Promise<RoomSnapshot> {
+	return request(`/api/rooms/${encodeURIComponent(roomId)}/repair-workspace`, {
+		method: "POST",
+		participantToken,
+		body: { participantId },
+	});
+}
+
 export function setTaskState(
 	roomId: string,
 	participantToken: string,
