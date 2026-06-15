@@ -43,6 +43,7 @@ export type ProvisioningBindingObserver = (
 ) => Promise<void>;
 
 export const readinessDeadlineMilliseconds = 165_000;
+export const createRequestDeadlineMilliseconds = 180_000;
 // A five-seat room can need two one-minute Crabfleet adapter reconciliation ticks.
 export const readinessPollDelays = [
 	1_000, 2_000, 4_000, 8_000, 12_000, 16_000, 20_000, 24_000, 28_000, 32_000,
@@ -474,6 +475,7 @@ async function createCrabbox(env: Env, body: CrabboxCreateRequest): Promise<Crab
 		method: "POST",
 		body: JSON.stringify(body),
 		headers: { "content-type": "application/json" },
+		signal: AbortSignal.timeout(createRequestDeadlineMilliseconds),
 	});
 	return validatedCrabboxBinding(
 		await responseJson<unknown>(response),

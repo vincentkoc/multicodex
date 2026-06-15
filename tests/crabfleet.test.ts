@@ -6,6 +6,7 @@ import {
 	crabfleetOwner,
 	crabfleetRuntime,
 	crabfleetSimulationEnabled,
+	createRequestDeadlineMilliseconds,
 	createCrabboxEmbedUrl,
 	definitiveCrabfleetReplayConflict,
 	participantStateForCrabfleetStatus,
@@ -100,6 +101,7 @@ test("readiness polling covers Crabbox cold starts while preserving subrequest h
 		readinessPollDelays.reduce((total, delay) => total + delay, 0) < readinessDeadlineMilliseconds,
 	);
 	assert.ok(readinessDeadlineMilliseconds < 180_000);
+	assert.ok(createRequestDeadlineMilliseconds >= readinessDeadlineMilliseconds);
 });
 
 test("partial room provisioning returns every created session for durable cleanup", async () => {
