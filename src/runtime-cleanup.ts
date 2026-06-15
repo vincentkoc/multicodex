@@ -2,6 +2,7 @@ import {
 	parseRootCrabboxRequest,
 	participantStateForCrabfleetStatus,
 	recoverRoomRootCrabbox,
+	roomRootCrabboxRequest,
 	stopRoomCrabboxes,
 } from "./crabfleet.ts";
 import type { RoomSnapshot, RoomStatus } from "./domain.ts";
@@ -28,16 +29,11 @@ export async function recoverPersistedRoomRootCrabbox(
 	snapshot: RoomSnapshot,
 ): ReturnType<typeof recoverRoomRootCrabbox> {
 	const persisted = await readRoomRootProvisioningRequest(env.DB, snapshot.room.id);
-	if (!persisted) {
-		throw new HttpError(409, "persisted root Crabfleet request is unavailable");
-	}
-	return recoverRoomRootCrabbox(
-		env,
-		snapshot.room,
-		snapshot.participants,
-		snapshot.tasks,
-		parseRootCrabboxRequest(persisted),
-	);
+	// Pre-0014 rooms cannot have the exact request persisted. Reconstruct only for that legacy case.
+	const request = persisted
+		? parseRootCrabboxRequest(persisted)
+		: roomRootCrabboxRequest(env, snapshot.room, snapshot.participants, snapshot.tasks);
+	return recoverRoomRootCrabbox(env, snapshot.room, snapshot.participants, snapshot.tasks, request);
 }
 
 export async function cleanupFailedLaunchRoom(
@@ -45,10 +41,10 @@ export async function cleanupFailedLaunchRoom(
 	roomId: string,
 	expectedBriefRevision: number,
 	rootSessionId: string | null,
-): Promise<void> {
+): Promise<boolean> {
 	if (!rootSessionId) {
 		await resetRoomProvisioning(env.DB, roomId, ["provisioning"], expectedBriefRevision);
-		return;
+		return false;
 	}
 	const claimed = await markRoomCleanup(
 		env.DB,
@@ -60,10 +56,19 @@ export async function cleanupFailedLaunchRoom(
 		[],
 	);
 	if (!claimed) {
+		const snapshot = await readRoomSnapshot(env.DB, roomId);
+		if (
+			snapshot.room.briefRevision === expectedBriefRevision &&
+			snapshot.room.crabfleetRootSessionId === rootSessionId &&
+			["building", "integrating", "presenting"].includes(snapshot.room.status)
+		) {
+			return true;
+		}
 		await stopRoomCrabboxes(env, rootSessionId, []);
-		return;
+		return false;
 	}
 	await reconcileFailedLaunchCleanup(env, roomId);
+	return false;
 }
 
 export async function reconcileRuntimeRoom(env: Env, roomId: string): Promise<void> {

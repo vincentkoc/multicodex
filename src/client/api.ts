@@ -94,8 +94,13 @@ export function joinRoom(
 		requestId: string;
 		inviteToken?: string;
 	},
+	participantToken?: string,
 ): Promise<{ snapshot: RoomSnapshot } & RoomIdentity> {
-	return request(`/api/rooms/${encodeURIComponent(roomId)}/join`, { method: "POST", body: input });
+	return request(`/api/rooms/${encodeURIComponent(roomId)}/join`, {
+		method: "POST",
+		body: input,
+		participantToken,
+	});
 }
 
 export function issueRoomSocketTicket(roomId: string, participantToken: string): Promise<string> {

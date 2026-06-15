@@ -74,9 +74,10 @@ import {
 	requireRoomParticipant,
 	resetRoomProvisioning,
 	roomBuilderInviteAuthorized,
-	roomExists,
+	roomAcceptsWebSockets,
 	roomMessageExists,
 	roomRootProvisioningAttempted,
+	upgradeObserverParticipant,
 	updateParticipantRuntime,
 	updateConductorActionApprovalState,
 	updateRoomRuntime,
@@ -232,7 +233,9 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			throw new HttpError(403, "same-origin websocket required");
 		}
 		const roomId = decodeURIComponent(roomWsMatch[1] ?? "");
-		if (!(await roomExists(env.DB, roomId))) throw new HttpError(404, "room not found");
+		if (!(await roomAcceptsWebSockets(env.DB, roomId))) {
+			throw new HttpError(409, "room is not accepting sockets");
+		}
 		const headers = new Headers(request.headers);
 		headers.set(roomWebSocketSourceHeader, await requestSourceKey(request));
 		headers.delete(roomWebSocketTicketHeader);
@@ -266,18 +269,26 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		if (!displayName) throw new HttpError(400, "display name is required");
 		const requestId = clean(body.requestId, 100);
 		if (requestId.length < 20) throw new HttpError(400, "join request id is required");
-		const kind = body.kind === "observer" || body.kind === "ai" ? body.kind : "human";
+		const kind: Participant["kind"] =
+			body.kind === "observer" || body.kind === "ai" ? body.kind : "human";
 		const inviteToken = clean(body.inviteToken, 100);
 		if (!(await roomBuilderInviteAuthorized(env.DB, roomId, inviteToken))) {
 			throw new HttpError(401, "valid room invite required for a participant seat");
 		}
-		const joined = await addParticipant(env.DB, roomId, {
+		const currentToken = optionalParticipantToken(request);
+		const current = currentToken
+			? await requireRoomParticipant(env.DB, roomId, currentToken)
+			: null;
+		const joinInput = {
 			displayName,
 			githubLogin: clean(body.githubLogin, 80) || null,
 			kind,
 			requestId,
 			maxAiSeats: roles.filter((role) => role.suitableForAISeat).length,
-		});
+		};
+		const joined = current
+			? await upgradeObserverParticipant(env.DB, roomId, current.id, joinInput)
+			: await addParticipant(env.DB, roomId, joinInput);
 		const snapshot = await readRoomSnapshot(env.DB, roomId);
 		context.waitUntil(broadcastSnapshot(env, snapshot));
 		return json(
@@ -581,11 +592,16 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			if (!(error instanceof AmbiguousRootProvisioningError)) {
 				const rootSessionId =
 					bindings[0]?.binding.session.rootSessionId || bindings[0]?.binding.session.id || null;
-				await env.ROOM_HUB.getByName(roomId).cleanupFailedLaunch(
+				const launchCommitted = await env.ROOM_HUB.getByName(roomId).cleanupFailedLaunch(
 					roomId,
 					launchRevision,
 					rootSessionId,
 				);
+				if (launchCommitted) {
+					snapshot = await readRoomSnapshot(env.DB, roomId);
+					context.waitUntil(broadcastSnapshot(env, snapshot));
+					return json(snapshotForViewer(snapshot, host.id));
+				}
 			}
 			throw error;
 		}

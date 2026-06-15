@@ -297,9 +297,9 @@ export async function roomBuilderInviteAuthorized(
 	return Boolean(room);
 }
 
-export async function roomExists(db: D1Database, roomId: string): Promise<boolean> {
+export async function roomAcceptsWebSockets(db: D1Database, roomId: string): Promise<boolean> {
 	const room = await db
-		.prepare("SELECT 1 AS found FROM rooms WHERE id = ?")
+		.prepare("SELECT 1 AS found FROM rooms WHERE id = ? AND status != 'ended'")
 		.bind(roomId)
 		.first<{ found: number }>();
 	return room?.found === 1;
@@ -571,6 +571,116 @@ export async function addParticipant(
 				.first<ParticipantRow>())!,
 		),
 		participantToken,
+	};
+}
+
+export async function upgradeObserverParticipant(
+	db: D1Database,
+	roomId: string,
+	participantId: string,
+	input: ParticipantJoinInput,
+): Promise<{ participant: Participant; participantToken: string }> {
+	const replay = await db
+		.prepare("SELECT * FROM participants WHERE id = ? AND room_id = ? AND join_request_id = ?")
+		.bind(participantId, roomId, input.requestId)
+		.first<ParticipantRow>();
+	const existingReplay = participantReplay(replay, input);
+	if (existingReplay) return existingReplay;
+	if (input.kind === "observer") throw new HttpError(409, "observer is already in the room");
+	const [participant, room] = await db.batch([
+		db
+			.prepare("SELECT * FROM participants WHERE id = ? AND room_id = ?")
+			.bind(participantId, roomId),
+		db.prepare("SELECT slug, status FROM rooms WHERE id = ?").bind(roomId),
+	]);
+	const current = participant?.results[0] as ParticipantRow | undefined;
+	const currentRoom = room?.results[0] as { slug: string; status: RoomStatus } | undefined;
+	if (!current?.access_token || current.kind !== "observer") {
+		throw new HttpError(409, "participant is no longer an observer");
+	}
+	if (!currentRoom) throw new HttpError(404, "room not found");
+	if (!roomAllowsPlanning(currentRoom.status)) {
+		throw new HttpError(409, "room is no longer accepting builder seats");
+	}
+	const now = Date.now();
+	const branch = participantBranch(currentRoom.slug, input.displayName, participantId);
+	const upgradedGuard =
+		"EXISTS (SELECT 1 FROM participants WHERE id = ? AND room_id = ? AND kind = ? AND join_request_id = ?)";
+	const [result] = await db.batch([
+		db
+			.prepare(
+				`UPDATE OR IGNORE participants
+	       SET kind = ?, display_name = ?, github_login = ?, role_id = NULL, task_id = NULL,
+	           join_request_id = ?, branch = ?, state = 'joined', updated_at = ?
+	       WHERE id = ? AND room_id = ? AND kind = 'observer'
+	         AND EXISTS (SELECT 1 FROM rooms WHERE id = ? AND status IN ('setup', 'planning'))
+	         AND (SELECT COUNT(*) FROM participants WHERE room_id = ? AND kind != 'observer') < 5
+	         AND (
+	           ? != 'ai' OR (
+	             SELECT COUNT(*) FROM participants WHERE room_id = ? AND kind = 'ai'
+	           ) < ?
+	         )`,
+			)
+			.bind(
+				input.kind,
+				input.displayName,
+				input.githubLogin ?? null,
+				input.requestId,
+				branch,
+				now,
+				participantId,
+				roomId,
+				roomId,
+				roomId,
+				input.kind,
+				roomId,
+				input.maxAiSeats,
+			),
+		db
+			.prepare(`DELETE FROM tasks WHERE room_id = ? AND ${upgradedGuard}`)
+			.bind(roomId, participantId, roomId, input.kind, input.requestId),
+		db
+			.prepare(
+				`UPDATE participants SET task_id = NULL, updated_at = ? WHERE room_id = ? AND ${upgradedGuard}`,
+			)
+			.bind(now, roomId, participantId, roomId, input.kind, input.requestId),
+		db
+			.prepare(
+				`UPDATE rooms
+	       SET brief_json = json_set(brief_json, '$.planApproved', json('false')),
+	           brief_revision = brief_revision + 1, updated_at = ?
+	       WHERE id = ? AND status IN ('setup', 'planning') AND ${upgradedGuard}`,
+			)
+			.bind(now, roomId, participantId, roomId, input.kind, input.requestId),
+		db
+			.prepare(
+				`INSERT INTO room_messages
+	          (id, room_id, author_kind, author_id, target_kind, body, created_at)
+	         SELECT ?, ?, 'system', 'system', 'system', ?, ?
+	         WHERE ${upgradedGuard}`,
+			)
+			.bind(
+				newId("msg"),
+				roomId,
+				`${input.displayName} joined the build.`,
+				now,
+				participantId,
+				roomId,
+				input.kind,
+				input.requestId,
+			),
+	]);
+	if (result?.meta.changes !== 1) {
+		throw new HttpError(409, "room is no longer accepting this builder seat");
+	}
+	return {
+		participant: participantFromRow(
+			(await db
+				.prepare("SELECT * FROM participants WHERE id = ? AND room_id = ?")
+				.bind(participantId, roomId)
+				.first<ParticipantRow>())!,
+		),
+		participantToken: current.access_token,
 	};
 }
 

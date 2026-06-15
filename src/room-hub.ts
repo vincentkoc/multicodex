@@ -81,9 +81,9 @@ export class RoomHub extends DurableObject<Env> {
 		roomId: string,
 		expectedBriefRevision: number,
 		rootSessionId: string | null,
-	): Promise<void> {
+	): Promise<boolean> {
 		try {
-			await cleanupFailedLaunchRoom(this.env, roomId, expectedBriefRevision, rootSessionId);
+			return await cleanupFailedLaunchRoom(this.env, roomId, expectedBriefRevision, rootSessionId);
 		} finally {
 			this.broadcast(JSON.stringify({ type: "changed", roomId, at: Date.now() }));
 		}

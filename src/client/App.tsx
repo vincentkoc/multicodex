@@ -258,7 +258,14 @@ export function App() {
 		Boolean(builderInviteToken) &&
 		["setup", "planning"].includes(snapshot.room.status);
 	if (!validIdentity || observerCanUseBuilderInvite) {
-		return <JoinRoom snapshot={snapshot} inviteToken={builderInviteToken} onEnter={enterRoom} />;
+		return (
+			<JoinRoom
+				snapshot={snapshot}
+				inviteToken={builderInviteToken}
+				identity={validIdentity}
+				onEnter={enterRoom}
+			/>
+		);
 	}
 
 	return (
@@ -371,10 +378,12 @@ function CreateRoom({
 function JoinRoom({
 	snapshot,
 	inviteToken,
+	identity,
 	onEnter,
 }: {
 	snapshot: RoomSnapshot;
 	inviteToken: string | undefined;
+	identity: RoomIdentity | null;
 	onEnter: (snapshot: RoomSnapshot, identity: RoomIdentity) => boolean;
 }) {
 	const [busy, setBusy] = useState(false);
@@ -390,13 +399,17 @@ function JoinRoom({
 		setBusy(true);
 		setError("");
 		try {
-			const result = await joinRoom(snapshot.room.id, {
-				displayName: String(data.get("displayName") || ""),
-				githubLogin: String(data.get("githubLogin") || ""),
-				kind,
-				requestId: joinRequestId,
-				inviteToken,
-			});
+			const result = await joinRoom(
+				snapshot.room.id,
+				{
+					displayName: String(data.get("displayName") || ""),
+					githubLogin: String(data.get("githubLogin") || ""),
+					kind,
+					requestId: joinRequestId,
+					inviteToken,
+				},
+				identity?.participantToken,
+			);
 			if (onEnter(result.snapshot, result)) clearJoinRequestId(snapshot.room.id);
 		} catch (cause) {
 			setError(errorMessage(cause));
@@ -434,11 +447,34 @@ function JoinRoom({
 				<h2>take a seat</h2>
 				<label>
 					Display name
-					<input name="displayName" required autoFocus maxLength={80} />
+					<input
+						name="displayName"
+						defaultValue={
+							identity
+								? snapshot.participants.find(
+										(participant) => participant.id === identity.participantId,
+									)?.displayName
+								: ""
+						}
+						required
+						autoFocus
+						maxLength={80}
+					/>
 				</label>
 				<label>
 					GitHub handle
-					<input name="githubLogin" placeholder="optional" maxLength={80} />
+					<input
+						name="githubLogin"
+						defaultValue={
+							identity
+								? (snapshot.participants.find(
+										(participant) => participant.id === identity.participantId,
+									)?.githubLogin ?? "")
+								: ""
+						}
+						placeholder="optional"
+						maxLength={80}
+					/>
 				</label>
 				<label>
 					Seat
@@ -449,7 +485,7 @@ function JoinRoom({
 					>
 						<option value="human">Builder</option>
 						<option value="ai">AI builder</option>
-						<option value="observer">Observer</option>
+						{!identity && <option value="observer">Observer</option>}
 					</select>
 				</label>
 				{error && <InlineError message={error} />}

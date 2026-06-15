@@ -58,7 +58,7 @@ test("room creation reservations fence external work to available capacity", asy
 test("builder joins atomically invalidate stale plans and enforce the five-seat cap", async () => {
 	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
 	const start = source.indexOf("export async function addParticipant");
-	const end = source.indexOf("export async function requireRoomParticipant", start);
+	const end = source.indexOf("export async function upgradeObserverParticipant", start);
 	const addParticipantSource = source.slice(start, end);
 
 	assert.match(addParticipantSource, /input\.kind === "observer" \? 24 : 5/);
@@ -81,6 +81,26 @@ test("builder joins atomically invalidate stale plans and enforce the five-seat 
 	assert.match(addParticipantSource, /participantReplay\(existing, input\)/);
 	assert.match(addParticipantSource, /participantReplay\(replay, input\)/);
 	assert.match(addParticipantSource, /const \[result\] = await db\.batch\(statements\)/);
+});
+
+test("observer upgrades preserve identity and atomically claim a builder seat", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function upgradeObserverParticipant");
+	const end = source.indexOf("export async function requireRoomParticipant", start);
+	const upgradeSource = source.slice(start, end);
+
+	assert.match(upgradeSource, /participantReplay\(replay, input\)/);
+	assert.match(upgradeSource, /id = \? AND room_id = \? AND join_request_id = \?/);
+	assert.match(upgradeSource, /input\.kind === "observer"/);
+	assert.match(upgradeSource, /UPDATE OR IGNORE participants/);
+	assert.match(upgradeSource, /kind = 'observer'/);
+	assert.match(upgradeSource, /kind != 'observer'\) < 5/);
+	assert.match(upgradeSource, /COUNT\(\*\) FROM participants WHERE room_id = \? AND kind = 'ai'/);
+	assert.match(upgradeSource, /join_request_id = \?/);
+	assert.match(upgradeSource, /DELETE FROM tasks/);
+	assert.match(upgradeSource, /brief_revision = brief_revision \+ 1/);
+	assert.match(upgradeSource, /participantToken: current\.access_token/);
+	assert.doesNotMatch(upgradeSource, /INSERT OR IGNORE INTO participants/);
 });
 
 test("join request replays preserve immutable seat identity", async () => {
@@ -158,13 +178,13 @@ test("room message budgets are consumed atomically before writes", async () => {
 	assert.match(budgetSource, /RETURNING message_count/);
 });
 
-test("room existence checks stay lightweight for public socket handshakes", async () => {
+test("room socket checks stay lightweight and exclude ended rooms", async () => {
 	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
-	const start = source.indexOf("export async function roomExists");
+	const start = source.indexOf("export async function roomAcceptsWebSockets");
 	const end = source.indexOf("export async function roomMessageExists", start);
 	const existenceSource = source.slice(start, end);
 
-	assert.match(existenceSource, /SELECT 1 AS found FROM rooms WHERE id = \?/);
+	assert.match(existenceSource, /SELECT 1 AS found FROM rooms WHERE id = \? AND status != 'ended'/);
 	assert.doesNotMatch(existenceSource, /room_messages|participants|tasks/);
 });
 

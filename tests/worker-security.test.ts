@@ -57,13 +57,15 @@ test("room creation and joins are recoverable", async () => {
 	assert.match(joinSource, /requestId/);
 	assert.match(joinSource, /maxAiSeats/);
 	assert.match(joinSource, /roomBuilderInviteAuthorized/);
+	assert.match(joinSource, /optionalParticipantToken\(request\)/);
+	assert.match(joinSource, /upgradeObserverParticipant/);
 	assert.doesNotMatch(joinSource, /kind !== "observer"/);
 	assert.doesNotMatch(joinSource, /await addMessage/);
 	assert.match(client, /loadJoinRequestId/);
 	assert.match(client, /clearJoinRequestId/);
 	assert.match(client, /loadCreateRequestId/);
 	assert.match(client, /clearCreateRequestId/);
-	assert.match(client, /inviteToken,\s*\}\);/);
+	assert.match(client, /inviteToken,\s*\},\s*identity\?\.participantToken,\s*\);/);
 	assert.match(client, /if \(!inviteToken\) return <PublicRoom/);
 	assert.doesNotMatch(client, /inviteToken: kind !== "observer"/);
 	assert.match(client, /builderInviteTokenFromUrl/);
@@ -78,6 +80,9 @@ test("room creation and joins are recoverable", async () => {
 	assert.match(client, /location\.hash\.replace/);
 	assert.doesNotMatch(client, /invite\.searchParams\.set/);
 	assert.match(client, /identity\.builderInviteToken/);
+	assert.match(client, /identity=\{validIdentity\}/);
+	assert.match(client, /identity\?\.participantToken/);
+	assert.match(client, /\{!identity && <option value="observer">Observer<\/option>\}/);
 	assert.match(client, /<option value="ai">AI builder<\/option>/);
 });
 
@@ -158,11 +163,12 @@ test("failed launch cleanup moves recovery and broadcasts to a fresh RoomHub inv
 
 	assert.match(failureSource, /error instanceof AmbiguousRootProvisioningError/);
 	assert.match(failureSource, /await env\.ROOM_HUB\.getByName\(roomId\)\.cleanupFailedLaunch/);
-	assert.doesNotMatch(failureSource, /readRoomSnapshot|resetRoomProvisioning|markRoomCleanup/);
+	assert.match(failureSource, /if \(launchCommitted\) \{[\s\S]*readRoomSnapshot/);
+	assert.doesNotMatch(failureSource, /resetRoomProvisioning|markRoomCleanup/);
 	assert.match(roomHub, /async cleanupFailedLaunch\(/);
 	assert.match(
 		roomHub,
-		/await cleanupFailedLaunchRoom\(this\.env, roomId, expectedBriefRevision, rootSessionId\)/,
+		/return await cleanupFailedLaunchRoom\(this\.env, roomId, expectedBriefRevision, rootSessionId\)/,
 	);
 	assert.match(roomHub, /finally \{[\s\S]*this\.broadcast/);
 });
@@ -357,6 +363,12 @@ test("failed launch cleanup isolates stale generations and claims current lifecy
 	assert.match(cleanupSource, /const claimed = await markRoomCleanup/);
 	assert.match(cleanupSource, /"cleanup-planning",\s*\["provisioning"\]/);
 	assert.match(cleanupSource, /if \(!claimed\) \{[\s\S]*await stopRoomCrabboxes/);
+	assert.match(cleanupSource, /const snapshot = await readRoomSnapshot/);
+	assert.match(cleanupSource, /snapshot\.room\.briefRevision === expectedBriefRevision/);
+	assert.match(cleanupSource, /\["building", "integrating", "presenting"\]\.includes/);
+	assert.ok(
+		cleanupSource.indexOf("return true") < cleanupSource.indexOf("await stopRoomCrabboxes"),
+	);
 	assert.ok(
 		cleanupSource.indexOf("if (!claimed)") < cleanupSource.indexOf("reconcileFailedLaunchCleanup"),
 	);
@@ -460,6 +472,7 @@ test("scheduled reconciliation fans runtime cleanup across per-room invocations"
 	assert.doesNotMatch(runtimeCleanup, /repoAllowed|requireRuntimeRecoveryRepo/);
 	assert.match(runtimeCleanup, /readRoomRootProvisioningRequest/);
 	assert.match(runtimeCleanup, /parseRootCrabboxRequest\(persisted\)/);
+	assert.match(runtimeCleanup, /roomRootCrabboxRequest\(env, snapshot\.room/);
 	const recoverySource = `${worker}\n${runtimeCleanup}`;
 	const recoveryCalls = [
 		...recoverySource.matchAll(/const root = await recoverPersistedRoomRootCrabbox/g),
@@ -569,13 +582,14 @@ test("message history is paginated through the existing viewer redaction policy"
 	assert.match(messagesSource, /messageCount: snapshot\.messageCount/);
 });
 
-test("public WebSocket handshakes use a lightweight room existence check", async () => {
+test("public WebSocket handshakes use a lightweight active-room check", async () => {
 	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
 	const start = source.indexOf("const roomWsMatch");
 	const end = source.indexOf("const joinMatch", start);
 	const socketSource = source.slice(start, end);
 
-	assert.match(socketSource, /roomExists\(env\.DB, roomId\)/);
+	assert.match(socketSource, /roomAcceptsWebSockets\(env\.DB, roomId\)/);
+	assert.match(socketSource, /room is not accepting sockets/);
 	assert.match(socketSource, /sameOriginWebSocketRequest\(request\)/);
 	assert.match(socketSource, /headers\.delete\(roomWebSocketTicketHeader\)/);
 	assert.match(socketSource, /headers\.set\(roomWebSocketTicketHeader, ticket\)/);
