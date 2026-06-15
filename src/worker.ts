@@ -33,7 +33,8 @@ import {
 	roomPlanCoversActiveParticipants,
 } from "./room-state.ts";
 import { RoomHub } from "./room-hub.ts";
-import { sameOriginWebSocketRequest } from "./socket-admission.ts";
+import { roomWebSocketSourceHeader, sameOriginWebSocketRequest } from "./socket-admission.ts";
+import { requestSourceKey } from "./source-key.ts";
 import {
 	addConductorAction,
 	addMessage,
@@ -73,8 +74,9 @@ import {
 	updateTaskStateWithDecision,
 } from "./store.ts";
 import { snapshotForViewer } from "./visibility.ts";
+import { EventAdmission } from "./event-admission.ts";
 
-export { RoomHub };
+export { EventAdmission, RoomHub };
 
 const messageStatuses: RoomStatus[] = [
 	"setup",
@@ -131,12 +133,12 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 	if (request.method === "GET" && url.pathname === "/api/catalog") return json({ ideas, roles });
 
 	if (request.method === "POST" && url.pathname === "/api/rooms") {
-		if (
-			!(await eventAccessAuthorized(
-				request.headers.get("x-multicodex-event-code"),
-				env.EVENT_ACCESS_CODE,
-			))
-		) {
+		const eventCodeValid = await eventAccessAuthorized(
+			request.headers.get("x-multicodex-event-code"),
+			env.EVENT_ACCESS_CODE,
+		);
+		const eventAdmission = env.EVENT_ADMISSION.getByName(await requestSourceKey(request));
+		if (!(await eventAdmission.authorize(eventCodeValid))) {
 			throw new HttpError(401, "valid event code required");
 		}
 		const body = await readJson<{
@@ -223,7 +225,9 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		}
 		const roomId = decodeURIComponent(roomWsMatch[1] ?? "");
 		if (!(await roomExists(env.DB, roomId))) throw new HttpError(404, "room not found");
-		return env.ROOM_HUB.getByName(roomId).fetch(request);
+		const headers = new Headers(request.headers);
+		headers.set(roomWebSocketSourceHeader, await requestSourceKey(request));
+		return env.ROOM_HUB.getByName(roomId).fetch(new Request(request, { headers }));
 	}
 
 	const joinMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/join$/);

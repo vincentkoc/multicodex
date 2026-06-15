@@ -1,4 +1,6 @@
 export const maxRoomWebSockets = 64;
+export const maxRoomWebSocketsPerSource = 8;
+export const roomWebSocketSourceHeader = "x-multicodex-socket-source";
 
 const socketMessageWindowMilliseconds = 10_000;
 const maxSocketMessagesPerWindow = 30;
@@ -11,6 +13,10 @@ export interface SocketRateState {
 export function sameOriginWebSocketRequest(request: Request): boolean {
 	const origin = request.headers.get("origin");
 	return origin !== null && origin === new URL(request.url).origin;
+}
+
+export function roomWebSocketSourceTag(sourceKey: string | null): string | null {
+	return sourceKey && /^[a-f0-9]{64}$/.test(sourceKey) ? `source:${sourceKey}` : null;
 }
 
 export function recordSocketMessage(

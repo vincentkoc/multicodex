@@ -496,6 +496,10 @@ test("public WebSocket handshakes use a lightweight room existence check", async
 
 	assert.match(socketSource, /roomExists\(env\.DB, roomId\)/);
 	assert.match(socketSource, /sameOriginWebSocketRequest\(request\)/);
+	assert.match(
+		socketSource,
+		/headers\.set\(roomWebSocketSourceHeader, await requestSourceKey\(request\)\)/,
+	);
 	assert.doesNotMatch(socketSource, /readRoomSnapshot/);
 });
 
@@ -503,10 +507,32 @@ test("RoomHub bounds public websocket work", async () => {
 	const source = await readFile(new URL("../src/room-hub.ts", import.meta.url), "utf8");
 
 	assert.match(source, /this\.ctx\.getWebSockets\(\)\.length >= maxRoomWebSockets/);
+	assert.match(
+		source,
+		/this\.ctx\.getWebSockets\(sourceTag\)\.length >= maxRoomWebSocketsPerSource/,
+	);
 	assert.match(source, /sameOriginWebSocketRequest\(request\)/);
+	assert.match(source, /this\.ctx\.acceptWebSocket\(pair\[1\], \[sourceTag\]\)/);
 	assert.match(source, /recordSocketMessage/);
 	assert.match(source, /socket\.close\(1008, "message rate exceeded"\)/);
 	assert.match(source, /socket\.close\(1003, "unsupported message"\)/);
+});
+
+test("room creation gates event codes through a per-source Durable Object", async () => {
+	const [worker, config, admission] = await Promise.all([
+		readFile(new URL("../src/worker.ts", import.meta.url), "utf8"),
+		readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
+		readFile(new URL("../src/event-admission.ts", import.meta.url), "utf8"),
+	]);
+	const createStart = worker.indexOf('url.pathname === "/api/rooms"');
+	const joinStart = worker.indexOf("const joinMatch", createStart);
+	const createSource = worker.slice(createStart, joinStart);
+
+	assert.match(createSource, /EVENT_ADMISSION\.getByName\(await requestSourceKey\(request\)\)/);
+	assert.match(createSource, /eventAdmission\.authorize\(eventCodeValid\)/);
+	assert.match(config, /"name": "EVENT_ADMISSION"/);
+	assert.match(config, /"new_sqlite_classes": \["EventAdmission"\]/);
+	assert.match(admission, /CREATE TABLE IF NOT EXISTS event_admission/);
 });
 
 test("public terminal room links render the preserved recap", async () => {

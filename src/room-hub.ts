@@ -2,7 +2,10 @@ import { DurableObject } from "cloudflare:workers";
 
 import {
 	maxRoomWebSockets,
+	maxRoomWebSocketsPerSource,
 	recordSocketMessage,
+	roomWebSocketSourceHeader,
+	roomWebSocketSourceTag,
 	sameOriginWebSocketRequest,
 	type SocketRateState,
 } from "./socket-admission.ts";
@@ -15,6 +18,11 @@ export class RoomHub extends DurableObject<Env> {
 		if (!sameOriginWebSocketRequest(request)) {
 			return new Response("same-origin websocket required", { status: 403 });
 		}
+		const sourceTag = roomWebSocketSourceTag(request.headers.get(roomWebSocketSourceHeader));
+		if (!sourceTag) return new Response("websocket admission required", { status: 403 });
+		if (this.ctx.getWebSockets(sourceTag).length >= maxRoomWebSocketsPerSource) {
+			return new Response("source websocket limit reached", { status: 429 });
+		}
 		if (this.ctx.getWebSockets().length >= maxRoomWebSockets) {
 			return new Response("room websocket limit reached", { status: 429 });
 		}
@@ -23,7 +31,7 @@ export class RoomHub extends DurableObject<Env> {
 			windowStartedAt: Date.now(),
 			messageCount: 0,
 		} satisfies SocketRateState);
-		this.ctx.acceptWebSocket(pair[1]);
+		this.ctx.acceptWebSocket(pair[1], [sourceTag]);
 		pair[1].send(JSON.stringify({ type: "connected", at: Date.now() }));
 		return new Response(null, { status: 101, webSocket: pair[0] });
 	}

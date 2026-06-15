@@ -3,9 +3,12 @@ import test from "node:test";
 
 import {
 	maxRoomWebSockets,
+	maxRoomWebSocketsPerSource,
 	recordSocketMessage,
+	roomWebSocketSourceTag,
 	sameOriginWebSocketRequest,
 } from "../src/socket-admission.ts";
+import { requestSourceKey } from "../src/source-key.ts";
 
 test("websocket admission requires the exact request origin", () => {
 	assert.equal(
@@ -43,4 +46,24 @@ test("websocket message rate state closes sustained ping traffic", () => {
 
 test("each room has a conservative websocket admission cap", () => {
 	assert.equal(maxRoomWebSockets, 64);
+	assert.equal(maxRoomWebSocketsPerSource, 8);
+	assert.equal(roomWebSocketSourceTag("a".repeat(64)), `source:${"a".repeat(64)}`);
+	assert.equal(roomWebSocketSourceTag("spoofed"), null);
+});
+
+test("edge source identifiers are stable hashes rather than raw addresses", async () => {
+	const first = await requestSourceKey(
+		new Request("https://multicodex.example", {
+			headers: { "cf-connecting-ip": "203.0.113.10" },
+		}),
+	);
+	const second = await requestSourceKey(
+		new Request("https://multicodex.example", {
+			headers: { "cf-connecting-ip": "203.0.113.10" },
+		}),
+	);
+
+	assert.equal(first, second);
+	assert.match(first, /^[a-f0-9]{64}$/);
+	assert.doesNotMatch(first, /203\.0\.113\.10/);
 });

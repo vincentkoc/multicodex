@@ -21,6 +21,38 @@ export async function eventAccessAuthorized(
 	return difference === 0;
 }
 
+export interface EventAdmissionState {
+	windowStartedAt: number;
+	failedAttempts: number;
+	blockedUntil: number;
+}
+
+const eventAttemptWindowMilliseconds = 10 * 60 * 1000;
+const eventAttemptBlockMilliseconds = 15 * 60 * 1000;
+const maxEventAccessFailures = 5;
+
+export function applyEventAccessAttempt(
+	previous: EventAdmissionState | null,
+	valid: boolean,
+	now: number,
+): { authorized: boolean; state: EventAdmissionState | null } {
+	if (previous && previous.blockedUntil > now) {
+		return { authorized: false, state: previous };
+	}
+	if (valid) return { authorized: true, state: null };
+	const currentWindow = previous && now - previous.windowStartedAt < eventAttemptWindowMilliseconds;
+	const failedAttempts = currentWindow ? previous.failedAttempts + 1 : 1;
+	return {
+		authorized: false,
+		state: {
+			windowStartedAt: currentWindow ? previous.windowStartedAt : now,
+			failedAttempts,
+			blockedUntil:
+				failedAttempts >= maxEventAccessFailures ? now + eventAttemptBlockMilliseconds : 0,
+		},
+	};
+}
+
 export function activeRoomLimit(value: string | undefined): number {
 	const parsed = Number.parseInt(value || "20", 10);
 	return Number.isFinite(parsed) ? Math.max(1, Math.min(100, parsed)) : 20;
