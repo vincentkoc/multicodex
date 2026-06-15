@@ -1,0 +1,197 @@
+import type { Participant, Room } from "./domain.ts";
+import { HttpError, readBoundedText } from "./http.ts";
+
+class GitHubRequestError extends HttpError {
+	readonly upstreamStatus: number;
+
+	constructor(upstreamStatus: number, detail: string) {
+		super(502, `GitHub ${upstreamStatus}: ${detail || "request failed"}`);
+		this.name = "GitHubRequestError";
+		this.upstreamStatus = upstreamStatus;
+	}
+}
+
+export async function resolveRepoDefaultBranch(env: Env, repository: string): Promise<string> {
+	const [owner, repo] = repository.split("/");
+	if (!owner || !repo) throw new HttpError(400, "repo must be owner/name");
+	const result = await githubJson<{ default_branch?: unknown }>(env, `/repos/${owner}/${repo}`);
+	if (typeof result.default_branch !== "string" || !result.default_branch.trim()) {
+		throw new HttpError(502, "GitHub did not return a default branch");
+	}
+	return result.default_branch;
+}
+
+export async function ensureRoomBranches(
+	env: Env,
+	room: Room,
+	participants: Participant[],
+	heartbeat: () => Promise<void> = async () => {},
+): Promise<void> {
+	await heartbeat();
+	if (String(env.MULTICODEX_SIMULATION_MODE) === "true") return;
+	if (!env.GITHUB_TOKEN) throw new HttpError(503, "GitHub token is not configured");
+	const [owner, repo] = room.repo.split("/");
+	if (!owner || !repo) throw new HttpError(400, "repo must be owner/name");
+	let baseSha = await readRoomLaunchBaseline(env.DB, room.id);
+	if (!baseSha) {
+		const selectedBaseSha = await readBranchSha(env, owner, repo, room.baseBranch);
+		await heartbeat();
+		if (!selectedBaseSha) throw new HttpError(502, "GitHub base branch was not found");
+		baseSha = await recordRoomLaunchBaseline(env.DB, room.id, selectedBaseSha);
+	}
+	const branches = [
+		room.integrationBranch,
+		...participants.flatMap((participant) => (participant.branch ? [participant.branch] : [])),
+	];
+	for (const branch of new Set(branches)) {
+		await heartbeat();
+		const ownership = await readBranchOwnership(env.DB, branch);
+		const existingSha = await readBranchSha(env, owner, repo, branch);
+		await heartbeat();
+		if (ownership) {
+			if (ownership.room_id !== room.id) {
+				throw new HttpError(409, `GitHub branch ${branch} belongs to another room`);
+			}
+			if (ownership.initial_sha !== baseSha) {
+				throw new HttpError(409, `GitHub branch ${branch} does not share the room launch baseline`);
+			}
+			if (!existingSha) throw new HttpError(409, `GitHub branch ${branch} was deleted`);
+			continue;
+		}
+		if (existingSha) {
+			if (existingSha !== baseSha) {
+				throw new HttpError(409, `GitHub branch ${branch} is not owned by this room`);
+			}
+			await claimBranchOwnership(env, room.id, owner, repo, branch, baseSha);
+			await heartbeat();
+			continue;
+		}
+		try {
+			const created = await githubJson<unknown>(env, `/repos/${owner}/${repo}/git/refs`, {
+				method: "POST",
+				body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: baseSha }),
+				headers: { "content-type": "application/json" },
+			});
+			if (refSha(created) !== baseSha) {
+				throw new HttpError(502, `GitHub did not create branch ${branch} at the requested commit`);
+			}
+		} catch (error) {
+			const reconciledSha = await readBranchSha(env, owner, repo, branch).catch(() => null);
+			if (reconciledSha !== baseSha) throw error;
+		}
+		await heartbeat();
+		await claimBranchOwnership(env, room.id, owner, repo, branch, baseSha);
+		await heartbeat();
+	}
+}
+
+async function claimBranchOwnership(
+	env: Env,
+	roomId: string,
+	owner: string,
+	repo: string,
+	branch: string,
+	baseSha: string,
+): Promise<void> {
+	if ((await readBranchSha(env, owner, repo, branch)) !== baseSha) {
+		throw new HttpError(409, `GitHub branch ${branch} changed before ownership was recorded`);
+	}
+	await env.DB.prepare(
+		"INSERT OR IGNORE INTO room_branch_refs (room_id, branch, initial_sha, created_at) VALUES (?, ?, ?, ?)",
+	)
+		.bind(roomId, branch, baseSha, Date.now())
+		.run();
+	const ownership = await readBranchOwnership(env.DB, branch);
+	if (ownership?.room_id !== roomId) {
+		throw new HttpError(409, `GitHub branch ${branch} belongs to another room`);
+	}
+}
+
+async function readBranchOwnership(
+	db: D1Database,
+	branch: string,
+): Promise<{ room_id: string; initial_sha: string } | null> {
+	return db
+		.prepare("SELECT room_id, initial_sha FROM room_branch_refs WHERE branch = ?")
+		.bind(branch)
+		.first<{ room_id: string; initial_sha: string }>();
+}
+
+async function readRoomLaunchBaseline(db: D1Database, roomId: string): Promise<string | null> {
+	const baseline = await db
+		.prepare("SELECT base_sha FROM room_launch_baselines WHERE room_id = ?")
+		.bind(roomId)
+		.first<{ base_sha: string }>();
+	if (baseline?.base_sha) return baseline.base_sha;
+	const legacyOwnership = await db
+		.prepare(
+			"SELECT initial_sha FROM room_branch_refs WHERE room_id = ? ORDER BY created_at ASC LIMIT 1",
+		)
+		.bind(roomId)
+		.first<{ initial_sha: string }>();
+	return legacyOwnership?.initial_sha
+		? recordRoomLaunchBaseline(db, roomId, legacyOwnership.initial_sha)
+		: null;
+}
+
+async function recordRoomLaunchBaseline(
+	db: D1Database,
+	roomId: string,
+	baseSha: string,
+): Promise<string> {
+	await db
+		.prepare(
+			"INSERT OR IGNORE INTO room_launch_baselines (room_id, base_sha, created_at) VALUES (?, ?, ?)",
+		)
+		.bind(roomId, baseSha, Date.now())
+		.run();
+	const baseline = await db
+		.prepare("SELECT base_sha FROM room_launch_baselines WHERE room_id = ?")
+		.bind(roomId)
+		.first<{ base_sha: string }>();
+	if (!baseline?.base_sha) throw new HttpError(500, "room launch baseline could not be recorded");
+	return baseline.base_sha;
+}
+
+async function readBranchSha(
+	env: Env,
+	owner: string,
+	repo: string,
+	branch: string,
+): Promise<string | null> {
+	try {
+		return refSha(
+			await githubJson<unknown>(
+				env,
+				`/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(branch)}`,
+			),
+		);
+	} catch (error) {
+		if (error instanceof GitHubRequestError && error.upstreamStatus === 404) return null;
+		throw error;
+	}
+}
+
+function refSha(value: unknown): string | null {
+	if (!value || typeof value !== "object" || !("object" in value)) return null;
+	const object = value.object;
+	if (!object || typeof object !== "object" || !("sha" in object)) return null;
+	return typeof object.sha === "string" && object.sha ? object.sha : null;
+}
+
+async function githubJson<T = unknown>(env: Env, path: string, init: RequestInit = {}): Promise<T> {
+	const response = await fetch(`https://api.github.com${path}`, {
+		...init,
+		signal: init.signal ?? AbortSignal.timeout(15_000),
+		headers: {
+			accept: "application/vnd.github+json",
+			...(env.GITHUB_TOKEN ? { authorization: `Bearer ${env.GITHUB_TOKEN}` } : {}),
+			"user-agent": "multicodex",
+			"x-github-api-version": "2022-11-28",
+			...init.headers,
+		},
+	});
+	const text = await readBoundedText(response, 256 * 1024);
+	if (!response.ok) throw new GitHubRequestError(response.status, text);
+	return text ? (JSON.parse(text) as T) : ({} as T);
+}
