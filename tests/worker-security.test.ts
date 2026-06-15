@@ -36,14 +36,16 @@ test("room creation and joins are recoverable", async () => {
 	assert.match(createSource, /requestId/);
 	assert.match(joinSource, /requestId/);
 	assert.match(joinSource, /maxAiSeats/);
-	assert.match(joinSource, /kind !== "observer"/);
 	assert.match(joinSource, /roomBuilderInviteAuthorized/);
+	assert.doesNotMatch(joinSource, /kind !== "observer"/);
 	assert.doesNotMatch(joinSource, /await addMessage/);
 	assert.match(client, /loadJoinRequestId/);
 	assert.match(client, /clearJoinRequestId/);
 	assert.match(client, /loadCreateRequestId/);
 	assert.match(client, /clearCreateRequestId/);
-	assert.match(client, /inviteToken: kind !== "observer"/);
+	assert.match(client, /inviteToken,\s*\}\);/);
+	assert.match(client, /if \(!inviteToken\) return <PublicRoom/);
+	assert.doesNotMatch(client, /inviteToken: kind !== "observer"/);
 	assert.match(client, /builderInviteTokenFromUrl/);
 	assert.match(client, /invite\.hash = new URLSearchParams/);
 	assert.match(client, /location\.hash\.replace/);

@@ -424,6 +424,80 @@ textarea:focus {
 	padding: 48px;
 }
 
+.public-room {
+	align-content: start;
+	max-height: 100vh;
+	overflow: auto;
+}
+
+.public-room-heading,
+.public-room-stats > div,
+.public-task-list > div {
+	align-items: center;
+	display: flex;
+	justify-content: space-between;
+}
+
+.public-room-heading h2 {
+	margin-bottom: 0;
+}
+
+.public-room-stats {
+	border-bottom: 1px solid var(--line);
+	border-top: 1px solid var(--line);
+	display: grid;
+	grid-template-columns: repeat(3, 1fr);
+	margin: 14px 0;
+}
+
+.public-room-stats > div {
+	align-items: flex-start;
+	border-right: 1px solid var(--line);
+	flex-direction: column;
+	padding: 14px 10px;
+}
+
+.public-room-stats > div:last-child {
+	border-right: 0;
+}
+
+.public-room-stats strong {
+	font-size: 22px;
+}
+
+.public-room-stats span,
+.public-task-list span {
+	color: var(--ink-soft);
+	font-size: 10px;
+	text-transform: uppercase;
+}
+
+.public-room-section {
+	display: grid;
+	gap: 10px;
+}
+
+.public-task-list,
+.public-message-list {
+	display: grid;
+	gap: 8px;
+}
+
+.public-task-list > div {
+	border-bottom: 1px solid var(--line);
+	gap: 12px;
+	padding: 8px 0;
+}
+
+.public-task-list strong {
+	font-size: 12px;
+}
+
+.public-message-list .message {
+	margin: 0;
+	max-width: none;
+}
+
 .state-shell {
 	align-items: center;
 	background: var(--paper);

@@ -327,7 +327,7 @@ function JoinRoom({
 				githubLogin: String(data.get("githubLogin") || ""),
 				kind,
 				requestId: joinRequestId,
-				inviteToken: kind !== "observer" ? inviteToken : undefined,
+				inviteToken,
 			});
 			if (onEnter(result.snapshot, result)) clearJoinRequestId(snapshot.room.id);
 		} catch (cause) {
@@ -336,6 +336,8 @@ function JoinRoom({
 			setBusy(false);
 		}
 	}
+
+	if (!inviteToken) return <PublicRoom snapshot={snapshot} />;
 
 	return (
 		<main class="join-shell">
@@ -377,8 +379,8 @@ function JoinRoom({
 						value={kind}
 						onChange={(event) => setKind(event.currentTarget.value as "human" | "ai" | "observer")}
 					>
-						{inviteToken && <option value="human">Builder</option>}
-						{inviteToken && <option value="ai">AI builder</option>}
+						<option value="human">Builder</option>
+						<option value="ai">AI builder</option>
 						<option value="observer">Observer</option>
 					</select>
 				</label>
@@ -388,6 +390,84 @@ function JoinRoom({
 					{busy ? "joining..." : "join build"}
 				</button>
 			</form>
+		</main>
+	);
+}
+
+function PublicRoom({ snapshot }: { snapshot: RoomSnapshot }) {
+	const recentMessages = snapshot.messages.slice(-6);
+	const activeTasks = snapshot.tasks.filter((task) => task.state !== "cut").slice(0, 5);
+	return (
+		<main class="join-shell">
+			<section class="join-context">
+				<Brand />
+				<span class={`status-pill status-${snapshot.room.status}`}>{snapshot.room.status}</span>
+				<h1>{snapshot.room.title}</h1>
+				<p>
+					{snapshot.room.brief.productGoal ||
+						"the conductor is waiting to shape the build with the team."}
+				</p>
+				<div class="join-people">
+					{snapshot.participants.map((participant, index) => (
+						<span
+							key={participant.id}
+							style={{ "--role": roleFallbacks[index % roleFallbacks.length] }}
+						>
+							{initials(participant.displayName)}
+						</span>
+					))}
+					<strong>{snapshot.participants.length} in room</strong>
+				</div>
+			</section>
+			<section class="join-form public-room">
+				<div class="public-room-heading">
+					<div>
+						<span class="eyebrow">public view</span>
+						<h2>watching live</h2>
+					</div>
+					<span class="presence online" />
+				</div>
+				<div class="public-room-stats">
+					<div>
+						<strong>{snapshot.tasks.length}</strong>
+						<span>tasks</span>
+					</div>
+					<div>
+						<strong>{snapshot.messageCount}</strong>
+						<span>events</span>
+					</div>
+					<div>
+						<strong>{snapshot.participants.length}</strong>
+						<span>seats</span>
+					</div>
+				</div>
+				<div class="public-room-section">
+					<span class="eyebrow">current work</span>
+					<div class="public-task-list">
+						{activeTasks.map((task) => (
+							<div key={task.id}>
+								<strong>{task.title}</strong>
+								<span>{task.state}</span>
+							</div>
+						))}
+						{!activeTasks.length && <p class="quiet-empty">the plan is taking shape.</p>}
+					</div>
+				</div>
+				<div class="public-room-section">
+					<span class="eyebrow">room line</span>
+					<div class="public-message-list">
+						{recentMessages.map((message) => (
+							<Message
+								key={message.id}
+								message={message}
+								participants={snapshot.participants}
+								mine={false}
+							/>
+						))}
+						{!recentMessages.length && <p class="quiet-empty">no room events yet.</p>}
+					</div>
+				</div>
+			</section>
 		</main>
 	);
 }

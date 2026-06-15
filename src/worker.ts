@@ -129,7 +129,10 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 
 	if (request.method === "POST" && url.pathname === "/api/rooms") {
 		if (
-			!eventAccessAuthorized(request.headers.get("x-multicodex-event-code"), env.EVENT_ACCESS_CODE)
+			!(await eventAccessAuthorized(
+				request.headers.get("x-multicodex-event-code"),
+				env.EVENT_ACCESS_CODE,
+			))
 		) {
 			throw new HttpError(401, "valid event code required");
 		}
@@ -214,11 +217,9 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const requestId = clean(body.requestId, 100);
 		if (requestId.length < 20) throw new HttpError(400, "join request id is required");
 		const kind = body.kind === "observer" || body.kind === "ai" ? body.kind : "human";
-		if (kind !== "observer") {
-			const inviteToken = clean(body.inviteToken, 100);
-			if (!(await roomBuilderInviteAuthorized(env.DB, roomId, inviteToken))) {
-				throw new HttpError(401, "valid room invite required for an active seat");
-			}
+		const inviteToken = clean(body.inviteToken, 100);
+		if (!(await roomBuilderInviteAuthorized(env.DB, roomId, inviteToken))) {
+			throw new HttpError(401, "valid room invite required for a participant seat");
 		}
 		const joined = await addParticipant(env.DB, roomId, {
 			displayName,
