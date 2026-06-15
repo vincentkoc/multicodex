@@ -327,7 +327,6 @@ export async function readRoomSnapshot(db: D1Database, roomId: string): Promise<
 							'github_login', github_login, 'role_id', role_id, 'task_id', task_id,
 							'crabfleet_session_id', crabfleet_session_id, 'browser_url', browser_url,
 							'runtime_summary', runtime_summary, 'branch', branch, 'state', state,
-							'access_token', access_token, 'join_request_id', join_request_id,
 							'joined_at', joined_at, 'created_at', created_at, 'updated_at', updated_at
 						))
 						FROM participants WHERE room_id = rooms.id
@@ -643,6 +642,38 @@ export async function addMessage(
 			.bind(message.createdAt, roomId, message.id, roomId),
 	]);
 	return result?.meta.changes === 1 ? message : null;
+}
+
+export async function consumeRoomMessageBudget(
+	db: D1Database,
+	roomId: string,
+	participantId: string,
+	now: number,
+	maxMessages: number,
+	windowMilliseconds: number,
+): Promise<boolean> {
+	const staleBefore = now - windowMilliseconds;
+	const result = await db
+		.prepare(
+			`INSERT INTO room_message_budgets
+         (room_id, participant_id, window_started_at, message_count)
+       VALUES (?, ?, ?, 1)
+       ON CONFLICT(room_id, participant_id) DO UPDATE SET
+         window_started_at = CASE
+           WHEN room_message_budgets.window_started_at <= ? THEN excluded.window_started_at
+           ELSE room_message_budgets.window_started_at
+         END,
+         message_count = CASE
+           WHEN room_message_budgets.window_started_at <= ? THEN 1
+           ELSE room_message_budgets.message_count + 1
+         END
+       WHERE room_message_budgets.window_started_at <= ?
+          OR room_message_budgets.message_count < ?
+       RETURNING message_count`,
+		)
+		.bind(roomId, participantId, now, staleBefore, staleBefore, staleBefore, maxMessages)
+		.first<{ message_count: number }>();
+	return result !== null;
 }
 
 export async function replacePlan(

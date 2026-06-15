@@ -49,6 +49,7 @@ import {
 	claimRoomRuntimeLease,
 	claimStaleProvisioningCleanup,
 	completeRoomProvisioning,
+	consumeRoomMessageBudget,
 	createRoom,
 	endRoom,
 	expireInactivePrelaunchRooms,
@@ -108,6 +109,8 @@ const scheduledReconciliationBudgetMilliseconds = 8 * 60 * 1000;
 const prelaunchExpiryBatchSize = 1;
 const runtimeCleanupBatchSize = 1;
 const runtimeCleanupConcurrency = 1;
+const roomMessageBudgetWindowMilliseconds = 10_000;
+const maxRoomMessagesPerParticipantWindow = 10;
 
 export default {
 	async fetch(request, env, context): Promise<Response> {
@@ -318,6 +321,18 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 	if (request.method === "POST" && messagesMatch) {
 		const roomId = decodeURIComponent(messagesMatch[1] ?? "");
 		const author = await requireRoomParticipant(env.DB, roomId, participantToken(request), false);
+		if (
+			!(await consumeRoomMessageBudget(
+				env.DB,
+				roomId,
+				author.id,
+				Date.now(),
+				maxRoomMessagesPerParticipantWindow,
+				roomMessageBudgetWindowMilliseconds,
+			))
+		) {
+			throw new HttpError(429, "message rate exceeded");
+		}
 		const current = await readRoomSnapshot(env.DB, roomId);
 		if (!roomAllowsMessages(current.room.status)) {
 			throw new HttpError(409, "room messages are closed");

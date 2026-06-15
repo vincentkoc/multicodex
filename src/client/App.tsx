@@ -65,6 +65,7 @@ export function App() {
 	const [roleCatalog, setRoleCatalog] = useState<Catalog["roles"]>([]);
 	const [error, setError] = useState("");
 	const [loading, setLoading] = useState(Boolean(roomId));
+	const [socketConnected, setSocketConnected] = useState(false);
 	const snapshotRequestSequence = useRef(0);
 	const [builderInviteToken, clearBuilderInviteToken] = useBuilderInviteToken(roomId);
 
@@ -75,6 +76,7 @@ export function App() {
 			setRoomId(nextRoomId);
 			setIdentity(nextRoomId ? loadIdentity(nextRoomId) : null);
 			setSnapshot(null);
+			setSocketConnected(false);
 			setError("");
 			setLoading(Boolean(nextRoomId));
 		};
@@ -130,8 +132,7 @@ export function App() {
 	}, [roomId, identity?.participantToken, refreshRoom]);
 
 	useEffect(() => {
-		if (!roomId || identity?.participantToken || !snapshot || snapshot.room.status === "ended")
-			return;
+		if (!roomId || !snapshot || socketConnected || snapshot.room.status === "ended") return;
 		let disposed = false;
 		const interval = window.setInterval(() => {
 			refreshRoom().catch((cause: Error) => {
@@ -142,10 +143,11 @@ export function App() {
 			disposed = true;
 			window.clearInterval(interval);
 		};
-	}, [roomId, identity?.participantToken, snapshot?.room.status, refreshRoom]);
+	}, [roomId, snapshot?.room.status, socketConnected, refreshRoom]);
 
 	useEffect(() => {
 		if (!roomId || !snapshot || snapshot.room.status === "ended") return;
+		setSocketConnected(false);
 		let socket: WebSocket | null = null;
 		let retry: number | null = null;
 		let retryAttempt = 0;
@@ -184,6 +186,7 @@ export function App() {
 			socket = new WebSocket(roomSocketUrl(roomId, ticket));
 			socket.onopen = () => {
 				retryAttempt = 0;
+				setSocketConnected(true);
 				syncRoom();
 			};
 			socket.onmessage = (event) => {
@@ -191,13 +194,17 @@ export function App() {
 				const payload = JSON.parse(String(event.data)) as { type: string };
 				if (payload.type === "changed") syncRoom();
 			};
-			socket.onclose = scheduleReconnect;
+			socket.onclose = () => {
+				setSocketConnected(false);
+				scheduleReconnect();
+			};
 		};
 		void connect();
 		return () => {
 			disposed = true;
 			if (retry !== null) window.clearTimeout(retry);
 			socket?.close();
+			setSocketConnected(false);
 		};
 	}, [roomId, snapshot?.room.status, identity?.participantToken, refreshRoom]);
 

@@ -86,3 +86,15 @@ test("pre-launch activity is backfilled before inactivity expiry", async () => {
 	assert.match(migration, /MAX\(updated_at\) FROM tasks/);
 	assert.match(migration, /status IN \('setup', 'planning'\)/);
 });
+
+test("participant chat budgets are durable per room seat", async () => {
+	const migration = await readFile(
+		new URL("../migrations/0013_room_message_budgets.sql", import.meta.url),
+		"utf8",
+	);
+
+	assert.match(migration, /CREATE TABLE room_message_budgets/);
+	assert.match(migration, /PRIMARY KEY \(room_id, participant_id\)/);
+	assert.match(migration, /window_started_at INTEGER NOT NULL/);
+	assert.match(migration, /message_count INTEGER NOT NULL/);
+});

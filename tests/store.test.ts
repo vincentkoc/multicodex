@@ -140,9 +140,22 @@ test("room snapshots read all redaction-related state from one D1 snapshot", asy
 	assert.match(snapshotSource, /const \[snapshot, messages\] = await db\.batch/);
 	assert.match(snapshotSource, /json_group_array\(json_object/);
 	assert.equal(snapshotSource.match(/\.prepare\(/g)?.length, 2);
+	assert.doesNotMatch(snapshotSource, /'access_token'|'join_request_id'/);
 	assert.match(snapshotSource, /room_runtime_redactions/);
 	assert.match(snapshotSource, /SELECT COUNT\(\*\) FROM room_messages/);
 	assert.match(snapshotSource, /messageCount: Number/);
+});
+
+test("room message budgets are consumed atomically before writes", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function consumeRoomMessageBudget");
+	const end = source.indexOf("export async function replacePlan", start);
+	const budgetSource = source.slice(start, end);
+
+	assert.match(budgetSource, /INSERT INTO room_message_budgets/);
+	assert.match(budgetSource, /ON CONFLICT\(room_id, participant_id\) DO UPDATE/);
+	assert.match(budgetSource, /room_message_budgets\.message_count < \?/);
+	assert.match(budgetSource, /RETURNING message_count/);
 });
 
 test("room existence checks stay lightweight for public socket handshakes", async () => {

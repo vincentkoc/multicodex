@@ -7,6 +7,9 @@ test("worker mutation routes keep terminal rooms immutable", async () => {
 	const messageStart = source.indexOf("const messagesMatch");
 	const messageEnd = source.indexOf("const shuffleMatch", messageStart);
 	const messageSource = source.slice(messageStart, messageEnd);
+	const postMessageSource = messageSource.slice(
+		messageSource.indexOf('if (request.method === "POST"'),
+	);
 	const refreshStart = source.indexOf("const refreshMatch");
 	const refreshEnd = source.indexOf("const nudgeMatch", refreshStart);
 	const refreshSource = source.slice(refreshStart, refreshEnd);
@@ -17,6 +20,15 @@ test("worker mutation routes keep terminal rooms immutable", async () => {
 	assert.match(messageSource, /optionalMessageReference/);
 	assert.match(messageSource, /current\.participants\.some/);
 	assert.match(messageSource, /roomMessageExists/);
+	assert.match(messageSource, /consumeRoomMessageBudget/);
+	assert.match(messageSource, /message rate exceeded/);
+	assert.ok(
+		postMessageSource.indexOf("consumeRoomMessageBudget") <
+			postMessageSource.indexOf("readRoomSnapshot"),
+	);
+	assert.ok(
+		postMessageSource.indexOf("consumeRoomMessageBudget") < postMessageSource.indexOf("addMessage"),
+	);
 	assert.match(refreshSource, /participantToken\(request\), false/);
 	assert.match(refreshSource, /roomAllowsRuntimeRefresh/);
 	assert.match(refreshSource, /expectedStatuses: runtimeRefreshStatuses/);
@@ -161,7 +173,9 @@ test("WebSocket reconnects resync the current room snapshot", async () => {
 	assert.match(socketSource, /sequence === snapshotRequestSequence\.current/);
 	assert.match(socketSource, /window\.setInterval/);
 	assert.match(socketSource, /10_000/);
-	assert.match(socketSource, /!identity\?\.participantToken/);
+	assert.match(socketSource, /socketConnected/);
+	assert.match(socketSource, /setSocketConnected\(true\)/);
+	assert.match(socketSource, /setSocketConnected\(false\)/);
 	assert.match(socketSource, /ApiError/);
 	assert.match(socketSource, /cause\.status !== 403/);
 	assert.match(socketSource, /clearIdentity\(roomId\)/);
