@@ -277,13 +277,46 @@ test("Crabfleet cleanup fails closed on an incomplete root-stop response", async
 	}
 });
 
-test("Crabfleet cleanup requires every known session to be terminal", async () => {
+test("Crabfleet cleanup accepts previously finalized children absent from the root tree", async () => {
 	const originalFetch = globalThis.fetch;
 	globalThis.fetch = async () =>
 		Response.json({
 			rootSessionId: "root",
 			admissionClosed: true,
 			crabboxes: [crabbox("root", "stopped")],
+		});
+	try {
+		await stopRoomCrabboxes({ CRABFLEET_SERVICE_TOKEN: "test" } as Env, "root", ["root", "child"]);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test("Crabfleet cleanup requires the root session to remain in the terminal tree", async () => {
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = async () =>
+		Response.json({
+			rootSessionId: "root",
+			admissionClosed: true,
+			crabboxes: [crabbox("child", "stopped")],
+		});
+	try {
+		await assert.rejects(
+			stopRoomCrabboxes({ CRABFLEET_SERVICE_TOKEN: "test" } as Env, "root", ["root", "child"]),
+			/cleanup did not reach a terminal state/,
+		);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test("Crabfleet cleanup rejects returned non-terminal sessions", async () => {
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = async () =>
+		Response.json({
+			rootSessionId: "root",
+			admissionClosed: true,
+			crabboxes: [crabbox("root", "stopped"), crabbox("child", "attached")],
 		});
 	try {
 		await assert.rejects(
