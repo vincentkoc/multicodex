@@ -85,14 +85,13 @@ export async function provisionRoomCrabboxes(
 	const active = participants.filter((participant) => participant.kind !== "observer");
 	const host = active.find((participant) => participant.id === room.hostParticipantId) ?? active[0];
 	if (!host) throw new HttpError(400, "room has no active participant");
-	if (!env.CRABFLEET_SERVICE_TOKEN) {
-		if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) {
-			const bindings = simulatedBindings(room, active);
-			for (const item of bindings) await onBinding?.(item, bindings);
-			return bindings;
-		}
-		throw new HttpError(503, "Crabfleet service token is not configured");
+	if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) {
+		const bindings = simulatedBindings(room, active);
+		for (const item of bindings) await onBinding?.(item, bindings);
+		return bindings;
 	}
+	if (!env.CRABFLEET_SERVICE_TOKEN)
+		throw new HttpError(503, "Crabfleet service token is not configured");
 	const owner = crabfleetOwner(env.CRABFLEET_OWNER);
 	const requestId = (participantId: string) =>
 		`multicodex:${room.id}:${room.briefRevision}:${participantId}`;
@@ -144,12 +143,11 @@ export async function recoverRoomRootCrabbox(
 	const active = participants.filter((participant) => participant.kind !== "observer");
 	const host = active.find((participant) => participant.id === room.hostParticipantId) ?? active[0];
 	if (!host) throw new HttpError(400, "room has no active participant");
-	if (!env.CRABFLEET_SERVICE_TOKEN) {
-		if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) {
-			return simulatedBindings(room, [host])[0]!;
-		}
-		throw new HttpError(503, "Crabfleet service token is not configured");
+	if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) {
+		return simulatedBindings(room, [host])[0]!;
 	}
+	if (!env.CRABFLEET_SERVICE_TOKEN)
+		throw new HttpError(503, "Crabfleet service token is not configured");
 	const hostTask = tasks.find((task) => task.ownerParticipantId === host.id);
 	return {
 		participantId: host.id,
@@ -172,10 +170,9 @@ export async function readRoomCrabboxes(
 	env: Env,
 	rootSessionId: string,
 ): Promise<CrabboxBinding[]> {
-	if (!env.CRABFLEET_SERVICE_TOKEN) {
-		if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) return [];
+	if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) return [];
+	if (!env.CRABFLEET_SERVICE_TOKEN)
 		throw new HttpError(503, "Crabfleet service token is not configured");
-	}
 	const response = await crabfleetFetch(
 		env,
 		`/api/openclaw/session-roots/${encodeURIComponent(rootSessionId)}`,
@@ -193,10 +190,9 @@ export async function sendCrabboxNudge(
 	sessionId: string,
 	message: string,
 ): Promise<void> {
-	if (!env.CRABFLEET_SERVICE_TOKEN) {
-		if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) return;
+	if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) return;
+	if (!env.CRABFLEET_SERVICE_TOKEN)
 		throw new HttpError(503, "Crabfleet service token is not configured");
-	}
 	const response = await crabfleetFetch(
 		env,
 		`/api/openclaw/crabboxes/${encodeURIComponent(sessionId)}/message`,
@@ -215,10 +211,9 @@ export async function stopRoomCrabboxes(
 	rootSessionId: string,
 	sessionIds: string[],
 ): Promise<void> {
-	if (!env.CRABFLEET_SERVICE_TOKEN) {
-		if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) return;
+	if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) return;
+	if (!env.CRABFLEET_SERVICE_TOKEN)
 		throw new HttpError(503, "Crabfleet service token is not configured");
-	}
 	const response = await crabfleetFetch(
 		env,
 		`/api/openclaw/session-roots/${encodeURIComponent(rootSessionId)}/actions`,
@@ -340,6 +335,9 @@ async function createCrabbox(
 }
 
 async function crabfleetFetch(env: Env, path: string, init: RequestInit = {}): Promise<Response> {
+	if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) {
+		throw new HttpError(500, "real Crabfleet requests are disabled in simulation");
+	}
 	let response: Response;
 	try {
 		response = await fetch(crabfleetUrl(env, path), {

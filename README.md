@@ -27,7 +27,8 @@ deterministic conductor and simulated workspaces so the complete room flow is
 still testable. `pnpm dev` enables simulation only for the local Wrangler
 process and uses `DEFAULT_BASE_BRANCH` without calling GitHub. Set
 `EVENT_ACCESS_CODE` in `.dev.vars`; room creation fails closed without it.
-Production keeps simulation explicitly disabled.
+Loaded GitHub and Crabfleet credentials remain unused while simulation is
+enabled. Production keeps simulation explicitly disabled.
 
 ## Room security
 

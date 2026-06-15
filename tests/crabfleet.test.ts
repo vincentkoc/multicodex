@@ -12,6 +12,7 @@ import {
 	readRoomCrabboxes,
 	readinessPollDelays,
 	recoverRoomRootCrabbox,
+	sendCrabboxNudge,
 	stopRoomCrabboxes,
 } from "../src/crabfleet.ts";
 import type { Participant, Room } from "../src/domain.ts";
@@ -71,7 +72,10 @@ test("partial room provisioning returns every created session for durable cleanu
 	try {
 		await assert.rejects(
 			provisionRoomCrabboxes(
-				{ CRABFLEET_OWNER: "Event Service", CRABFLEET_SERVICE_TOKEN: "test" } as Env,
+				{
+					CRABFLEET_OWNER: "Event Service",
+					CRABFLEET_SERVICE_TOKEN: "test",
+				} as unknown as Env,
 				room,
 				[
 					{ ...participant("host"), githubLogin: "untrusted-host" },
@@ -231,6 +235,33 @@ test("Crabfleet cleanup fails closed without credentials unless simulation is ex
 	await stopRoomCrabboxes({ MULTICODEX_SIMULATION_MODE: "true" } as unknown as Env, "root", [
 		"root",
 	]);
+});
+
+test("explicit simulation never calls Crabfleet even when credentials exist", async () => {
+	const originalFetch = globalThis.fetch;
+	let requests = 0;
+	globalThis.fetch = async () => {
+		requests += 1;
+		throw new Error("Crabfleet must not be called");
+	};
+	const env = {
+		CRABFLEET_SERVICE_TOKEN: "configured-but-unused",
+		MULTICODEX_SIMULATION_MODE: "true",
+	} as unknown as Env;
+	try {
+		const bindings = await provisionRoomCrabboxes(env, room, [participant("host")], []);
+		assert.match(bindings[0]!.binding.session.id, /^SIM-/);
+		assert.match(
+			(await recoverRoomRootCrabbox(env, room, [participant("host")], [])).binding.session.id,
+			/^SIM-/,
+		);
+		assert.deepEqual(await readRoomCrabboxes(env, "root"), []);
+		await sendCrabboxNudge(env, "root", "child", "stay simulated");
+		await stopRoomCrabboxes(env, "root", ["root", "child"]);
+		assert.equal(requests, 0);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
 });
 
 test("Crabfleet cleanup fails closed on an incomplete root-stop response", async () => {
