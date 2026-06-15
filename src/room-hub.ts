@@ -5,11 +5,14 @@ import {
 	maxObserverRoomWebSockets,
 	maxParticipantWebSockets,
 	maxPublicRoomWebSockets,
+	maxPublicRoomWebSocketsPerSource,
 	maxRoomWebSockets,
 	observerRoomWebSocketTag,
 	participantRoomWebSocketTag,
 	publicRoomWebSocketTag,
+	publicRoomWebSocketSourceTag,
 	recordSocketMessage,
+	roomWebSocketSourceHeader,
 	roomWebSocketTicketHeader,
 	sameOriginWebSocketRequest,
 	type SocketRateState,
@@ -61,6 +64,18 @@ export class RoomHub extends DurableObject<Env> {
 		if (suppliedTicket && !participant) {
 			return new Response("valid websocket ticket required", { status: 401 });
 		}
+		const publicSourceTag = participant
+			? null
+			: publicRoomWebSocketSourceTag(request.headers.get(roomWebSocketSourceHeader));
+		if (!participant && !publicSourceTag) {
+			return new Response("public websocket admission required", { status: 403 });
+		}
+		if (
+			publicSourceTag &&
+			this.ctx.getWebSockets(publicSourceTag).length >= maxPublicRoomWebSocketsPerSource
+		) {
+			return new Response("public source websocket limit reached", { status: 429 });
+		}
 		const participantTag = participant ? participantRoomWebSocketTag(participant.id) : null;
 		if (
 			participantTag &&
@@ -92,7 +107,7 @@ export class RoomHub extends DurableObject<Env> {
 		} satisfies SocketRateState);
 		this.ctx.acceptWebSocket(
 			pair[1],
-			participantTag ? [categoryTag, participantTag] : [categoryTag],
+			participantTag ? [categoryTag, participantTag] : [categoryTag, publicSourceTag!],
 		);
 		pair[1].send(JSON.stringify({ type: "connected", at: Date.now() }));
 		return new Response(null, { status: 101, webSocket: pair[0] });

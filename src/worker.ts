@@ -33,7 +33,11 @@ import {
 	roomPlanCoversActiveParticipants,
 } from "./room-state.ts";
 import { RoomHub } from "./room-hub.ts";
-import { roomWebSocketTicketHeader, sameOriginWebSocketRequest } from "./socket-admission.ts";
+import {
+	roomWebSocketSourceHeader,
+	roomWebSocketTicketHeader,
+	sameOriginWebSocketRequest,
+} from "./socket-admission.ts";
 import { requestSourceKey } from "./source-key.ts";
 import {
 	addConductorAction,
@@ -226,6 +230,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const roomId = decodeURIComponent(roomWsMatch[1] ?? "");
 		if (!(await roomExists(env.DB, roomId))) throw new HttpError(404, "room not found");
 		const headers = new Headers(request.headers);
+		headers.set(roomWebSocketSourceHeader, await requestSourceKey(request));
 		headers.delete(roomWebSocketTicketHeader);
 		const ticket = clean(url.searchParams.get("ticket"), 100);
 		if (ticket) headers.set(roomWebSocketTicketHeader, ticket);

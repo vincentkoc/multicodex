@@ -150,7 +150,12 @@ test("WebSocket reconnects resync the current room snapshot", async () => {
 	const end = source.indexOf("function enterRoom", start);
 	const socketSource = source.slice(start, end);
 
-	assert.match(socketSource, /socket\.onopen = syncRoom/);
+	assert.match(socketSource, /retryAttempt = 0/);
+	assert.match(socketSource, /Math\.min\(30_000/);
+	assert.match(socketSource, /Math\.random\(\)/);
+	assert.match(socketSource, /snapshot\.room\.status === "ended"/);
+	assert.match(socketSource, /snapshot\?\.room\.status/);
+	assert.doesNotMatch(socketSource, /1200/);
 	assert.match(socketSource, /if \(payload\.type === "changed"\) syncRoom\(\)/);
 	assert.match(socketSource, /snapshotRequestSequence/);
 	assert.match(socketSource, /sequence === snapshotRequestSequence\.current/);
@@ -164,6 +169,10 @@ test("browser history navigation resynchronizes room state", async () => {
 	assert.match(source, /const nextRoomId = roomIdFromPath\(\)/);
 	assert.match(source, /setIdentity\(nextRoomId \? loadIdentity\(nextRoomId\) : null\)/);
 	assert.match(source, /setSnapshot\(null\)/);
+	assert.match(
+		source,
+		/try \{\s*return decodeURIComponent\(encoded\);\s*\} catch \{\s*return null;/,
+	);
 });
 
 test("asset responses prohibit framing authenticated controls", async () => {
@@ -502,6 +511,10 @@ test("public WebSocket handshakes use a lightweight room existence check", async
 	assert.match(socketSource, /sameOriginWebSocketRequest\(request\)/);
 	assert.match(socketSource, /headers\.delete\(roomWebSocketTicketHeader\)/);
 	assert.match(socketSource, /headers\.set\(roomWebSocketTicketHeader, ticket\)/);
+	assert.match(
+		socketSource,
+		/headers\.set\(roomWebSocketSourceHeader, await requestSourceKey\(request\)\)/,
+	);
 	assert.doesNotMatch(socketSource, /readRoomSnapshot/);
 });
 
@@ -515,6 +528,8 @@ test("RoomHub reserves websocket capacity for authenticated participants", async
 	assert.match(source, /this\.ctx\.getWebSockets\(\)\.length >= maxRoomWebSockets/);
 	assert.match(source, /maxParticipantWebSockets/);
 	assert.match(source, /maxObserverRoomWebSockets/);
+	assert.match(source, /maxPublicRoomWebSocketsPerSource/);
+	assert.match(source, /publicRoomWebSocketSourceTag/);
 	assert.match(source, /participant\.kind === "observer"/);
 	assert.match(source, /issueParticipantTicket/);
 	assert.match(source, /consumeParticipantTicket/);

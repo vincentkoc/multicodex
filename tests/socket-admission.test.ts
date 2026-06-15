@@ -6,10 +6,12 @@ import {
 	maxObserverRoomWebSockets,
 	maxParticipantWebSockets,
 	maxPublicRoomWebSockets,
+	maxPublicRoomWebSocketsPerSource,
 	maxRoomWebSockets,
 	observerRoomWebSocketTag,
 	participantRoomWebSocketTag,
 	publicRoomWebSocketTag,
+	publicRoomWebSocketSourceTag,
 	recordSocketMessage,
 	sameOriginWebSocketRequest,
 } from "../src/socket-admission.ts";
@@ -52,12 +54,15 @@ test("websocket message rate state closes sustained ping traffic", () => {
 test("each room has a conservative websocket admission cap", () => {
 	assert.equal(maxRoomWebSockets, 64);
 	assert.equal(maxPublicRoomWebSockets, 16);
+	assert.equal(maxPublicRoomWebSocketsPerSource, 4);
 	assert.equal(maxObserverRoomWebSockets, 16);
 	assert.equal(maxParticipantWebSockets, 4);
 	assert.equal(publicRoomWebSocketTag, "public");
 	assert.equal(observerRoomWebSocketTag, "observer");
 	assert.equal(builderRoomWebSocketTag, "builder");
 	assert.equal(participantRoomWebSocketTag("person-1"), "participant:person-1");
+	assert.equal(publicRoomWebSocketSourceTag("a".repeat(64)), `public-source:${"a".repeat(64)}`);
+	assert.equal(publicRoomWebSocketSourceTag("spoofed"), null);
 });
 
 test("edge source identifiers are stable hashes rather than raw addresses", async () => {

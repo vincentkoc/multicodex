@@ -43,7 +43,7 @@ Production keeps simulation explicitly disabled.
   session, present, or end a room.
 - Room WebSockets require the app's origin and close clients that exceed the
   message-rate budget. One-time participant tickets reserve builder capacity
-  separately from a bounded public-view pool.
+  separately from a bounded, per-source public-view pool.
 - Builder and AI seats require the room-specific invite link copied by the host;
   public room links can still admit read-only observers.
 - Active builder seats are capped at five. The Worker is the only component that

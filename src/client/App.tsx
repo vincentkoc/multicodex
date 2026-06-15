@@ -117,9 +117,10 @@ export function App() {
 	}, [roomId, identity?.participantToken, refreshRoom]);
 
 	useEffect(() => {
-		if (!roomId || !snapshot) return;
+		if (!roomId || !snapshot || snapshot.room.status === "ended") return;
 		let socket: WebSocket | null = null;
 		let retry: number | null = null;
+		let retryAttempt = 0;
 		let connecting = false;
 		let disposed = false;
 		const syncRoom = () => {
@@ -127,32 +128,50 @@ export function App() {
 				if (!disposed) setError(cause.message);
 			});
 		};
+		const scheduleReconnect = () => {
+			if (disposed || retry !== null) return;
+			const baseDelay = Math.min(30_000, 1000 * 2 ** Math.min(retryAttempt, 5));
+			retryAttempt += 1;
+			const delay = baseDelay + Math.floor(Math.random() * Math.max(250, baseDelay / 4));
+			retry = window.setTimeout(() => {
+				retry = null;
+				void connect();
+			}, delay);
+		};
 		const connect = async () => {
 			if (connecting || disposed) return;
 			connecting = true;
-			const ticket = identity?.participantToken
-				? await issueRoomSocketTicket(roomId, identity.participantToken).catch(() => null)
-				: null;
+			let ticket: string | null = null;
+			if (identity?.participantToken) {
+				try {
+					ticket = await issueRoomSocketTicket(roomId, identity.participantToken);
+				} catch {
+					connecting = false;
+					scheduleReconnect();
+					return;
+				}
+			}
 			connecting = false;
 			if (disposed) return;
 			socket = new WebSocket(roomSocketUrl(roomId, ticket));
-			socket.onopen = syncRoom;
+			socket.onopen = () => {
+				retryAttempt = 0;
+				syncRoom();
+			};
 			socket.onmessage = (event) => {
 				if (event.data === "pong") return;
 				const payload = JSON.parse(String(event.data)) as { type: string };
 				if (payload.type === "changed") syncRoom();
 			};
-			socket.onclose = () => {
-				if (!disposed) retry = window.setTimeout(() => void connect(), 1200);
-			};
+			socket.onclose = scheduleReconnect;
 		};
 		void connect();
 		return () => {
 			disposed = true;
-			if (retry) window.clearTimeout(retry);
+			if (retry !== null) window.clearTimeout(retry);
 			socket?.close();
 		};
-	}, [roomId, Boolean(snapshot), identity?.participantToken, refreshRoom]);
+	}, [roomId, snapshot?.room.status, identity?.participantToken, refreshRoom]);
 
 	function enterRoom(next: RoomSnapshot, nextIdentity: RoomIdentity): boolean {
 		const identity = minimalRoomIdentity(nextIdentity);
@@ -1549,9 +1568,13 @@ function useRoomTimer(endsAt: number | null) {
 }
 
 function roomIdFromPath(): string | null {
-	return location.pathname.match(/^\/rooms\/([^/]+)$/)?.[1]
-		? decodeURIComponent(location.pathname.split("/")[2]!)
-		: null;
+	const encoded = location.pathname.match(/^\/rooms\/([^/]+)$/)?.[1];
+	if (!encoded) return null;
+	try {
+		return decodeURIComponent(encoded);
+	} catch {
+		return null;
+	}
 }
 
 function builderInviteTokenFromUrl(): string | undefined {
