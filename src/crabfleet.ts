@@ -442,7 +442,6 @@ function ambiguousCrabfleetCreate(error: unknown): boolean {
 	return (
 		error.upstreamStatus === null ||
 		error.upstreamStatus === 408 ||
-		error.upstreamStatus === 409 ||
 		error.upstreamStatus === 429 ||
 		error.upstreamStatus >= 500
 	);

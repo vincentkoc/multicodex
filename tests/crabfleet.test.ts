@@ -167,6 +167,39 @@ test("ambiguous root provisioning replays the persisted request after config dri
 	assert.deepEqual(requestBodies[1], requestBodies[0]);
 });
 
+test("Crabfleet replay conflicts are definitive while preparing replays stay ambiguous", async () => {
+	const originalFetch = globalThis.fetch;
+	try {
+		globalThis.fetch = async () => new Response("conflict", { status: 409 });
+		await assert.rejects(
+			provisionRoomCrabboxes(
+				{ CRABFLEET_SERVICE_TOKEN: "test" } as Env,
+				room,
+				[participant("host")],
+				[],
+			),
+			(error) => {
+				assert.ok(error instanceof PartialProvisioningError);
+				assert.deepEqual(error.bindings, []);
+				return true;
+			},
+		);
+
+		globalThis.fetch = async () => new Response("still preparing", { status: 503 });
+		await assert.rejects(
+			provisionRoomCrabboxes(
+				{ CRABFLEET_SERVICE_TOKEN: "test" } as Env,
+				room,
+				[participant("host")],
+				[],
+			),
+			(error) => error instanceof AmbiguousRootProvisioningError,
+		);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
 test("persisted root requests fail closed when corrupted", () => {
 	assert.throws(() => parseRootCrabboxRequest("{}"), /persisted root Crabfleet request is invalid/);
 	assert.throws(
