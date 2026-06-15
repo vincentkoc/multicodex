@@ -299,6 +299,11 @@ test("observer controls stay read-only and presentation waits for success", asyn
 	);
 	assert.match(source, /setView\("recap"\)/);
 	assert.match(source, /class="button ghost recap-button"/);
+	assert.match(
+		source,
+		/onBack=\{snapshot\.room\.status === "ended" \? onHome : \(\) => setView\("workbench"\)\}/,
+	);
+	assert.match(source, /backLabel=\{snapshot\.room\.status === "ended" \? "home" : "workbench"\}/);
 });
 
 test("conductor turns are claimed before model execution and cannot nudge workspaces", async () => {
