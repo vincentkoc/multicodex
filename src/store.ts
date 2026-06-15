@@ -116,6 +116,20 @@ type ActionRow = {
 	created_at: number;
 };
 
+type SnapshotAggregateRow = RoomRow & {
+	participants_json: string;
+	message_count: number | string;
+	tasks_json: string;
+	decisions_json: string;
+	conductor_actions_json: string;
+	runtime_redactions_json: string;
+};
+
+type RuntimeRedactionRow = {
+	identifier: string;
+	created_at: number;
+};
+
 export async function reserveRoomCreation(
 	db: D1Database,
 	requestId: string,
@@ -303,49 +317,89 @@ export async function roomMessageExists(
 }
 
 export async function readRoomSnapshot(db: D1Database, roomId: string): Promise<RoomSnapshot> {
-	const [
-		rooms,
-		participants,
-		messages,
-		messageCount,
-		tasks,
-		decisions,
-		conductorActions,
-		runtimeRedactions,
-	] = await db.batch([
-		db.prepare("SELECT * FROM rooms WHERE id = ?").bind(roomId),
-		db.prepare("SELECT * FROM participants WHERE room_id = ? ORDER BY created_at ASC").bind(roomId),
+	const [snapshot, messages] = await db.batch([
+		db
+			.prepare(
+				`SELECT rooms.*,
+					COALESCE((
+						SELECT json_group_array(json_object(
+							'id', id, 'room_id', room_id, 'kind', kind, 'display_name', display_name,
+							'github_login', github_login, 'role_id', role_id, 'task_id', task_id,
+							'crabfleet_session_id', crabfleet_session_id, 'browser_url', browser_url,
+							'runtime_summary', runtime_summary, 'branch', branch, 'state', state,
+							'access_token', access_token, 'join_request_id', join_request_id,
+							'joined_at', joined_at, 'created_at', created_at, 'updated_at', updated_at
+						))
+						FROM participants WHERE room_id = rooms.id
+					), '[]') AS participants_json,
+					(SELECT COUNT(*) FROM room_messages WHERE room_id = rooms.id) AS message_count,
+					COALESCE((
+						SELECT json_group_array(json_object(
+							'id', id, 'room_id', room_id, 'title', title, 'description', description,
+							'owner_participant_id', owner_participant_id, 'state', state,
+							'depends_on_json', depends_on_json, 'owns_paths_json', owns_paths_json,
+							'acceptance_criteria_json', acceptance_criteria_json, 'branch', branch,
+							'pull_request_url', pull_request_url, 'created_at', created_at,
+							'updated_at', updated_at
+						))
+						FROM tasks WHERE room_id = rooms.id
+					), '[]') AS tasks_json,
+					COALESCE((
+						SELECT json_group_array(json_object(
+							'id', id, 'room_id', room_id, 'title', title, 'decision', decision,
+							'reason', reason, 'author_kind', author_kind, 'author_id', author_id,
+							'affected_task_ids_json', affected_task_ids_json, 'created_at', created_at
+						))
+						FROM decisions WHERE room_id = rooms.id
+					), '[]') AS decisions_json,
+					COALESCE((
+						SELECT json_group_array(json_object(
+							'id', id, 'room_id', room_id, 'kind', kind,
+							'target_ids_json', target_ids_json, 'reason', reason,
+							'evidence_refs_json', evidence_refs_json, 'approval_state', approval_state,
+							'created_at', created_at
+						))
+						FROM conductor_actions WHERE room_id = rooms.id
+					), '[]') AS conductor_actions_json,
+					COALESCE((
+						SELECT json_group_array(json_object(
+							'identifier', identifier, 'created_at', created_at
+						))
+						FROM room_runtime_redactions WHERE room_id = rooms.id
+					), '[]') AS runtime_redactions_json
+				FROM rooms WHERE id = ?`,
+			)
+			.bind(roomId),
 		db
 			.prepare(
 				"SELECT * FROM room_messages WHERE room_id = ? ORDER BY created_at DESC, id DESC LIMIT 500",
 			)
 			.bind(roomId),
-		db.prepare("SELECT COUNT(*) AS count FROM room_messages WHERE room_id = ?").bind(roomId),
-		db.prepare("SELECT * FROM tasks WHERE room_id = ? ORDER BY created_at ASC").bind(roomId),
-		db.prepare("SELECT * FROM decisions WHERE room_id = ? ORDER BY created_at ASC").bind(roomId),
-		db
-			.prepare("SELECT * FROM conductor_actions WHERE room_id = ? ORDER BY created_at ASC")
-			.bind(roomId),
-		db
-			.prepare(
-				"SELECT identifier FROM room_runtime_redactions WHERE room_id = ? ORDER BY created_at ASC",
-			)
-			.bind(roomId),
 	]);
-	const roomResult = rooms?.results[0] as RoomRow | undefined;
+	const roomResult = snapshot?.results[0] as SnapshotAggregateRow | undefined;
 	if (!roomResult) throw new HttpError(404, "room not found");
-	const participantRows = (participants?.results ?? []) as ParticipantRow[];
+	const participantRows = parseJson<ParticipantRow[]>(roomResult.participants_json, []).sort(
+		(a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id),
+	);
 	const messageRows = (messages?.results ?? []) as MessageRow[];
-	const taskRows = (tasks?.results ?? []) as TaskRow[];
-	const decisionRows = (decisions?.results ?? []) as DecisionRow[];
-	const actionRows = (conductorActions?.results ?? []) as ActionRow[];
-	const redactionRows = (runtimeRedactions?.results ?? []) as Array<{ identifier: string }>;
-	const countRow = messageCount?.results[0] as { count: number | string } | undefined;
+	const taskRows = parseJson<TaskRow[]>(roomResult.tasks_json, []).sort(
+		(a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id),
+	);
+	const decisionRows = parseJson<DecisionRow[]>(roomResult.decisions_json, []).sort(
+		(a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id),
+	);
+	const actionRows = parseJson<ActionRow[]>(roomResult.conductor_actions_json, []).sort(
+		(a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id),
+	);
+	const redactionRows = parseJson<RuntimeRedactionRow[]>(
+		roomResult.runtime_redactions_json,
+		[],
+	).sort((a, b) => a.created_at - b.created_at || a.identifier.localeCompare(b.identifier));
 	return {
 		room: roomFromRow(roomResult),
 		participants: participantRows.map(participantFromRow),
 		messages: messageRows.reverse().map(messageFromRow),
-		messageCount: Number(countRow?.count ?? messageRows.length),
+		messageCount: Number(roomResult.message_count ?? messageRows.length),
 		tasks: taskRows.map(taskFromRow),
 		decisions: decisionRows.map(decisionFromRow),
 		conductorActions: actionRows.map(actionFromRow),
@@ -856,6 +910,46 @@ export async function recordProvisioningBinding(
 			),
 	]);
 	return roomResult?.meta.changes === 1 && participantResult?.meta.changes === 1;
+}
+
+export async function refreshProvisioningBinding(
+	db: D1Database,
+	roomId: string,
+	expectedBriefRevision: number,
+	rootSessionId: string,
+	binding: {
+		participantId: string;
+		sessionId: string;
+		browserUrl: string;
+		summary: string;
+		state: Participant["state"];
+	},
+): Promise<boolean> {
+	const result = await db
+		.prepare(
+			`UPDATE participants
+       SET crabfleet_session_id = ?, browser_url = ?, runtime_summary = ?, state = ?, updated_at = ?
+       WHERE id = ? AND room_id = ?
+         AND EXISTS (
+           SELECT 1 FROM rooms
+           WHERE id = ? AND status = 'provisioning' AND brief_revision = ?
+             AND crabfleet_root_session_id = ?
+         )`,
+		)
+		.bind(
+			binding.sessionId,
+			binding.browserUrl,
+			binding.summary,
+			binding.state,
+			Date.now(),
+			binding.participantId,
+			roomId,
+			roomId,
+			expectedBriefRevision,
+			rootSessionId,
+		)
+		.run();
+	return result.meta.changes === 1;
 }
 
 export async function claimStaleProvisioningCleanup(

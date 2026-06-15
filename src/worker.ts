@@ -59,6 +59,7 @@ import {
 	readRoomSnapshot,
 	recordRoomCleanupAttempt,
 	recordProvisioningBinding,
+	refreshProvisioningBinding,
 	releaseRoomCreationReservation,
 	releaseRoomRuntimeLease,
 	replayCreatedRoom,
@@ -98,14 +99,15 @@ const scopeChangeStatuses: RoomStatus[] = [
 ];
 const runtimeRefreshStatuses: RoomStatus[] = ["building", "integrating", "presenting"];
 const runtimeNudgeStatuses: RoomStatus[] = ["building", "integrating"];
-const provisioningLeaseMilliseconds = 2 * 60 * 1000;
+const provisioningLeaseMilliseconds = 5 * 60 * 1000;
 const runtimeActionLeaseMilliseconds = 30_000;
 const cleanupActionLeaseMilliseconds = 2 * 60 * 1000;
 const roomCreationReservationMilliseconds = 60_000;
 const prelaunchInactivityMilliseconds = 6 * 60 * 60 * 1000;
 const scheduledReconciliationBudgetMilliseconds = 8 * 60 * 1000;
-const runtimeCleanupBatchSize = 4;
-const runtimeCleanupConcurrency = 2;
+const prelaunchExpiryBatchSize = 1;
+const runtimeCleanupBatchSize = 1;
+const runtimeCleanupConcurrency = 1;
 
 export default {
 	async fetch(request, env, context): Promise<Response> {
@@ -486,12 +488,16 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		snapshot = await readRoomSnapshot(env.DB, roomId);
 		context.waitUntil(broadcastSnapshot(env, snapshot));
 		let bindings: Awaited<ReturnType<typeof provisionRoomCrabboxes>> = [];
+		let nextProvisioningLeaseRenewalAt = Date.now() + Math.floor(provisioningLeaseMilliseconds / 2);
+		const renewLaunchLease = async () => {
+			if (Date.now() < nextProvisioningLeaseRenewalAt) return;
+			if (!(await renewProvisioningLease(env.DB, roomId, launchRevision))) {
+				throw new HttpError(409, "room launch was cancelled");
+			}
+			nextProvisioningLeaseRenewalAt = Date.now() + Math.floor(provisioningLeaseMilliseconds / 2);
+		};
 		try {
-			await ensureRoomBranches(env, snapshot.room, snapshot.participants, async () => {
-				if (!(await renewProvisioningLease(env.DB, roomId, launchRevision))) {
-					throw new HttpError(409, "room launch was cancelled");
-				}
-			});
+			await ensureRoomBranches(env, snapshot.room, snapshot.participants, renewLaunchLease);
 			if (!(await markRootProvisioningAttempt(env.DB, roomId, launchRevision))) {
 				throw new HttpError(409, "room launch was cancelled");
 			}
@@ -500,10 +506,12 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 				snapshot.room,
 				snapshot.participants,
 				snapshot.tasks,
-				async ({ participantId, binding }) => {
+				async ({ participantId, binding }, _bindings, stage) => {
 					const rootSessionId = binding.session.rootSessionId || binding.session.id;
+					const persist =
+						stage === "created" ? recordProvisioningBinding : refreshProvisioningBinding;
 					if (
-						!(await recordProvisioningBinding(env.DB, roomId, launchRevision, rootSessionId, {
+						!(await persist(env.DB, roomId, launchRevision, rootSessionId, {
 							participantId,
 							sessionId: binding.session.id,
 							browserUrl: binding.browserUrl,
@@ -723,7 +731,8 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		try {
 			if (
 				!snapshot.room.crabfleetRootSessionId &&
-				(await roomRootProvisioningAttempted(env.DB, roomId))
+				(await roomRootProvisioningAttempted(env.DB, roomId)) &&
+				repoAllowed(snapshot.room.repo, env.ALLOWED_REPOS, env.DEFAULT_REPO)
 			) {
 				const root = await recoverRoomRootCrabbox(
 					env,
@@ -815,7 +824,11 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		try {
 			snapshot = await readRoomSnapshot(env.DB, roomId);
 			context.waitUntil(broadcastSnapshot(env, snapshot));
-			if (!snapshot.room.crabfleetRootSessionId && runtimeMayExist) {
+			if (
+				!snapshot.room.crabfleetRootSessionId &&
+				runtimeMayExist &&
+				repoAllowed(snapshot.room.repo, env.ALLOWED_REPOS, env.DEFAULT_REPO)
+			) {
 				const root = await recoverRoomRootCrabbox(
 					env,
 					snapshot.room,
@@ -911,6 +924,7 @@ async function reconcileRooms(env: Env): Promise<void> {
 	for (const roomId of await expireInactivePrelaunchRooms(
 		env.DB,
 		now - prelaunchInactivityMilliseconds,
+		prelaunchExpiryBatchSize,
 	)) {
 		if (Date.now() >= deadline) return;
 		try {
@@ -1024,7 +1038,11 @@ async function reconcileRuntimeRoom(env: Env, roomId: string): Promise<void> {
 	if (!cleanupLeaseId) return;
 	try {
 		snapshot = await readRoomSnapshot(env.DB, roomId);
-		if (!snapshot.room.crabfleetRootSessionId && runtimeMayExist) {
+		if (
+			!snapshot.room.crabfleetRootSessionId &&
+			runtimeMayExist &&
+			repoAllowed(snapshot.room.repo, env.ALLOWED_REPOS, env.DEFAULT_REPO)
+		) {
 			const root = await recoverRoomRootCrabbox(
 				env,
 				snapshot.room,
@@ -1094,7 +1112,8 @@ async function reconcileFailedLaunchCleanup(env: Env, roomId: string): Promise<v
 		let snapshot = await readRoomSnapshot(env.DB, roomId);
 		if (
 			!snapshot.room.crabfleetRootSessionId &&
-			(await roomRootProvisioningAttempted(env.DB, roomId))
+			(await roomRootProvisioningAttempted(env.DB, roomId)) &&
+			repoAllowed(snapshot.room.repo, env.ALLOWED_REPOS, env.DEFAULT_REPO)
 		) {
 			const root = await recoverRoomRootCrabbox(
 				env,

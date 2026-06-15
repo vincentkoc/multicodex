@@ -19,6 +19,7 @@ export type ParticipantCrabboxBinding = { participantId: string; binding: Crabbo
 export type ProvisioningBindingObserver = (
 	item: ParticipantCrabboxBinding,
 	bindings: ParticipantCrabboxBinding[],
+	stage: "created" | "ready",
 ) => Promise<void>;
 
 export const readinessPollDelays = [1_000, 2_000, 4_000, 8_000, 12_000] as const;
@@ -87,7 +88,7 @@ export async function provisionRoomCrabboxes(
 	if (!host) throw new HttpError(400, "room has no active participant");
 	if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) {
 		const bindings = simulatedBindings(room, active);
-		for (const item of bindings) await onBinding?.(item, bindings);
+		for (const item of bindings) await onBinding?.(item, bindings, "created");
 		return bindings;
 	}
 	if (!env.CRABFLEET_SERVICE_TOKEN)
@@ -99,7 +100,7 @@ export async function provisionRoomCrabboxes(
 	try {
 		const root = await recoverRoomRootCrabbox(env, room, active, tasks);
 		bindings.push(root);
-		await onBinding?.(bindings[0]!, bindings);
+		await onBinding?.(bindings[0]!, bindings, "created");
 		for (const participant of active.filter((item) => item.id !== host.id)) {
 			const task = tasks.find((item) => item.ownerParticipantId === participant.id);
 			const item = {
@@ -120,10 +121,10 @@ export async function provisionRoomCrabboxes(
 				}),
 			};
 			bindings.push(item);
-			await onBinding?.(item, bindings);
+			await onBinding?.(item, bindings, "created");
 		}
 		const ready = await waitForUsableRoomCrabboxes(env, bindings);
-		for (const item of ready) await onBinding?.(item, ready);
+		for (const item of ready) await onBinding?.(item, ready, "ready");
 		return ready;
 	} catch (error) {
 		if (error instanceof PartialProvisioningError) throw error;

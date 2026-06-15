@@ -132,13 +132,16 @@ test("room creation replay recovers the original host capability", async () => {
 test("room snapshots read all redaction-related state from one D1 snapshot", async () => {
 	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
 	const start = source.indexOf("export async function readRoomSnapshot");
-	const end = source.indexOf("export async function addParticipant", start);
+	const end = source.indexOf("export async function readRoomMessagesPage", start);
 	const snapshotSource = source.slice(start, end);
 
 	assert.match(snapshotSource, /await db\.batch/);
 	assert.doesNotMatch(snapshotSource, /Promise\.all/);
+	assert.match(snapshotSource, /const \[snapshot, messages\] = await db\.batch/);
+	assert.match(snapshotSource, /json_group_array\(json_object/);
+	assert.equal(snapshotSource.match(/\.prepare\(/g)?.length, 2);
 	assert.match(snapshotSource, /room_runtime_redactions/);
-	assert.match(snapshotSource, /COUNT\(\*\) AS count FROM room_messages/);
+	assert.match(snapshotSource, /SELECT COUNT\(\*\) FROM room_messages/);
 	assert.match(snapshotSource, /messageCount: Number/);
 });
 
@@ -340,12 +343,17 @@ test("failed launch reset rotates the provisioning replay generation", async () 
 test("provisioning bindings are fenced to the approved launch generation", async () => {
 	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
 	const start = source.indexOf("export async function recordProvisioningBinding");
-	const end = source.indexOf("export async function claimStaleProvisioningCleanup", start);
-	const bindingSource = source.slice(start, end);
+	const refreshStart = source.indexOf("export async function refreshProvisioningBinding", start);
+	const end = source.indexOf("export async function claimStaleProvisioningCleanup", refreshStart);
+	const bindingSource = source.slice(start, refreshStart);
+	const refreshSource = source.slice(refreshStart, end);
 
 	assert.match(bindingSource, /expectedBriefRevision/);
 	assert.equal(bindingSource.match(/brief_revision = \?/g)?.length, 2);
 	assert.match(bindingSource, /crabfleet_root_session_id = \?/);
+	assert.match(refreshSource, /expectedBriefRevision/);
+	assert.equal(refreshSource.match(/brief_revision = \?/g)?.length, 1);
+	assert.match(refreshSource, /crabfleet_root_session_id = \?/);
 });
 
 test("root provisioning attempts are durable before external creation", async () => {

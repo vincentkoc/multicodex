@@ -403,6 +403,9 @@ test("scheduled reconciliation expires inactive planning and runtime rooms", asy
 	assert.match(expirySource, /broadcastSnapshot/);
 	assert.match(expirySource, /listRuntimeRoomIdsNeedingCleanup/);
 	assert.match(expirySource, /scheduledReconciliationBudgetMilliseconds/);
+	assert.match(worker, /const prelaunchExpiryBatchSize = 1/);
+	assert.match(worker, /const runtimeCleanupBatchSize = 1/);
+	assert.match(worker, /const runtimeCleanupConcurrency = 1/);
 	assert.match(expirySource, /runtimeCleanupBatchSize/);
 	assert.match(expirySource, /runtimeCleanupConcurrency/);
 	assert.match(expirySource, /Date\.now\(\) < deadline/);
@@ -418,6 +421,17 @@ test("scheduled reconciliation expires inactive planning and runtime rooms", asy
 	assert.match(expirySource, /resetRoomProvisioning/);
 	assert.match(expirySource, /await endRoom/);
 	assert.match(expirySource, /finally \{\s*await releaseRoomRuntimeLease/);
+	const failedCleanupStart = expirySource.indexOf("async function reconcileFailedLaunchCleanup");
+	const failedCleanupSource = expirySource.slice(failedCleanupStart);
+	assert.ok(
+		failedCleanupSource.indexOf("repoAllowed") <
+			failedCleanupSource.indexOf("recoverRoomRootCrabbox"),
+	);
+	const recoveryCalls = [...worker.matchAll(/const root = await recoverRoomRootCrabbox/g)];
+	assert.equal(recoveryCalls.length, 4);
+	for (const recovery of recoveryCalls) {
+		assert.match(worker.slice(Math.max(0, recovery.index - 400), recovery.index), /repoAllowed\(/);
+	}
 });
 
 test("launch preparation renews provisioning while GitHub branches are created", async () => {
@@ -428,13 +442,15 @@ test("launch preparation renews provisioning while GitHub branches are created",
 
 	assert.match(
 		launchSource,
-		/ensureRoomBranches\(env, snapshot\.room, snapshot\.participants, async \(\) =>/,
+		/ensureRoomBranches\(env, snapshot\.room, snapshot\.participants, renewLaunchLease\)/,
 	);
+	assert.match(launchSource, /nextProvisioningLeaseRenewalAt/);
+	assert.match(launchSource, /Math\.floor\(provisioningLeaseMilliseconds \/ 2\)/);
 	assert.match(launchSource, /renewProvisioningLease\(env\.DB, roomId, launchRevision\)/);
 	assert.match(launchSource, /markRootProvisioningAttempt\(env\.DB, roomId, launchRevision\)/);
 	assert.match(
 		launchSource,
-		/recordProvisioningBinding\(env\.DB, roomId, launchRevision, rootSessionId/,
+		/stage === "created" \? recordProvisioningBinding : refreshProvisioningBinding/,
 	);
 	assert.match(launchSource, /\["provisioning"\],\s*launchRevision/);
 	assert.match(launchSource, /completeRoomProvisioning\(env\.DB, roomId, launchRevision/);

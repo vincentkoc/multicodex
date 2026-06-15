@@ -47,6 +47,7 @@ test("partial room provisioning returns every created session for durable cleanu
 	const owners: string[] = [];
 	const requestIds: string[] = [];
 	const persisted: string[] = [];
+	const persistedStages: string[] = [];
 	globalThis.fetch = async (input, init) => {
 		const path = new URL(String(input)).pathname;
 		if (path === "/api/openclaw/crabboxes" && init?.method === "POST") {
@@ -83,8 +84,9 @@ test("partial room provisioning returns every created session for durable cleanu
 					participant("failure"),
 				],
 				[],
-				async ({ binding }) => {
+				async ({ binding }, _bindings, stage) => {
 					persisted.push(binding.session.id);
+					persistedStages.push(stage);
 				},
 			),
 			(error) => {
@@ -106,6 +108,7 @@ test("partial room provisioning returns every created session for durable cleanu
 		"multicodex:room:1:failure",
 	]);
 	assert.deepEqual(persisted, ["root", "child"]);
+	assert.deepEqual(persistedStages, ["created", "created"]);
 });
 
 test("ambiguous root provisioning remains replayable after a stale cleanup claim", async () => {
@@ -355,6 +358,7 @@ test("terminal Crabfleet create responses fail launch with cleanup evidence", as
 
 test("pending Crabfleet sessions accept any usable state before launch", async () => {
 	const originalFetch = globalThis.fetch;
+	const persistedStages: string[] = [];
 	globalThis.fetch = async (input, init) => {
 		const path = new URL(String(input)).pathname;
 		if (path === "/api/openclaw/crabboxes" && init?.method === "POST") {
@@ -371,8 +375,12 @@ test("pending Crabfleet sessions accept any usable state before launch", async (
 			room,
 			[participant("host")],
 			[],
+			async (_binding, _bindings, stage) => {
+				persistedStages.push(stage);
+			},
 		);
 		assert.equal(bindings[0]?.binding.session.status, "attached");
+		assert.deepEqual(persistedStages, ["created", "ready"]);
 	} finally {
 		globalThis.fetch = originalFetch;
 	}
