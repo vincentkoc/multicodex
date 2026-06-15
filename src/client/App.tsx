@@ -227,6 +227,14 @@ export function App() {
 		return persisted;
 	}
 
+	function leaveRoom() {
+		snapshotRequestSequence.current += 1;
+		history.pushState({}, "", "/");
+		setRoomId(null);
+		setIdentity(null);
+		setSnapshot(null);
+	}
+
 	if (!roomId) return <CreateRoom onEnter={enterRoom} />;
 	if (loading && !snapshot) return <LoadingRoom />;
 	if (error && !snapshot) return <ErrorRoom message={error} />;
@@ -243,11 +251,7 @@ export function App() {
 			<Recap
 				snapshot={snapshot}
 				roleMap={new Map(roleCatalog.map((role) => [role.id, role]))}
-				onBack={() => {
-					history.pushState({}, "", "/");
-					setRoomId(null);
-					setSnapshot(null);
-				}}
+				onBack={leaveRoom}
 				backLabel="home"
 				busy=""
 			/>
@@ -275,6 +279,7 @@ export function App() {
 			roleCatalog={roleCatalog}
 			onRefresh={refreshRoom}
 			onError={setError}
+			onHome={leaveRoom}
 			error={error}
 		/>
 	);
@@ -582,6 +587,7 @@ function RoomWorkbench({
 	roleCatalog,
 	onRefresh,
 	onError,
+	onHome,
 	error,
 }: {
 	snapshot: RoomSnapshot;
@@ -589,6 +595,7 @@ function RoomWorkbench({
 	roleCatalog: Catalog["roles"];
 	onRefresh: () => Promise<void>;
 	onError: (error: string) => void;
+	onHome: () => void;
 	error: string;
 }) {
 	const [view, setView] = useState<View>(
@@ -693,7 +700,8 @@ function RoomWorkbench({
 			<Recap
 				snapshot={snapshot}
 				roleMap={roleMap}
-				onBack={snapshot.room.status === "ended" ? undefined : () => setView("workbench")}
+				onBack={snapshot.room.status === "ended" ? onHome : () => setView("workbench")}
+				backLabel={snapshot.room.status === "ended" ? "home" : "workbench"}
 				action={recapAction}
 				busy={busy}
 				error={error}
@@ -1428,7 +1436,7 @@ function Recap({
 }: {
 	snapshot: RoomSnapshot;
 	roleMap: Map<string, Catalog["roles"][number]>;
-	onBack?: () => void;
+	onBack: () => void;
 	backLabel?: string;
 	action?: { label: string; run: () => void };
 	busy: string;
@@ -1443,12 +1451,10 @@ function Recap({
 		<main class="recap-shell">
 			<header class="recap-header">
 				<Brand compact />
-				{onBack ? (
-					<button class="button ghost" onClick={onBack}>
-						<LayoutDashboard size={16} />
-						{backLabel}
-					</button>
-				) : null}
+				<button class="button ghost" onClick={onBack}>
+					<LayoutDashboard size={16} />
+					{backLabel}
+				</button>
 			</header>
 			<section class="recap-hero">
 				<span class="eyebrow">MultiCodex room recap</span>
