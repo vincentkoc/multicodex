@@ -76,6 +76,7 @@ test("public snapshots hide every runtime capability", () => {
 	assert.equal(visible.room.crabfleetRootSessionId, null);
 	assert.ok(visible.participants.every((participant) => participant.crabfleetSessionId === null));
 	assert.ok(visible.participants.every((participant) => participant.browserUrl === null));
+	assert.ok(visible.participants.every((participant) => participant.runtimeSummary === ""));
 	assert.deepEqual(visible.conductorActions[0]?.targetIds, ["guest"]);
 	assert.deepEqual(visible.conductorActions[0]?.evidenceRefs, []);
 	assert.deepEqual(visible.runtimeRedactions, []);

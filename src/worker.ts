@@ -175,7 +175,10 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			throw new HttpError(429, "active room limit reached");
 		}
 		try {
-			const baseBranch = await resolveRepoDefaultBranch(env, repo);
+			const baseBranch =
+				String(env.MULTICODEX_SIMULATION_MODE) === "true"
+					? clean(env.DEFAULT_BASE_BRANCH, 100) || "main"
+					: await resolveRepoDefaultBranch(env, repo);
 			const created = await createRoom(env.DB, {
 				title,
 				hostName,

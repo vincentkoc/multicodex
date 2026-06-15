@@ -345,15 +345,23 @@ test("runtime refresh surfaces terminal Crabfleet sessions", async () => {
 });
 
 test("local dev enables simulation without changing the production default", async () => {
-	const [script, config, readme] = await Promise.all([
+	const [script, config, readme, worker] = await Promise.all([
 		readFile(new URL("../scripts/dev.mjs", import.meta.url), "utf8"),
 		readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
 		readFile(new URL("../README.md", import.meta.url), "utf8"),
+		readFile(new URL("../src/worker.ts", import.meta.url), "utf8"),
 	]);
 
 	assert.match(script, /MULTICODEX_SIMULATION_MODE:true/);
 	assert.match(config, /"MULTICODEX_SIMULATION_MODE": "false"/);
+	assert.match(config, /"DEFAULT_BASE_BRANCH": "main"/);
 	assert.match(readme, /enables simulation only for the local Wrangler/);
+	assert.match(worker, /String\(env\.MULTICODEX_SIMULATION_MODE\) === "true"/);
+	assert.match(worker, /clean\(env\.DEFAULT_BASE_BRANCH, 100\) \|\| "main"/);
+	assert.match(
+		worker,
+		/const baseBranch =\s*String\(env\.MULTICODEX_SIMULATION_MODE\) === "true"\s*\? clean\(env\.DEFAULT_BASE_BRANCH, 100\) \|\| "main"\s*: await resolveRepoDefaultBranch\(env, repo\)/,
+	);
 });
 
 test("scheduled reconciliation expires inactive planning and runtime rooms", async () => {

@@ -19,6 +19,7 @@ export function snapshotForViewer(
 				...participant,
 				crabfleetSessionId: null,
 				browserUrl: null,
+				runtimeSummary: viewerId ? participant.runtimeSummary : "",
 			})),
 			conductorActions: snapshot.conductorActions.map((action) => ({
 				...action,
