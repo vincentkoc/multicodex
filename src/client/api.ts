@@ -110,6 +110,16 @@ export function issueRoomSocketTicket(roomId: string, participantToken: string):
 	}).then((result) => result.ticket);
 }
 
+export function openParticipantWorkspace(
+	roomId: string,
+	participantToken: string,
+): Promise<string> {
+	return request<{ browserUrl: string }>(`/api/rooms/${encodeURIComponent(roomId)}/workspace`, {
+		method: "POST",
+		participantToken,
+	}).then((result) => result.browserUrl);
+}
+
 export function catalog(): Promise<Catalog> {
 	return request("/api/catalog");
 }

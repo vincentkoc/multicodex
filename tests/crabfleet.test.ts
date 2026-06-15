@@ -6,6 +6,7 @@ import {
 	crabfleetOwner,
 	crabfleetRuntime,
 	crabfleetSimulationEnabled,
+	createCrabboxEmbedUrl,
 	definitiveCrabfleetReplayConflict,
 	participantStateForCrabfleetStatus,
 	parseRootCrabboxRequest,
@@ -37,6 +38,55 @@ test("Crabfleet runtime selection keeps crabbox as the conservative fallback", (
 	assert.equal(participantStateForCrabfleetStatus("expired", "working"), "left");
 	assert.equal(participantStateForCrabfleetStatus("stopped", "working"), "left");
 	assert.equal(participantStateForCrabfleetStatus("provisioning", "joined"), "joined");
+});
+
+test("workspace embed URLs are minted with the room root and service credential", async () => {
+	const originalFetch = globalThis.fetch;
+	let request: { url: string; authorization: string | null; body: unknown } | null = null;
+	globalThis.fetch = async (input, init) => {
+		request = {
+			url: String(input),
+			authorization: new Headers(init?.headers).get("authorization"),
+			body: JSON.parse(String(init?.body)),
+		};
+		return Response.json({
+			browserUrl: "https://crabfleet.example/app/sessions/child?token=signed",
+			expiresAt: Date.now() + 60_000,
+		});
+	};
+	try {
+		assert.equal(
+			await createCrabboxEmbedUrl(
+				{
+					CRABFLEET_API_URL: "https://crabfleet.example",
+					CRABFLEET_SERVICE_TOKEN: "service-secret",
+				} as unknown as Env,
+				"root",
+				"child",
+			),
+			"https://crabfleet.example/app/sessions/child?token=signed",
+		);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+	assert.deepEqual(request, {
+		url: "https://crabfleet.example/api/openclaw/crabboxes/child/embed-ticket",
+		authorization: "Bearer service-secret",
+		body: { rootSessionId: "root", ttlSeconds: 3_600 },
+	});
+});
+
+test("workspace embed URLs reject invalid Crabfleet responses", async () => {
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = async () => Response.json({ browserUrl: "javascript:alert(1)" });
+	try {
+		await assert.rejects(
+			createCrabboxEmbedUrl({ CRABFLEET_SERVICE_TOKEN: "test" } as Env, "root", "child"),
+			/invalid embed ticket/,
+		);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
 });
 
 test("readiness polling covers Crabbox cold starts while preserving subrequest headroom", () => {
