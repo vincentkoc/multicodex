@@ -128,6 +128,17 @@ test("observer upgrades have transaction-scoped claims", async () => {
 	assert.match(migration, /UNIQUE INDEX idx_participants_upgrade_claim/);
 });
 
+test("anonymous room creation has a durable per-source budget", async () => {
+	const migration = await readFile(
+		new URL("../migrations/0019_room_creation_budgets.sql", import.meta.url),
+		"utf8",
+	);
+
+	assert.match(migration, /source_key TEXT PRIMARY KEY/);
+	assert.match(migration, /window_started_at INTEGER NOT NULL/);
+	assert.match(migration, /creation_count INTEGER NOT NULL/);
+});
+
 test("runtime refreshes have a durable room cooldown", async () => {
 	const migration = await readFile(
 		new URL("../migrations/0017_room_runtime_refresh_leases.sql", import.meta.url),

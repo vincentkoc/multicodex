@@ -59,6 +59,22 @@ test("room creation reservations fence external work to available capacity", asy
 	assert.match(reservationSource, /releaseRoomCreationReservation/);
 });
 
+test("anonymous room creation budgets are consumed atomically", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function consumeRoomCreationBudget");
+	const end = source.indexOf("export async function reserveRoomCreation", start);
+	const budgetSource = source.slice(start, end);
+
+	assert.match(budgetSource, /INSERT INTO room_creation_budgets/);
+	assert.match(budgetSource, /ON CONFLICT\(source_key\) DO UPDATE/);
+	assert.match(budgetSource, /room_creation_budgets\.creation_count < \?/);
+	assert.match(budgetSource, /RETURNING creation_count/);
+	assert.match(budgetSource, /DELETE FROM room_creation_budgets WHERE window_started_at <= \?/);
+	assert.match(budgetSource, /refundRoomCreationBudget/);
+	assert.match(budgetSource, /creation_count = creation_count - 1/);
+	assert.match(budgetSource, /creation_count <= 0/);
+});
+
 test("builder joins atomically invalidate stale plans and enforce the five-seat cap", async () => {
 	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
 	const start = source.indexOf("export async function addParticipant");
@@ -183,6 +199,8 @@ test("room creation replay recovers the original host capability", async () => {
 	assert.match(replaySource, /access_token/);
 	assert.match(replaySource, /builder_invite_token/);
 	assert.match(replaySource, /readRoomSnapshot/);
+	assert.match(replaySource, /roomCreationExists/);
+	assert.match(replaySource, /SELECT 1 AS found FROM rooms WHERE creation_request_id = \?/);
 });
 
 test("room snapshots read all redaction-related state from one D1 snapshot", async () => {

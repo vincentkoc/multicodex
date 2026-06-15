@@ -141,6 +141,7 @@ test("room creation and joins are recoverable", async () => {
 	assert.match(client, /invite\.hash = new URLSearchParams/);
 	assert.match(client, /location\.hash\.replace/);
 	assert.doesNotMatch(client, /invite\.searchParams\.set/);
+	assert.match(client, /invite people/);
 	assert.match(client, /identity\.builderInviteToken/);
 	assert.match(client, /identity=\{validIdentity\}/);
 	assert.match(client, /identity\?\.participantToken/);
@@ -713,9 +714,10 @@ test("RoomHub reserves websocket capacity for authenticated participants", async
 	assert.match(client, /roomSocketUrl\(roomId, ticket\)/);
 });
 
-test("room creation requires a high-entropy event capability", async () => {
-	const [worker, config, access] = await Promise.all([
+test("room creation is open while active-room capacity stays bounded", async () => {
+	const [worker, client, config, access] = await Promise.all([
 		readFile(new URL("../src/worker.ts", import.meta.url), "utf8"),
+		readFile(new URL("../src/client/App.tsx", import.meta.url), "utf8"),
 		readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
 		readFile(new URL("../src/access.ts", import.meta.url), "utf8"),
 	]);
@@ -723,8 +725,21 @@ test("room creation requires a high-entropy event capability", async () => {
 	const joinStart = worker.indexOf("const joinMatch", createStart);
 	const createSource = worker.slice(createStart, joinStart);
 
-	assert.match(createSource, /eventAccessAuthorized/);
-	assert.match(access, /encoder\.encode\(expected\)\.byteLength < 32/);
+	assert.doesNotMatch(
+		createSource,
+		/eventAccessAuthorized|x-multicodex-event-code|EVENT_ACCESS_CODE/,
+	);
+	assert.doesNotMatch(client, /eventCode|Event code/);
+	assert.match(createSource, /reserveRoomCreation/);
+	assert.match(createSource, /consumeRoomCreationBudget/);
+	assert.match(createSource, /requestSourceKey\(request\)/);
+	assert.match(createSource, /refundRoomCreationBudget/);
+	assert.match(createSource, /roomCreationExists\(env\.DB, requestId\)/);
+	assert.match(createSource, /room creation rate exceeded/);
+	assert.ok(
+		createSource.indexOf("reserveRoomCreation") < createSource.indexOf("consumeRoomCreationBudget"),
+	);
+	assert.match(access, /activeRoomLimit/);
 	assert.doesNotMatch(config, /EVENT_ADMISSION|EventAdmission/);
 });
 

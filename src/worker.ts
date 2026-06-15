@@ -1,5 +1,5 @@
 import { ideas, roles } from "./catalog.ts";
-import { activeRoomLimit, eventAccessAuthorized } from "./access.ts";
+import { activeRoomLimit } from "./access.ts";
 import { runConductorTurn } from "./conductor.ts";
 import {
 	AmbiguousRootProvisioningError,
@@ -59,6 +59,7 @@ import {
 	claimRoomRuntimeRefresh,
 	claimStaleProvisioningCleanup,
 	completeRoomProvisioning,
+	consumeRoomCreationBudget,
 	consumeRoomMessageBudget,
 	createRoom,
 	endRoom,
@@ -74,6 +75,7 @@ import {
 	releaseRoomRuntimeLease,
 	replaceParticipantRuntime,
 	replayCreatedRoom,
+	refundRoomCreationBudget,
 	reserveRoomCreation,
 	renewProvisioningLease,
 	replacePlan,
@@ -81,6 +83,7 @@ import {
 	resetRoomProvisioning,
 	roomBuilderInviteAuthorized,
 	roomAcceptsWebSockets,
+	roomCreationExists,
 	roomMessageExists,
 	roomRootProvisioningAttempted,
 	upgradeObserverParticipant,
@@ -115,6 +118,8 @@ const runtimeActionLeaseMilliseconds = 30_000;
 const runtimeRepairLeaseMilliseconds = readinessDeadlineMilliseconds + 30_000;
 const runtimeRefreshCooldownMilliseconds = 15_000;
 const roomCreationReservationMilliseconds = 60_000;
+const roomCreationBudgetWindowMilliseconds = 60 * 60 * 1000;
+const maxRoomsPerSourceWindow = 5;
 const prelaunchInactivityMilliseconds = 6 * 60 * 60 * 1000;
 const scheduledReconciliationBudgetMilliseconds = 8 * 60 * 1000;
 const prelaunchExpiryBatchSize = 1;
@@ -150,14 +155,6 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 	if (request.method === "GET" && url.pathname === "/api/catalog") return json({ ideas, roles });
 
 	if (request.method === "POST" && url.pathname === "/api/rooms") {
-		if (
-			!(await eventAccessAuthorized(
-				request.headers.get("x-multicodex-event-code"),
-				env.EVENT_ACCESS_CODE,
-			))
-		) {
-			throw new HttpError(401, "valid event code required");
-		}
 		const body = await readJson<{
 			title?: string;
 			hostName?: string;
@@ -208,7 +205,21 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			}
 			throw new HttpError(429, "active room limit reached");
 		}
+		const sourceKey = await requestSourceKey(request);
+		let creationBudgetConsumed = false;
 		try {
+			if (
+				!(await consumeRoomCreationBudget(
+					env.DB,
+					sourceKey,
+					Date.now(),
+					maxRoomsPerSourceWindow,
+					roomCreationBudgetWindowMilliseconds,
+				))
+			) {
+				throw new HttpError(429, "room creation rate exceeded");
+			}
+			creationBudgetConsumed = true;
 			const baseBranch =
 				String(env.MULTICODEX_SIMULATION_MODE) === "true"
 					? clean(env.DEFAULT_BASE_BRANCH, 100) || "main"
@@ -222,6 +233,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 				activeRoomLimit: roomLimit,
 				requestId,
 			});
+			creationBudgetConsumed = false;
 			context.waitUntil(broadcastSnapshot(env, created.snapshot));
 			return json(
 				{
@@ -232,6 +244,22 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 				},
 				201,
 			);
+		} catch (error) {
+			if (creationBudgetConsumed) {
+				try {
+					if (!(await roomCreationExists(env.DB, requestId))) {
+						await refundRoomCreationBudget(env.DB, sourceKey);
+					}
+				} catch (refundError) {
+					console.error(
+						JSON.stringify({
+							event: "room_creation_budget_refund_failed",
+							message: refundError instanceof Error ? refundError.message : "unknown error",
+						}),
+					);
+				}
+			}
+			throw error;
 		} finally {
 			await releaseRoomCreationReservation(env.DB, requestId, reservationLeaseId);
 		}

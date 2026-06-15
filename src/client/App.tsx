@@ -312,7 +312,6 @@ function CreateRoom({
 				hostName: String(data.get("hostName") || "Host"),
 				repo: String(data.get("repo") || "vincentkoc/multicodex"),
 				durationMinutes: Number(data.get("durationMinutes") || 30),
-				eventCode: String(data.get("eventCode") || "").trim(),
 				requestId: createRequestId,
 			});
 			if (onEnter(result.snapshot, result)) clearCreateRequestId();
@@ -357,10 +356,6 @@ function CreateRoom({
 					<label>
 						Your name
 						<input name="hostName" placeholder="Vincent" required maxLength={80} />
-					</label>
-					<label>
-						Event code
-						<input name="eventCode" type="password" required maxLength={200} autoComplete="off" />
 					</label>
 					<label>
 						GitHub repo
@@ -618,6 +613,7 @@ function RoomWorkbench({
 	const { participantId, participantToken } = identity;
 	const me = snapshot.participants.find((participant) => participant.id === participantId)!;
 	const isHost = snapshot.room.hostParticipantId === participantId;
+	const canInviteBuilders = isHost && Boolean(identity.builderInviteToken);
 	const readOnly = me.kind === "observer";
 	const canNudge = isHost && roomAllowsRuntimeNudge(snapshot.room.status);
 	const roleMap = useMemo(() => new Map(roleCatalog.map((role) => [role.id, role])), [roleCatalog]);
@@ -658,7 +654,7 @@ function RoomWorkbench({
 
 	async function copyInvite() {
 		const invite = new URL(`/rooms/${snapshot.room.id}`, location.origin);
-		if (isHost && identity.builderInviteToken) {
+		if (canInviteBuilders && identity.builderInviteToken) {
 			invite.hash = new URLSearchParams({ invite: identity.builderInviteToken }).toString();
 		}
 		await navigator.clipboard.writeText(invite.toString());
@@ -775,9 +771,20 @@ function RoomWorkbench({
 					<span class={`timer ${timer.urgent ? "urgent" : ""}`}>
 						<TimerReset size={15} /> {timer.label}
 					</span>
-					<button class="icon-button" title="copy invite link" onClick={copyInvite}>
-						{copied ? <Check size={17} /> : <Copy size={17} />}
-					</button>
+					{canInviteBuilders ? (
+						<button
+							class="button ghost invite-button"
+							title="copy builder invite link"
+							onClick={copyInvite}
+						>
+							{copied ? <Check size={17} /> : <UserPlus size={17} />}
+							{copied ? "invite copied" : "invite people"}
+						</button>
+					) : (
+						<button class="icon-button" title="copy room link" onClick={copyInvite}>
+							{copied ? <Check size={17} /> : <Copy size={17} />}
+						</button>
+					)}
 					<button class="button ghost recap-button" onClick={() => setView("recap")}>
 						<MonitorPlay size={16} />
 						recap
@@ -801,8 +808,19 @@ function RoomWorkbench({
 							<span class="eyebrow">team</span>
 							<h2>{snapshot.participants.length} seats</h2>
 						</div>
-						<button class="icon-button" title="copy invite link" onClick={copyInvite}>
-							<UserPlus size={17} />
+						<button
+							class={canInviteBuilders ? "button ghost" : "icon-button"}
+							title={canInviteBuilders ? "copy builder invite link" : "copy room link"}
+							onClick={copyInvite}
+						>
+							{copied ? (
+								<Check size={17} />
+							) : canInviteBuilders ? (
+								<UserPlus size={17} />
+							) : (
+								<Copy size={17} />
+							)}
+							{canInviteBuilders && (copied ? "copied" : "invite")}
 						</button>
 					</div>
 					<div class="conductor-seat">
