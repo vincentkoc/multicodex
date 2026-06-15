@@ -11,13 +11,7 @@ import {
 	sendCrabboxNudge,
 	stopRoomCrabboxes,
 } from "./crabfleet.ts";
-import type {
-	MessageTargetKind,
-	Participant,
-	RoomSnapshot,
-	RoomStatus,
-	TaskState,
-} from "./domain.ts";
+import type { Participant, RoomSnapshot, RoomStatus, TaskState } from "./domain.ts";
 import { ensureRoomBranches, resolveRepoDefaultBranch } from "./github.ts";
 import {
 	clean,
@@ -66,6 +60,7 @@ import {
 	resetRoomProvisioning,
 	roomBuilderInviteAuthorized,
 	roomExists,
+	roomMessageExists,
 	roomRootProvisioningAttempted,
 	updateParticipantRuntime,
 	updateConductorActionApprovalState,
@@ -276,14 +271,26 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			throw new HttpError(409, "room messages are closed");
 		}
 		const body = await readJson<{
-			body?: string;
-			targetKind?: MessageTargetKind;
-			targetId?: string;
-			replyToId?: string;
+			body?: unknown;
+			targetKind?: unknown;
+			targetId?: unknown;
+			replyToId?: unknown;
 		}>(request);
 		const text = clean(body.body, 2000);
 		if (!text) throw new HttpError(400, "message is required");
-		const targetKind = body.targetKind ?? (text.includes("@conductor") ? "conductor" : "room");
+		const targetKind = participantMessageTargetKind(body.targetKind, text);
+		const targetId = optionalMessageReference(body.targetId, "message target");
+		const replyToId = optionalMessageReference(body.replyToId, "message reply");
+		if (targetKind === "participant") {
+			if (!targetId || !current.participants.some((participant) => participant.id === targetId)) {
+				throw new HttpError(400, "message target is not in this room");
+			}
+		} else if (targetId) {
+			throw new HttpError(400, "message target id is not valid for this target kind");
+		}
+		if (replyToId && !(await roomMessageExists(env.DB, roomId, replyToId))) {
+			throw new HttpError(400, "message reply is not in this room");
+		}
 		if (
 			!(await addMessage(
 				env.DB,
@@ -292,9 +299,9 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 					authorKind: author.kind === "ai" ? "ai" : "human",
 					authorId: author.id,
 					targetKind,
-					targetId: clean(body.targetId, 100) || null,
+					targetId,
 					body: text,
-					replyToId: clean(body.replyToId, 100) || null,
+					replyToId,
 				},
 				messageStatuses,
 			))
@@ -829,6 +836,23 @@ async function assetResponse(env: Env, request: Request): Promise<Response> {
 		statusText: response.statusText,
 		headers,
 	});
+}
+
+function participantMessageTargetKind(
+	value: unknown,
+	text: string,
+): "room" | "conductor" | "participant" {
+	if (value === undefined) return text.includes("@conductor") ? "conductor" : "room";
+	if (value === "room" || value === "conductor" || value === "participant") return value;
+	throw new HttpError(400, "valid message target kind required");
+}
+
+function optionalMessageReference(value: unknown, label: string): string | null {
+	if (value === undefined || value === null || value === "") return null;
+	if (typeof value !== "string") throw new HttpError(400, `${label} is invalid`);
+	const reference = clean(value, 100);
+	if (!reference || reference !== value) throw new HttpError(400, `${label} is invalid`);
+	return reference;
 }
 
 async function reconcileRooms(env: Env): Promise<void> {

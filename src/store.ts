@@ -249,6 +249,18 @@ export async function roomExists(db: D1Database, roomId: string): Promise<boolea
 	return room?.found === 1;
 }
 
+export async function roomMessageExists(
+	db: D1Database,
+	roomId: string,
+	messageId: string,
+): Promise<boolean> {
+	const message = await db
+		.prepare("SELECT 1 AS found FROM room_messages WHERE id = ? AND room_id = ?")
+		.bind(messageId, roomId)
+		.first<{ found: number }>();
+	return message?.found === 1;
+}
+
 export async function readRoomSnapshot(db: D1Database, roomId: string): Promise<RoomSnapshot> {
 	const [
 		rooms,

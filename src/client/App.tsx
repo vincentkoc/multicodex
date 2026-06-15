@@ -31,6 +31,7 @@ import type {
 	Task,
 	TaskState,
 } from "../domain.ts";
+import { roomAllowsMessages, roomAllowsRuntimeNudge } from "../room-state.ts";
 import {
 	catalog,
 	type Catalog,
@@ -500,11 +501,16 @@ function RoomWorkbench({
 	const me = snapshot.participants.find((participant) => participant.id === participantId)!;
 	const isHost = snapshot.room.hostParticipantId === participantId;
 	const readOnly = me.kind === "observer";
+	const canNudge = isHost && roomAllowsRuntimeNudge(snapshot.room.status);
 	const roleMap = useMemo(() => new Map(roleCatalog.map((role) => [role.id, role])), [roleCatalog]);
 
 	useEffect(() => {
 		if (snapshot.room.status === "presenting" || snapshot.room.status === "ended") setView("recap");
 	}, [snapshot.room.status]);
+
+	useEffect(() => {
+		if (!canNudge) setNudge(null);
+	}, [canNudge]);
 
 	async function action(label: string, run: () => Promise<RoomSnapshot>): Promise<boolean> {
 		setBusy(label);
@@ -538,7 +544,7 @@ function RoomWorkbench({
 	}
 
 	async function sendNudge() {
-		if (!nudge) return;
+		if (!nudge || !canNudge) return;
 		await action("nudge", () =>
 			nudgeParticipant(snapshot.room.id, participantToken, {
 				participantId: nudge.participant.id,
@@ -662,11 +668,7 @@ function RoomWorkbench({
 										{participant.runtimeSummary && <p>{participant.runtimeSummary}</p>}
 									</div>
 									<span class={`state-mark state-${participant.state}`} title={participant.state} />
-									{(participant.browserUrl ||
-										(isHost &&
-											snapshot.room.status !== "setup" &&
-											snapshot.room.status !== "planning" &&
-											participant.kind !== "observer")) && (
+									{(participant.browserUrl || (canNudge && participant.kind !== "observer")) && (
 										<div class="row-actions">
 											{participant.browserUrl && (
 												<a
@@ -678,25 +680,22 @@ function RoomWorkbench({
 													<ExternalLink size={15} />
 												</a>
 											)}
-											{isHost &&
-												snapshot.room.status !== "setup" &&
-												snapshot.room.status !== "planning" &&
-												participant.kind !== "observer" && (
-													<button
-														class="icon-button"
-														title={`nudge ${participant.displayName}`}
-														onClick={() =>
-															setNudge({
-																participant,
-																message:
-																	"Share your current contract and flag anything blocking integration.",
-																reason: "Keep the integration lane current.",
-															})
-														}
-													>
-														<Zap size={15} />
-													</button>
-												)}
+											{canNudge && participant.kind !== "observer" && (
+												<button
+													class="icon-button"
+													title={`nudge ${participant.displayName}`}
+													onClick={() =>
+														setNudge({
+															participant,
+															message:
+																"Share your current contract and flag anything blocking integration.",
+															reason: "Keep the integration lane current.",
+														})
+													}
+												>
+													<Zap size={15} />
+												</button>
+											)}
 										</div>
 									)}
 								</article>
@@ -827,6 +826,7 @@ function RoomWorkbench({
 					onRefresh={onRefresh}
 					onError={onError}
 					readOnly={readOnly}
+					messagesOpen={roomAllowsMessages(snapshot.room.status)}
 				/>
 			</main>
 
@@ -980,6 +980,7 @@ function ChatPanel({
 	onRefresh,
 	onError,
 	readOnly,
+	messagesOpen,
 }: {
 	snapshot: RoomSnapshot;
 	participantId: string;
@@ -987,6 +988,7 @@ function ChatPanel({
 	onRefresh: () => Promise<void>;
 	onError: (message: string) => void;
 	readOnly: boolean;
+	messagesOpen: boolean;
 }) {
 	const [target, setTarget] = useState<Target>({ kind: "room" });
 	const [text, setText] = useState("");
@@ -1099,10 +1101,10 @@ function ChatPanel({
 					/>
 				))}
 			</div>
-			{readOnly ? (
+			{readOnly || !messagesOpen ? (
 				<div class="composer">
 					<div class="composer-footer">
-						<span>observer mode</span>
+						<span>{readOnly ? "observer mode" : "room line closed"}</span>
 					</div>
 				</div>
 			) : (

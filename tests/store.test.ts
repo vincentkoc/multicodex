@@ -130,11 +130,24 @@ test("room snapshots read all redaction-related state from one D1 snapshot", asy
 test("room existence checks stay lightweight for public socket handshakes", async () => {
 	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
 	const start = source.indexOf("export async function roomExists");
-	const end = source.indexOf("export async function readRoomSnapshot", start);
+	const end = source.indexOf("export async function roomMessageExists", start);
 	const existenceSource = source.slice(start, end);
 
 	assert.match(existenceSource, /SELECT 1 AS found FROM rooms WHERE id = \?/);
 	assert.doesNotMatch(existenceSource, /room_messages|participants|tasks/);
+});
+
+test("message reference checks stay scoped to one room", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function roomMessageExists");
+	const end = source.indexOf("export async function readRoomSnapshot", start);
+	const existenceSource = source.slice(start, end);
+
+	assert.match(
+		existenceSource,
+		/SELECT 1 AS found FROM room_messages WHERE id = \? AND room_id = \?/,
+	);
+	assert.match(existenceSource, /\.bind\(messageId, roomId\)/);
 });
 
 test("room message history uses a stable bounded cursor", async () => {

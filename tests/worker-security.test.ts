@@ -13,6 +13,10 @@ test("worker mutation routes keep terminal rooms immutable", async () => {
 
 	assert.match(messageSource, /messageStatuses/);
 	assert.match(messageSource, /room messages are closed/);
+	assert.match(messageSource, /participantMessageTargetKind/);
+	assert.match(messageSource, /optionalMessageReference/);
+	assert.match(messageSource, /current\.participants\.some/);
+	assert.match(messageSource, /roomMessageExists/);
 	assert.match(refreshSource, /participantToken\(request\), false/);
 	assert.match(refreshSource, /roomAllowsRuntimeRefresh/);
 	assert.match(refreshSource, /expectedStatuses: runtimeRefreshStatuses/);
@@ -201,6 +205,13 @@ test("observer controls stay read-only and presentation waits for success", asyn
 
 	assert.match(source, /const readOnly = me\.kind === "observer"/);
 	assert.match(source, /readOnly=\{readOnly\}/);
+	assert.match(source, /messagesOpen=\{roomAllowsMessages\(snapshot\.room\.status\)\}/);
+	assert.match(source, /readOnly \|\| !messagesOpen/);
+	assert.match(
+		source,
+		/const canNudge = isHost && roomAllowsRuntimeNudge\(snapshot\.room\.status\)/,
+	);
+	assert.match(source, /if \(!nudge \|\| !canNudge\) return/);
 	assert.match(
 		source,
 		/canEdit=\{!readOnly && \(isHost \|\| task\.ownerParticipantId === me\.id\)\}/,
