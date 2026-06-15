@@ -17,7 +17,7 @@ import {
 	sameOriginWebSocketRequest,
 	type SocketRateState,
 } from "./socket-admission.ts";
-import { reconcileRuntimeRoom } from "./runtime-cleanup.ts";
+import { cleanupFailedLaunchRoom, reconcileRuntimeRoom } from "./runtime-cleanup.ts";
 import { recordRoomCleanupAttempt } from "./store.ts";
 
 export class RoomHub extends DurableObject<Env> {
@@ -74,6 +74,18 @@ export class RoomHub extends DurableObject<Env> {
 			} finally {
 				this.broadcast(JSON.stringify({ type: "changed", roomId, at: Date.now() }));
 			}
+		}
+	}
+
+	async cleanupFailedLaunch(
+		roomId: string,
+		expectedBriefRevision: number,
+		rootSessionId: string | null,
+	): Promise<void> {
+		try {
+			await cleanupFailedLaunchRoom(this.env, roomId, expectedBriefRevision, rootSessionId);
+		} finally {
+			this.broadcast(JSON.stringify({ type: "changed", roomId, at: Date.now() }));
 		}
 	}
 

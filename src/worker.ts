@@ -578,13 +578,14 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			}
 		} catch (error) {
 			if (error instanceof PartialProvisioningError) bindings = error.bindings;
-			try {
-				if (!(error instanceof AmbiguousRootProvisioningError)) {
-					await cleanupFailedLaunch(env, roomId, launchRevision, bindings);
-				}
-			} finally {
-				const failed = await readRoomSnapshot(env.DB, roomId);
-				context.waitUntil(broadcastSnapshot(env, failed));
+			if (!(error instanceof AmbiguousRootProvisioningError)) {
+				const rootSessionId =
+					bindings[0]?.binding.session.rootSessionId || bindings[0]?.binding.session.id || null;
+				await env.ROOM_HUB.getByName(roomId).cleanupFailedLaunch(
+					roomId,
+					launchRevision,
+					rootSessionId,
+				);
 			}
 			throw error;
 		}
@@ -1067,86 +1068,6 @@ async function conductorTurnBestEffort(
 				}),
 			);
 		}
-	}
-}
-
-async function cleanupFailedLaunch(
-	env: Env,
-	roomId: string,
-	expectedBriefRevision: number,
-	bindings: Awaited<ReturnType<typeof provisionRoomCrabboxes>>,
-): Promise<void> {
-	if (!bindings.length) {
-		await resetRoomProvisioning(env.DB, roomId, ["provisioning"], expectedBriefRevision);
-		return;
-	}
-	const rootSessionId =
-		bindings[0]?.binding.session.rootSessionId || bindings[0]?.binding.session.id;
-	if (!rootSessionId) return;
-	const cleanupBindings = bindings.map(({ participantId, binding }) => ({
-		participantId,
-		sessionId: binding.session.id,
-		browserUrl: binding.browserUrl,
-		summary: binding.session.summary,
-		state: (binding.session.status === "ready" ? "ready" : "working") as Participant["state"],
-	}));
-	const claimed = await markRoomCleanup(
-		env.DB,
-		roomId,
-		expectedBriefRevision,
-		rootSessionId,
-		"cleanup-planning",
-		["provisioning"],
-		cleanupBindings,
-	);
-	if (!claimed) {
-		await stopRoomCrabboxes(
-			env,
-			rootSessionId,
-			bindings.map(({ binding }) => binding.session.id),
-		);
-		return;
-	}
-	const cleanupLeaseId = await claimRoomRuntimeLease(
-		env.DB,
-		roomId,
-		"launch_cleanup",
-		["cleanup-planning"],
-		cleanupActionLeaseMilliseconds,
-	);
-	if (!cleanupLeaseId) return;
-	try {
-		await stopRoomCrabboxes(
-			env,
-			rootSessionId,
-			bindings.map(({ binding }) => binding.session.id),
-		);
-		const snapshot = await readRoomSnapshot(env.DB, roomId);
-		if (snapshot.room.status === "cleanup-ending") {
-			await endRoom(env.DB, roomId);
-		} else if (snapshot.room.status !== "ended") {
-			if (
-				!(await resetRoomProvisioning(env.DB, roomId, ["cleanup-planning"], expectedBriefRevision))
-			) {
-				throw new HttpError(409, "room cleanup state changed before reset");
-			}
-		}
-	} catch (error) {
-		const snapshot = await readRoomSnapshot(env.DB, roomId);
-		if (snapshot.room.status === "ended" || snapshot.room.status === "cleanup-ending") {
-			await markRoomCleanup(
-				env.DB,
-				roomId,
-				expectedBriefRevision,
-				rootSessionId,
-				"cleanup-ending",
-				["ended", "cleanup-ending"],
-				cleanupBindings,
-			);
-		}
-		throw error;
-	} finally {
-		await releaseRoomRuntimeLease(env.DB, roomId, cleanupLeaseId);
 	}
 }
 

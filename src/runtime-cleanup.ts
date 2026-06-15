@@ -40,6 +40,32 @@ export async function recoverPersistedRoomRootCrabbox(
 	);
 }
 
+export async function cleanupFailedLaunchRoom(
+	env: Env,
+	roomId: string,
+	expectedBriefRevision: number,
+	rootSessionId: string | null,
+): Promise<void> {
+	if (!rootSessionId) {
+		await resetRoomProvisioning(env.DB, roomId, ["provisioning"], expectedBriefRevision);
+		return;
+	}
+	const claimed = await markRoomCleanup(
+		env.DB,
+		roomId,
+		expectedBriefRevision,
+		rootSessionId,
+		"cleanup-planning",
+		["provisioning"],
+		[],
+	);
+	if (!claimed) {
+		await stopRoomCrabboxes(env, rootSessionId, []);
+		return;
+	}
+	await reconcileFailedLaunchCleanup(env, roomId);
+}
+
 export async function reconcileRuntimeRoom(env: Env, roomId: string): Promise<void> {
 	let snapshot = await readRoomSnapshot(env.DB, roomId);
 	const now = Date.now();

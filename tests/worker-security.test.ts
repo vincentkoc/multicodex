@@ -147,16 +147,24 @@ test("cleanup retry preserves failed launches while end excludes unsafe lifecycl
 	assert.match(endSource, /finally \{\s*await releaseRoomRuntimeLease/);
 });
 
-test("failed launch cleanup always broadcasts its durable recovery state", async () => {
-	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
+test("failed launch cleanup moves recovery and broadcasts to a fresh RoomHub invocation", async () => {
+	const [source, roomHub] = await Promise.all([
+		readFile(new URL("../src/worker.ts", import.meta.url), "utf8"),
+		readFile(new URL("../src/room-hub.ts", import.meta.url), "utf8"),
+	]);
 	const start = source.indexOf("if (error instanceof PartialProvisioningError)");
-	const end = source.indexOf("const refreshMatch", start);
+	const end = source.indexOf("throw error;", start);
 	const failureSource = source.slice(start, end);
 
-	assert.match(failureSource, /try \{[\s\S]*await cleanupFailedLaunch/);
-	assert.match(failureSource, /finally \{/);
 	assert.match(failureSource, /error instanceof AmbiguousRootProvisioningError/);
-	assert.match(failureSource, /context\.waitUntil\(broadcastSnapshot\(env, failed\)\)/);
+	assert.match(failureSource, /await env\.ROOM_HUB\.getByName\(roomId\)\.cleanupFailedLaunch/);
+	assert.doesNotMatch(failureSource, /readRoomSnapshot|resetRoomProvisioning|markRoomCleanup/);
+	assert.match(roomHub, /async cleanupFailedLaunch\(/);
+	assert.match(
+		roomHub,
+		/await cleanupFailedLaunchRoom\(this\.env, roomId, expectedBriefRevision, rootSessionId\)/,
+	);
+	assert.match(roomHub, /finally \{[\s\S]*this\.broadcast/);
 });
 
 test("WebSocket reconnects resync the current room snapshot", async () => {
@@ -329,13 +337,16 @@ test("plan approval revalidates the current repository allowlist", async () => {
 	assert.match(approvalSource, /recordProvisioningBinding/);
 	assert.match(approvalSource, /const launchRevision = snapshot\.room\.briefRevision/);
 	assert.match(approvalSource, /completeRoomProvisioning\(env\.DB, roomId, launchRevision/);
-	assert.match(approvalSource, /cleanupFailedLaunch\(env, roomId, launchRevision, bindings\)/);
+	assert.match(
+		approvalSource,
+		/env\.ROOM_HUB\.getByName\(roomId\)\.cleanupFailedLaunch\([\s\S]*launchRevision/,
+	);
 });
 
 test("failed launch cleanup isolates stale generations and claims current lifecycle ownership", async () => {
-	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
-	const start = source.indexOf("async function cleanupFailedLaunch");
-	const end = source.indexOf("async function nudgeParticipant", start);
+	const source = await readFile(new URL("../src/runtime-cleanup.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function cleanupFailedLaunchRoom");
+	const end = source.indexOf("export async function reconcileRuntimeRoom", start);
 	const cleanupSource = source.slice(start, end);
 
 	assert.match(cleanupSource, /expectedBriefRevision/);
@@ -346,12 +357,10 @@ test("failed launch cleanup isolates stale generations and claims current lifecy
 	assert.match(cleanupSource, /const claimed = await markRoomCleanup/);
 	assert.match(cleanupSource, /"cleanup-planning",\s*\["provisioning"\]/);
 	assert.match(cleanupSource, /if \(!claimed\) \{[\s\S]*await stopRoomCrabboxes/);
-	assert.ok(cleanupSource.indexOf("if (!claimed)") < cleanupSource.indexOf("const cleanupLeaseId"));
-	assert.match(cleanupSource, /const cleanupLeaseId = await claimRoomRuntimeLease/);
-	const cleanupLeaseIndex = cleanupSource.indexOf("const cleanupLeaseId");
-	const protectedStopIndex = cleanupSource.indexOf("stopRoomCrabboxes", cleanupLeaseIndex);
-	assert.ok(cleanupSource.indexOf("claimRoomRuntimeLease") < protectedStopIndex);
-	assert.match(cleanupSource, /finally \{\s*await releaseRoomRuntimeLease/);
+	assert.ok(
+		cleanupSource.indexOf("if (!claimed)") < cleanupSource.indexOf("reconcileFailedLaunchCleanup"),
+	);
+	assert.match(cleanupSource, /await reconcileFailedLaunchCleanup\(env, roomId\)/);
 	assert.doesNotMatch(cleanupSource, /\["provisioning", "building"/);
 });
 
