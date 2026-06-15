@@ -78,9 +78,8 @@ import {
 	updateTaskStateWithDecision,
 } from "./store.ts";
 import { snapshotForViewer } from "./visibility.ts";
-import { EventAdmission } from "./event-admission.ts";
 
-export { EventAdmission, RoomHub };
+export { RoomHub };
 
 const messageStatuses: RoomStatus[] = [
 	"setup",
@@ -137,12 +136,12 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 	if (request.method === "GET" && url.pathname === "/api/catalog") return json({ ideas, roles });
 
 	if (request.method === "POST" && url.pathname === "/api/rooms") {
-		const eventCodeValid = await eventAccessAuthorized(
-			request.headers.get("x-multicodex-event-code"),
-			env.EVENT_ACCESS_CODE,
-		);
-		const eventAdmission = env.EVENT_ADMISSION.getByName(await requestSourceKey(request));
-		if (!(await eventAdmission.authorize(eventCodeValid))) {
+		if (
+			!(await eventAccessAuthorized(
+				request.headers.get("x-multicodex-event-code"),
+				env.EVENT_ACCESS_CODE,
+			))
+		) {
 			throw new HttpError(401, "valid event code required");
 		}
 		const body = await readJson<{

@@ -545,21 +545,19 @@ test("RoomHub reserves websocket capacity for authenticated participants", async
 	assert.match(client, /roomSocketUrl\(roomId, ticket\)/);
 });
 
-test("room creation gates event codes through a per-source Durable Object", async () => {
-	const [worker, config, admission] = await Promise.all([
+test("room creation requires a high-entropy event capability", async () => {
+	const [worker, config, access] = await Promise.all([
 		readFile(new URL("../src/worker.ts", import.meta.url), "utf8"),
 		readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
-		readFile(new URL("../src/event-admission.ts", import.meta.url), "utf8"),
+		readFile(new URL("../src/access.ts", import.meta.url), "utf8"),
 	]);
 	const createStart = worker.indexOf('url.pathname === "/api/rooms"');
 	const joinStart = worker.indexOf("const joinMatch", createStart);
 	const createSource = worker.slice(createStart, joinStart);
 
-	assert.match(createSource, /EVENT_ADMISSION\.getByName\(await requestSourceKey\(request\)\)/);
-	assert.match(createSource, /eventAdmission\.authorize\(eventCodeValid\)/);
-	assert.match(config, /"name": "EVENT_ADMISSION"/);
-	assert.match(config, /"new_sqlite_classes": \["EventAdmission"\]/);
-	assert.match(admission, /CREATE TABLE IF NOT EXISTS event_admission/);
+	assert.match(createSource, /eventAccessAuthorized/);
+	assert.match(access, /encoder\.encode\(expected\)\.byteLength < 32/);
+	assert.doesNotMatch(config, /EVENT_ADMISSION|EventAdmission/);
 });
 
 test("public terminal room links render the preserved recap", async () => {

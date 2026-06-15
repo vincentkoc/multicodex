@@ -20,10 +20,6 @@
 	"durable_objects": {
 		"bindings": [
 			{
-				"name": "EVENT_ADMISSION",
-				"class_name": "EventAdmission",
-			},
-			{
 				"name": "ROOM_HUB",
 				"class_name": "RoomHub",
 			},
@@ -33,10 +29,6 @@
 		{
 			"tag": "v1",
 			"new_sqlite_classes": ["RoomHub"],
-		},
-		{
-			"tag": "v2",
-			"new_sqlite_classes": ["EventAdmission"],
 		},
 	],
 	"triggers": {
