@@ -34,10 +34,13 @@ export async function ensureRoomBranches(
 	}
 	const [owner, repo] = room.repo.split("/");
 	if (!owner || !repo) throw new HttpError(400, "repo must be owner/name");
-	const persistedBaseSha = await readRoomBranchBaseline(env.DB, room.id);
-	const baseSha = persistedBaseSha ?? (await readBranchSha(env, owner, repo, room.baseBranch));
-	await heartbeat();
-	if (!baseSha) throw new HttpError(502, "GitHub base branch was not found");
+	let baseSha = await readRoomLaunchBaseline(env.DB, room.id);
+	if (!baseSha) {
+		const selectedBaseSha = await readBranchSha(env, owner, repo, room.baseBranch);
+		await heartbeat();
+		if (!selectedBaseSha) throw new HttpError(502, "GitHub base branch was not found");
+		baseSha = await recordRoomLaunchBaseline(env.DB, room.id, selectedBaseSha);
+	}
 	const branches = [
 		room.integrationBranch,
 		...participants.flatMap((participant) => (participant.branch ? [participant.branch] : [])),
@@ -75,7 +78,8 @@ export async function ensureRoomBranches(
 				throw new HttpError(502, `GitHub did not create branch ${branch} at the requested commit`);
 			}
 		} catch (error) {
-			if (!(error instanceof GitHubRequestError) || error.upstreamStatus !== 422) throw error;
+			const reconciledSha = await readBranchSha(env, owner, repo, branch).catch(() => null);
+			if (reconciledSha !== baseSha) throw error;
 		}
 		await heartbeat();
 		await claimBranchOwnership(env, room.id, owner, repo, branch, baseSha);
@@ -115,14 +119,40 @@ async function readBranchOwnership(
 		.first<{ room_id: string; initial_sha: string }>();
 }
 
-async function readRoomBranchBaseline(db: D1Database, roomId: string): Promise<string | null> {
-	const ownership = await db
+async function readRoomLaunchBaseline(db: D1Database, roomId: string): Promise<string | null> {
+	const baseline = await db
+		.prepare("SELECT base_sha FROM room_launch_baselines WHERE room_id = ?")
+		.bind(roomId)
+		.first<{ base_sha: string }>();
+	if (baseline?.base_sha) return baseline.base_sha;
+	const legacyOwnership = await db
 		.prepare(
 			"SELECT initial_sha FROM room_branch_refs WHERE room_id = ? ORDER BY created_at ASC LIMIT 1",
 		)
 		.bind(roomId)
 		.first<{ initial_sha: string }>();
-	return ownership?.initial_sha ?? null;
+	return legacyOwnership?.initial_sha
+		? recordRoomLaunchBaseline(db, roomId, legacyOwnership.initial_sha)
+		: null;
+}
+
+async function recordRoomLaunchBaseline(
+	db: D1Database,
+	roomId: string,
+	baseSha: string,
+): Promise<string> {
+	await db
+		.prepare(
+			"INSERT OR IGNORE INTO room_launch_baselines (room_id, base_sha, created_at) VALUES (?, ?, ?)",
+		)
+		.bind(roomId, baseSha, Date.now())
+		.run();
+	const baseline = await db
+		.prepare("SELECT base_sha FROM room_launch_baselines WHERE room_id = ?")
+		.bind(roomId)
+		.first<{ base_sha: string }>();
+	if (!baseline?.base_sha) throw new HttpError(500, "room launch baseline could not be recorded");
+	return baseline.base_sha;
 }
 
 async function readBranchSha(

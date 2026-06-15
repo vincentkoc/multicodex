@@ -15,6 +15,7 @@ type BranchOwnership = { room_id: string; initial_sha: string };
 
 function branchDb(initialOwnership: BranchOwnership | null = null): D1Database {
 	const ownerships = new Map<string, BranchOwnership>();
+	let launchBaseline: { base_sha: string } | null = null;
 	if (initialOwnership) ownerships.set(room.integrationBranch, initialOwnership);
 	return {
 		prepare(sql: string) {
@@ -25,6 +26,7 @@ function branchDb(initialOwnership: BranchOwnership | null = null): D1Database {
 					return statement;
 				},
 				async first() {
+					if (sql.includes("FROM room_launch_baselines")) return launchBaseline;
 					if (sql.includes("WHERE room_id = ? ORDER BY created_at")) {
 						return (
 							[...ownerships.values()].find(
@@ -38,6 +40,10 @@ function branchDb(initialOwnership: BranchOwnership | null = null): D1Database {
 					return null;
 				},
 				async run() {
+					if (sql.includes("INTO room_launch_baselines") && !launchBaseline) {
+						launchBaseline = { base_sha: String(values[1]) };
+						return { success: true, meta: { changes: 1 } };
+					}
 					if (sql.startsWith("INSERT OR IGNORE") && !ownerships.has(String(values[1]))) {
 						ownerships.set(String(values[1]), {
 							room_id: String(values[0]),
@@ -163,8 +169,31 @@ test("branch provisioning accepts a creation race only after exact ref verificat
 		Response.json({}, { status: 404 }),
 		Response.json({}, { status: 422 }),
 		Response.json({ object: { sha: "base-sha" } }),
+		Response.json({ object: { sha: "base-sha" } }),
 	];
 	globalThis.fetch = async () => responses.shift()!;
+	try {
+		await ensureRoomBranches(githubEnv(), room, []);
+		assert.equal(responses.length, 0);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test("branch provisioning reconciles an ambiguous create after persisting its baseline", async () => {
+	const originalFetch = globalThis.fetch;
+	const responses: Array<Response | Error> = [
+		Response.json({ object: { sha: "base-sha" } }),
+		Response.json({}, { status: 404 }),
+		new Error("response lost"),
+		Response.json({ object: { sha: "base-sha" } }),
+		Response.json({ object: { sha: "base-sha" } }),
+	];
+	globalThis.fetch = async () => {
+		const response = responses.shift()!;
+		if (response instanceof Error) throw response;
+		return response;
+	};
 	try {
 		await ensureRoomBranches(githubEnv(), room, []);
 		assert.equal(responses.length, 0);
