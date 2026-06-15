@@ -24,7 +24,6 @@ export type RoomIdentity = {
 type RequestOptions = {
 	method?: "GET" | "POST";
 	body?: unknown;
-	eventCode?: string;
 	participantToken?: string | null;
 };
 
@@ -42,7 +41,6 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 		method: options.method ?? "GET",
 		headers: {
 			...(options.body ? { "content-type": "application/json" } : {}),
-			...(options.eventCode ? { "x-multicodex-event-code": options.eventCode } : {}),
 			...(options.participantToken ? { authorization: `Bearer ${options.participantToken}` } : {}),
 		},
 		body: options.body ? JSON.stringify(options.body) : undefined,
@@ -59,11 +57,9 @@ export function createRoom(input: {
 	hostName: string;
 	repo: string;
 	durationMinutes: number;
-	eventCode: string;
 	requestId: string;
 }): Promise<{ snapshot: RoomSnapshot } & RoomIdentity> {
-	const { eventCode, ...body } = input;
-	return request("/api/rooms", { method: "POST", body, eventCode });
+	return request("/api/rooms", { method: "POST", body: input });
 }
 
 export function readRoom(roomId: string, participantToken?: string | null): Promise<RoomSnapshot> {

@@ -137,6 +137,51 @@ type RuntimeRedactionRow = {
 	created_at: number;
 };
 
+export async function consumeRoomCreationBudget(
+	db: D1Database,
+	sourceKey: string,
+	now: number,
+	maxRooms: number,
+	windowMilliseconds: number,
+): Promise<boolean> {
+	const staleBefore = now - windowMilliseconds;
+	const [, result] = await db.batch([
+		db.prepare("DELETE FROM room_creation_budgets WHERE window_started_at <= ?").bind(staleBefore),
+		db
+			.prepare(
+				`INSERT INTO room_creation_budgets (source_key, window_started_at, creation_count)
+       VALUES (?, ?, 1)
+       ON CONFLICT(source_key) DO UPDATE SET
+         window_started_at = CASE
+           WHEN room_creation_budgets.window_started_at <= ? THEN excluded.window_started_at
+           ELSE room_creation_budgets.window_started_at
+         END,
+         creation_count = CASE
+           WHEN room_creation_budgets.window_started_at <= ? THEN 1
+           ELSE room_creation_budgets.creation_count + 1
+         END
+       WHERE room_creation_budgets.window_started_at <= ?
+          OR room_creation_budgets.creation_count < ?
+       RETURNING creation_count`,
+			)
+			.bind(sourceKey, now, staleBefore, staleBefore, staleBefore, maxRooms),
+	]);
+	return (result?.results?.length ?? 0) > 0;
+}
+
+export async function refundRoomCreationBudget(db: D1Database, sourceKey: string): Promise<void> {
+	await db.batch([
+		db
+			.prepare(
+				"UPDATE room_creation_budgets SET creation_count = creation_count - 1 WHERE source_key = ?",
+			)
+			.bind(sourceKey),
+		db
+			.prepare("DELETE FROM room_creation_budgets WHERE source_key = ? AND creation_count <= 0")
+			.bind(sourceKey),
+	]);
+}
+
 export async function reserveRoomCreation(
 	db: D1Database,
 	requestId: string,
@@ -283,6 +328,14 @@ export async function replayCreatedRoom(
 		participantToken: host.access_token,
 		builderInviteToken: room.builder_invite_token,
 	};
+}
+
+export async function roomCreationExists(db: D1Database, requestId: string): Promise<boolean> {
+	const room = await db
+		.prepare("SELECT 1 AS found FROM rooms WHERE creation_request_id = ?")
+		.bind(requestId)
+		.first<{ found: number }>();
+	return room?.found === 1;
 }
 
 export async function roomBuilderInviteAuthorized(

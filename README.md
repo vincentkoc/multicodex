@@ -25,18 +25,16 @@ Open <http://localhost:8787>.
 Without `OPENAI_API_KEY` or Crabfleet service credentials, the local app uses a
 deterministic conductor and simulated workspaces so the complete room flow is
 still testable. `pnpm dev` enables simulation only for the local Wrangler
-process and uses `DEFAULT_BASE_BRANCH` without calling GitHub. Set a random
-32-byte-or-longer `EVENT_ACCESS_CODE` in `.dev.vars`; room creation fails closed
-without it.
-Loaded GitHub and Crabfleet credentials remain unused while simulation is
+process and uses `DEFAULT_BASE_BRANCH` without calling GitHub. Loaded GitHub
+and Crabfleet credentials remain unused while simulation is
 enabled. Production keeps simulation explicitly disabled.
 
 ## Room security
 
 - A random per-seat capability authenticates room mutations. Public participant
   IDs are never accepted as credentials.
-- The event access capability must be high entropy and should be rotated before
-  each event before it can issue host capabilities.
+- Room creation is open, source-rate-limited, and bounded by the deployment's
+  active-room limit.
 - Public room snapshots contain the visible collaboration timeline, but never
   GitHub handles, Crabfleet root IDs, child session IDs, workspace URLs, or
   runtime summaries.
@@ -70,7 +68,6 @@ Configure secrets before the first production deploy:
 ```bash
 pnpm exec wrangler secret put OPENAI_API_KEY
 pnpm exec wrangler secret put CRABFLEET_SERVICE_TOKEN
-pnpm exec wrangler secret put EVENT_ACCESS_CODE
 pnpm exec wrangler secret put GITHUB_TOKEN
 pnpm run deploy
 ```

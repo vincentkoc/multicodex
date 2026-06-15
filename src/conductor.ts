@@ -42,6 +42,14 @@ export async function runConductorTurn(
 	];
 	const signal = AbortSignal.timeout(conductorTurnTimeoutMilliseconds);
 	let previousResponseId: string | undefined;
+	let postedVisibleMessage = false;
+	const visibleTools: ConductorTools = {
+		postMessage: async (body) => {
+			if (postedVisibleMessage) return;
+			await tools.postMessage(body);
+			postedVisibleMessage = true;
+		},
+	};
 	let input: unknown = [
 		{
 			role: "user",
@@ -78,13 +86,13 @@ export async function runConductorTurn(
 		const calls = (output.output ?? []).filter((item) => item.type === "function_call");
 		if (!calls.length) {
 			const text = outputText(output, redact);
-			if (text) await tools.postMessage(text);
+			if (text && !postedVisibleMessage) await visibleTools.postMessage(text);
 			return;
 		}
 		const results: unknown[] = [];
 		for (const call of calls) {
 			const args = parseArguments(call.arguments);
-			const result = await executeTool(call.name ?? "", args, tools, redact);
+			const result = await executeTool(call.name ?? "", args, visibleTools, redact);
 			results.push({
 				type: "function_call_output",
 				call_id: call.call_id,

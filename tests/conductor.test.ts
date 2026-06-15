@@ -52,6 +52,80 @@ test("conductor turns expose only the visible room-message tool", async () => {
 	);
 });
 
+test("conductor publishes only once after using the visible room-message tool", async () => {
+	const originalFetch = globalThis.fetch;
+	const messages: string[] = [];
+	let response = 0;
+	globalThis.fetch = async () => {
+		response += 1;
+		return Response.json(
+			response === 1
+				? {
+						id: "response-1",
+						output: [
+							{
+								type: "function_call",
+								name: "post_room_message",
+								call_id: "call-message",
+								arguments: JSON.stringify({ body: "one visible reply" }),
+							},
+						],
+					}
+				: {
+						id: "response-2",
+						output: [
+							{
+								type: "message",
+								content: [{ type: "output_text", text: "one visible reply" }],
+							},
+						],
+					},
+		);
+	};
+	try {
+		await runConductorTurn({ OPENAI_API_KEY: "test" } as Env, snapshot, "are you there?", {
+			postMessage: async (body) => {
+				messages.push(body);
+			},
+		});
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+
+	assert.deepEqual(messages, ["one visible reply"]);
+});
+
+test("conductor publishes only the first visible room-message tool call", async () => {
+	const originalFetch = globalThis.fetch;
+	const messages: string[] = [];
+	let response = 0;
+	globalThis.fetch = async () => {
+		response += 1;
+		return Response.json({
+			id: `response-${response}`,
+			output: [
+				{
+					type: "function_call",
+					name: "post_room_message",
+					call_id: `call-message-${response}`,
+					arguments: JSON.stringify({ body: `visible reply ${response}` }),
+				},
+			],
+		});
+	};
+	try {
+		await runConductorTurn({ OPENAI_API_KEY: "test" } as Env, snapshot, "are you there?", {
+			postMessage: async (body) => {
+				messages.push(body);
+			},
+		});
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+
+	assert.deepEqual(messages, ["visible reply 1"]);
+});
+
 test("conductor redacts Crabfleet runtime identifiers from model input and published output", async () => {
 	const originalFetch = globalThis.fetch;
 	const requests: string[] = [];
