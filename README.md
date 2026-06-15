@@ -72,7 +72,7 @@ pnpm exec wrangler secret put OPENAI_API_KEY
 pnpm exec wrangler secret put CRABFLEET_SERVICE_TOKEN
 pnpm exec wrangler secret put EVENT_ACCESS_CODE
 pnpm exec wrangler secret put GITHUB_TOKEN
-pnpm deploy
+pnpm run deploy
 ```
 
 `CRABFLEET_SERVICE_TOKEN` must match one of Crabfleet's service tokens. Prefer
