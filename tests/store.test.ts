@@ -1,9 +1,56 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import type { Participant } from "../src/domain.ts";
-import { participantBranch, participantForTask } from "../src/store.ts";
+import {
+	consumeRoomCreationBudget,
+	participantBranch,
+	participantForTask,
+	refundRoomCreationBudget,
+	roomCreationExists,
+} from "../src/store.ts";
+
+type SqliteStatement = D1PreparedStatement & {
+	testSql: string;
+	testValues: unknown[];
+};
+
+function sqliteD1(): { db: D1Database; sqlite: DatabaseSync } {
+	const sqlite = new DatabaseSync(":memory:");
+	const statement = (sql: string, values: unknown[] = []): SqliteStatement =>
+		({
+			testSql: sql,
+			testValues: values,
+			bind: (...next: unknown[]) => statement(sql, next),
+			first: async <T>() =>
+				(sqlite.prepare(sql).get(...(values as never[])) as T | undefined) ?? null,
+		}) as unknown as SqliteStatement;
+	const db = {
+		prepare: statement,
+		batch: async (statements: D1PreparedStatement[]) => {
+			sqlite.exec("BEGIN");
+			try {
+				const results = (statements as SqliteStatement[]).map((entry) => {
+					const prepared = sqlite.prepare(entry.testSql);
+					if (/RETURNING/i.test(entry.testSql)) {
+						const rows = prepared.all(...(entry.testValues as never[]));
+						return { success: true, results: rows, meta: { changes: rows.length } };
+					}
+					const result = prepared.run(...(entry.testValues as never[]));
+					return { success: true, results: [], meta: { changes: Number(result.changes) } };
+				});
+				sqlite.exec("COMMIT");
+				return results;
+			} catch (error) {
+				sqlite.exec("ROLLBACK");
+				throw error;
+			}
+		},
+	} as unknown as D1Database;
+	return { db, sqlite };
+}
 
 const participant = (id: string, kind: Participant["kind"]): Participant => ({
 	id,
@@ -68,11 +115,48 @@ test("anonymous room creation budgets are consumed atomically", async () => {
 	assert.match(budgetSource, /INSERT INTO room_creation_budgets/);
 	assert.match(budgetSource, /ON CONFLICT\(source_key\) DO UPDATE/);
 	assert.match(budgetSource, /room_creation_budgets\.creation_count < \?/);
-	assert.match(budgetSource, /RETURNING creation_count/);
+	assert.match(budgetSource, /RETURNING window_started_at/);
 	assert.match(budgetSource, /DELETE FROM room_creation_budgets WHERE window_started_at <= \?/);
 	assert.match(budgetSource, /refundRoomCreationBudget/);
 	assert.match(budgetSource, /creation_count = creation_count - 1/);
+	assert.match(budgetSource, /window_started_at = \?/);
 	assert.match(budgetSource, /creation_count <= 0/);
+});
+
+test("room creation budgets cap, prune, refund, and preserve committed rooms", async () => {
+	const { db, sqlite } = sqliteD1();
+	sqlite.exec(`
+		CREATE TABLE room_creation_budgets (
+			source_key TEXT PRIMARY KEY,
+			window_started_at INTEGER NOT NULL,
+			creation_count INTEGER NOT NULL
+		);
+		CREATE TABLE rooms (creation_request_id TEXT);
+	`);
+	const window = 1_000;
+
+	assert.equal(await consumeRoomCreationBudget(db, "source-a", 2_000, 2, window), 2_000);
+	assert.equal(await consumeRoomCreationBudget(db, "source-a", 2_100, 2, window), 2_000);
+	assert.equal(await consumeRoomCreationBudget(db, "source-a", 2_200, 2, window), null);
+	await refundRoomCreationBudget(db, "source-a", 2_000);
+	assert.equal(await consumeRoomCreationBudget(db, "source-a", 2_300, 2, window), 2_000);
+
+	assert.equal(await consumeRoomCreationBudget(db, "stale-source", 1_000, 2, window), 1_000);
+	assert.equal(await consumeRoomCreationBudget(db, "source-b", 2_001, 2, window), 2_001);
+	const stale = sqlite
+		.prepare("SELECT COUNT(*) AS count FROM room_creation_budgets WHERE source_key = ?")
+		.get("stale-source") as { count: number } | undefined;
+	assert.equal(stale?.count, 0);
+
+	assert.equal(await consumeRoomCreationBudget(db, "rollover-source", 3_000, 2, window), 3_000);
+	assert.equal(await consumeRoomCreationBudget(db, "rollover-source", 4_001, 2, window), 4_001);
+	await refundRoomCreationBudget(db, "rollover-source", 3_000);
+	assert.equal(await consumeRoomCreationBudget(db, "rollover-source", 4_100, 2, window), 4_001);
+	assert.equal(await consumeRoomCreationBudget(db, "rollover-source", 4_200, 2, window), null);
+
+	assert.equal(await roomCreationExists(db, "create-committed"), false);
+	sqlite.prepare("INSERT INTO rooms (creation_request_id) VALUES (?)").run("create-committed");
+	assert.equal(await roomCreationExists(db, "create-committed"), true);
 });
 
 test("builder joins atomically invalidate stale plans and enforce the five-seat cap", async () => {
