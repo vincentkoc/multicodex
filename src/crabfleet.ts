@@ -173,7 +173,7 @@ export async function provisionParticipantCrabbox(
 	room: Room,
 	participant: Participant,
 	task: Task | undefined,
-	previousSessionId: string,
+	repairAttemptId: string,
 ): Promise<ParticipantCrabboxBinding> {
 	if (!room.crabfleetRootSessionId) throw new HttpError(409, "room runtime is not ready");
 	if (participant.kind === "observer") throw new HttpError(400, "observer has no workspace");
@@ -207,7 +207,7 @@ export async function provisionParticipantCrabbox(
 				repo: room.repo,
 				branch: participant.branch || room.integrationBranch,
 				baseBranch: room.baseBranch,
-				requestId: `multicodex:${room.id}:repair:${participant.id}:${previousSessionId}`,
+				requestId: `multicodex:${room.id}:repair:${participant.id}:${repairAttemptId}`,
 				parentSessionId: room.crabfleetRootSessionId,
 				rootSessionId: room.crabfleetRootSessionId,
 				purpose: task?.title || participant.roleId || "room task",
