@@ -66,6 +66,12 @@ type ParticipantJoinInput = {
 	maxAiSeats: number;
 };
 
+type ParticipantJoinReplayRow = ParticipantRow & {
+	replay_kind: ParticipantKind;
+	replay_display_name: string;
+	replay_github_login: string | null;
+};
+
 type MessageRow = {
 	id: string;
 	room_id: string;
@@ -436,11 +442,7 @@ export async function addParticipant(
 	roomId: string,
 	input: ParticipantJoinInput,
 ): Promise<{ participant: Participant; participantToken: string }> {
-	const existing = await db
-		.prepare("SELECT * FROM participants WHERE room_id = ? AND join_request_id = ?")
-		.bind(roomId, input.requestId)
-		.first<ParticipantRow>();
-	const existingReplay = participantReplay(existing, input);
+	const existingReplay = await replayJoinedParticipant(db, roomId, input);
 	if (existingReplay) return existingReplay;
 	const room = await db
 		.prepare("SELECT slug, status FROM rooms WHERE id = ?")
@@ -504,6 +506,17 @@ export async function addParticipant(
 				input.maxAiSeats,
 			),
 	];
+	statements.push(
+		db
+			.prepare(
+				`INSERT OR IGNORE INTO participant_join_replays
+	          (room_id, request_id, participant_id, kind, display_name, github_login, created_at)
+	         SELECT room_id, join_request_id, id, kind, display_name, github_login, ?
+	         FROM participants
+	         WHERE id = ? AND room_id = ? AND join_request_id = ?`,
+			)
+			.bind(now, id, roomId, input.requestId),
+	);
 	if (input.kind !== "observer") {
 		statements.push(
 			db
@@ -550,11 +563,7 @@ export async function addParticipant(
 	);
 	const [result] = await db.batch(statements);
 	if (result?.meta.changes !== 1) {
-		const replay = await db
-			.prepare("SELECT * FROM participants WHERE room_id = ? AND join_request_id = ?")
-			.bind(roomId, input.requestId)
-			.first<ParticipantRow>();
-		const insertedReplay = participantReplay(replay, input);
+		const insertedReplay = await replayJoinedParticipant(db, roomId, input);
 		if (insertedReplay) return insertedReplay;
 		throw new HttpError(409, "room is no longer accepting this seat");
 	}
@@ -575,11 +584,7 @@ export async function upgradeObserverParticipant(
 	participantId: string,
 	input: ParticipantJoinInput,
 ): Promise<{ participant: Participant; participantToken: string }> {
-	const replay = await db
-		.prepare("SELECT * FROM participants WHERE id = ? AND room_id = ? AND join_request_id = ?")
-		.bind(participantId, roomId, input.requestId)
-		.first<ParticipantRow>();
-	const existingReplay = participantReplay(replay, input);
+	const existingReplay = await replayJoinedParticipant(db, roomId, input, participantId);
 	if (existingReplay) return existingReplay;
 	if (input.kind === "observer") throw new HttpError(409, "observer is already in the room");
 	const [participant, room] = await db.batch([
@@ -634,6 +639,15 @@ export async function upgradeObserverParticipant(
 				input.maxAiSeats,
 			),
 		db
+			.prepare(
+				`INSERT OR IGNORE INTO participant_join_replays
+		          (room_id, request_id, participant_id, kind, display_name, github_login, created_at)
+		         SELECT room_id, join_request_id, id, kind, display_name, github_login, ?
+		         FROM participants
+		         WHERE id = ? AND room_id = ? AND upgrade_claim_id = ?`,
+			)
+			.bind(now, participantId, roomId, upgradeClaimId),
+		db
 			.prepare(`DELETE FROM tasks WHERE room_id = ? AND ${upgradedGuard}`)
 			.bind(roomId, participantId, roomId, input.kind, input.requestId, upgradeClaimId),
 		db
@@ -674,11 +688,7 @@ export async function upgradeObserverParticipant(
 			.bind(participantId, roomId, upgradeClaimId),
 	]);
 	if (result?.meta.changes !== 1) {
-		const replay = await db
-			.prepare("SELECT * FROM participants WHERE id = ? AND room_id = ? AND join_request_id = ?")
-			.bind(participantId, roomId, input.requestId)
-			.first<ParticipantRow>();
-		const upgradedReplay = participantReplay(replay, input);
+		const upgradedReplay = await replayJoinedParticipant(db, roomId, input, participantId);
 		if (upgradedReplay) return upgradedReplay;
 		throw new HttpError(409, "room is no longer accepting this builder seat");
 	}
@@ -793,6 +803,31 @@ export async function consumeRoomMessageBudget(
 		)
 		.bind(roomId, participantId, now, staleBefore, staleBefore, staleBefore, maxMessages)
 		.first<{ message_count: number }>();
+	return result !== null;
+}
+
+export async function claimRoomRuntimeRefresh(
+	db: D1Database,
+	roomId: string,
+	now: number,
+	cooldownMilliseconds: number,
+): Promise<boolean> {
+	const result = await db
+		.prepare(
+			`INSERT INTO room_runtime_refresh_leases (room_id, next_allowed_at)
+	       SELECT ?, ?
+	       WHERE EXISTS (
+	         SELECT 1 FROM rooms WHERE id = ? AND status IN ('building', 'integrating', 'presenting')
+	       )
+	       ON CONFLICT(room_id) DO UPDATE SET next_allowed_at = excluded.next_allowed_at
+	       WHERE room_runtime_refresh_leases.next_allowed_at <= ?
+	         AND EXISTS (
+	           SELECT 1 FROM rooms WHERE id = ? AND status IN ('building', 'integrating', 'presenting')
+	         )
+	       RETURNING next_allowed_at`,
+		)
+		.bind(roomId, now + cooldownMilliseconds, roomId, now, roomId)
+		.first<{ next_allowed_at: number }>();
 	return result !== null;
 }
 
@@ -1771,15 +1806,30 @@ function participantFromRow(row: ParticipantRow): Participant {
 	};
 }
 
-function participantReplay(
-	row: ParticipantRow | null,
+async function replayJoinedParticipant(
+	db: D1Database,
+	roomId: string,
 	input: ParticipantJoinInput,
-): { participant: Participant; participantToken: string } | null {
+	participantId?: string,
+): Promise<{ participant: Participant; participantToken: string } | null> {
+	const participantFence = participantId ? "AND replay.participant_id = ?" : "";
+	const row = await db
+		.prepare(
+			`SELECT participant.*, replay.kind AS replay_kind,
+			        replay.display_name AS replay_display_name,
+			        replay.github_login AS replay_github_login
+			 FROM participant_join_replays AS replay
+			 JOIN participants AS participant
+			   ON participant.id = replay.participant_id AND participant.room_id = replay.room_id
+			 WHERE replay.room_id = ? AND replay.request_id = ? ${participantFence}`,
+		)
+		.bind(roomId, input.requestId, ...(participantId ? [participantId] : []))
+		.first<ParticipantJoinReplayRow>();
 	if (!row?.access_token) return null;
 	if (
-		row.kind !== input.kind ||
-		row.display_name !== input.displayName ||
-		row.github_login !== (input.githubLogin ?? null)
+		row.replay_kind !== input.kind ||
+		row.replay_display_name !== input.displayName ||
+		row.replay_github_login !== (input.githubLogin ?? null)
 	) {
 		throw new HttpError(409, "join request does not match the original seat");
 	}

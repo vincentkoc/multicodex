@@ -82,8 +82,8 @@ test("builder joins atomically invalidate stale plans and enforce the five-seat 
 	assert.match(addParticipantSource, /INSERT INTO room_messages/);
 	assert.match(addParticipantSource, /UPDATE rooms SET updated_at = \?/);
 	assert.match(addParticipantSource, /status IN \('setup', 'planning'\)/);
-	assert.match(addParticipantSource, /participantReplay\(existing, input\)/);
-	assert.match(addParticipantSource, /participantReplay\(replay, input\)/);
+	assert.match(addParticipantSource, /replayJoinedParticipant\(db, roomId, input\)/);
+	assert.match(addParticipantSource, /INSERT OR IGNORE INTO participant_join_replays/);
 	assert.match(addParticipantSource, /const \[result\] = await db\.batch\(statements\)/);
 });
 
@@ -93,8 +93,7 @@ test("observer upgrades preserve identity and atomically claim a builder seat", 
 	const end = source.indexOf("export async function requireRoomParticipant", start);
 	const upgradeSource = source.slice(start, end);
 
-	assert.match(upgradeSource, /participantReplay\(replay, input\)/);
-	assert.match(upgradeSource, /id = \? AND room_id = \? AND join_request_id = \?/);
+	assert.match(upgradeSource, /replayJoinedParticipant\(db, roomId, input, participantId\)/);
 	assert.match(upgradeSource, /input\.kind === "observer"/);
 	assert.match(upgradeSource, /UPDATE OR IGNORE participants/);
 	assert.match(upgradeSource, /kind = 'observer'/);
@@ -105,7 +104,7 @@ test("observer upgrades preserve identity and atomically claim a builder seat", 
 	assert.match(upgradeSource, /upgrade_claim_id = \?/);
 	assert.match(upgradeSource, /join_request_id = \? AND upgrade_claim_id = \?/);
 	assert.match(upgradeSource, /SET upgrade_claim_id = NULL/);
-	assert.match(upgradeSource, /participantReplay\(replay, input\)/);
+	assert.match(upgradeSource, /INSERT OR IGNORE INTO participant_join_replays/);
 	assert.match(upgradeSource, /DELETE FROM tasks/);
 	assert.match(upgradeSource, /brief_revision = brief_revision \+ 1/);
 	assert.match(upgradeSource, /participantToken: current\.access_token/);
@@ -114,14 +113,27 @@ test("observer upgrades preserve identity and atomically claim a builder seat", 
 
 test("join request replays preserve immutable seat identity", async () => {
 	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
-	const start = source.indexOf("function participantReplay");
+	const start = source.indexOf("async function replayJoinedParticipant");
 	const end = source.indexOf("function messageFromRow", start);
 	const replaySource = source.slice(start, end);
 
-	assert.match(replaySource, /row\.kind !== input\.kind/);
-	assert.match(replaySource, /row\.display_name !== input\.displayName/);
-	assert.match(replaySource, /row\.github_login !== \(input\.githubLogin \?\? null\)/);
+	assert.match(replaySource, /participant_join_replays AS replay/);
+	assert.match(replaySource, /row\.replay_kind !== input\.kind/);
+	assert.match(replaySource, /row\.replay_display_name !== input\.displayName/);
+	assert.match(replaySource, /row\.replay_github_login !== \(input\.githubLogin \?\? null\)/);
 	assert.match(replaySource, /join request does not match the original seat/);
+});
+
+test("runtime refreshes use an atomic room cooldown", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function claimRoomRuntimeRefresh");
+	const end = source.indexOf("export async function replacePlan", start);
+	const refreshSource = source.slice(start, end);
+
+	assert.match(refreshSource, /INSERT INTO room_runtime_refresh_leases/);
+	assert.match(refreshSource, /ON CONFLICT\(room_id\) DO UPDATE/);
+	assert.match(refreshSource, /next_allowed_at <= \?/);
+	assert.match(refreshSource, /status IN \('building', 'integrating', 'presenting'\)/);
 });
 
 test("room creation persists the resolved repository base branch", async () => {

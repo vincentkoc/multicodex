@@ -127,3 +127,26 @@ test("observer upgrades have transaction-scoped claims", async () => {
 	assert.match(migration, /upgrade_claim_id TEXT/);
 	assert.match(migration, /UNIQUE INDEX idx_participants_upgrade_claim/);
 });
+
+test("runtime refreshes have a durable room cooldown", async () => {
+	const migration = await readFile(
+		new URL("../migrations/0017_room_runtime_refresh_leases.sql", import.meta.url),
+		"utf8",
+	);
+
+	assert.match(migration, /CREATE TABLE room_runtime_refresh_leases/);
+	assert.match(migration, /room_id TEXT PRIMARY KEY/);
+	assert.match(migration, /next_allowed_at INTEGER NOT NULL/);
+});
+
+test("participant join replays preserve immutable admission inputs", async () => {
+	const migration = await readFile(
+		new URL("../migrations/0018_participant_join_replays.sql", import.meta.url),
+		"utf8",
+	);
+
+	assert.match(migration, /CREATE TABLE participant_join_replays/);
+	assert.match(migration, /PRIMARY KEY \(room_id, request_id\)/);
+	assert.match(migration, /INSERT OR IGNORE INTO participant_join_replays/);
+	assert.match(migration, /WHERE join_request_id IS NOT NULL/);
+});

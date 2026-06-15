@@ -52,6 +52,7 @@ import {
 	beginRoomCleanup,
 	claimConductorTurn,
 	claimRoomRuntimeLease,
+	claimRoomRuntimeRefresh,
 	claimStaleProvisioningCleanup,
 	completeRoomProvisioning,
 	consumeRoomMessageBudget,
@@ -106,6 +107,7 @@ const scopeChangeStatuses: RoomStatus[] = [
 const runtimeRefreshStatuses: RoomStatus[] = ["building", "integrating", "presenting"];
 const runtimeNudgeStatuses: RoomStatus[] = ["building", "integrating"];
 const runtimeActionLeaseMilliseconds = 30_000;
+const runtimeRefreshCooldownMilliseconds = 15_000;
 const roomCreationReservationMilliseconds = 60_000;
 const prelaunchInactivityMilliseconds = 6 * 60 * 60 * 1000;
 const scheduledReconciliationBudgetMilliseconds = 8 * 60 * 1000;
@@ -625,6 +627,16 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		let snapshot = await readRoomSnapshot(env.DB, roomId);
 		if (!roomAllowsRuntimeRefresh(snapshot.room.status)) {
 			throw new HttpError(409, "room runtime is not active");
+		}
+		if (
+			!(await claimRoomRuntimeRefresh(
+				env.DB,
+				roomId,
+				Date.now(),
+				runtimeRefreshCooldownMilliseconds,
+			))
+		) {
+			throw new HttpError(429, "room runtime refresh is cooling down");
 		}
 		if (snapshot.room.crabfleetRootSessionId) {
 			const bindings = await readRoomCrabboxes(env, snapshot.room.crabfleetRootSessionId);

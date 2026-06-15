@@ -31,6 +31,11 @@ test("worker mutation routes keep terminal rooms immutable", async () => {
 	);
 	assert.match(refreshSource, /participantToken\(request\), false/);
 	assert.match(refreshSource, /roomAllowsRuntimeRefresh/);
+	assert.match(refreshSource, /claimRoomRuntimeRefresh/);
+	assert.match(refreshSource, /runtimeRefreshCooldownMilliseconds/);
+	assert.ok(
+		refreshSource.indexOf("claimRoomRuntimeRefresh") < refreshSource.indexOf("readRoomCrabboxes"),
+	);
 	assert.match(refreshSource, /expectedStatuses: runtimeRefreshStatuses/);
 });
 
