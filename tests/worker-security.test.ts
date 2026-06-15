@@ -372,6 +372,11 @@ test("scheduled reconciliation expires inactive planning and runtime rooms", asy
 	assert.match(expirySource, /without planning activity/);
 	assert.match(expirySource, /broadcastSnapshot/);
 	assert.match(expirySource, /listRuntimeRoomIdsNeedingCleanup/);
+	assert.match(expirySource, /scheduledReconciliationBudgetMilliseconds/);
+	assert.match(expirySource, /runtimeCleanupBatchSize/);
+	assert.match(expirySource, /runtimeCleanupConcurrency/);
+	assert.match(expirySource, /Date\.now\(\) < deadline/);
+	assert.match(expirySource, /Promise\.all/);
 	assert.match(expirySource, /provisioningStale/);
 	assert.match(expirySource, /claimStaleProvisioningCleanup/);
 	assert.match(expirySource, /beginRoomCleanup/);

@@ -96,6 +96,9 @@ const runtimeActionLeaseMilliseconds = 30_000;
 const cleanupActionLeaseMilliseconds = 2 * 60 * 1000;
 const roomCreationReservationMilliseconds = 60_000;
 const prelaunchInactivityMilliseconds = 6 * 60 * 60 * 1000;
+const scheduledReconciliationBudgetMilliseconds = 8 * 60 * 1000;
+const runtimeCleanupBatchSize = 4;
+const runtimeCleanupConcurrency = 2;
 
 export default {
 	async fetch(request, env, context): Promise<Response> {
@@ -875,10 +878,12 @@ function optionalMessageReference(value: unknown, label: string): string | null 
 
 async function reconcileRooms(env: Env): Promise<void> {
 	const now = Date.now();
+	const deadline = now + scheduledReconciliationBudgetMilliseconds;
 	for (const roomId of await expireInactivePrelaunchRooms(
 		env.DB,
 		now - prelaunchInactivityMilliseconds,
 	)) {
+		if (Date.now() >= deadline) return;
 		try {
 			await addMessage(env.DB, roomId, {
 				authorKind: "system",
@@ -899,23 +904,37 @@ async function reconcileRooms(env: Env): Promise<void> {
 			);
 		}
 	}
-	for (const roomId of await listRuntimeRoomIdsNeedingCleanup(
+	if (Date.now() >= deadline) return;
+	const roomIds = await listRuntimeRoomIdsNeedingCleanup(
 		env.DB,
 		now,
 		now - provisioningLeaseMilliseconds,
-	)) {
-		try {
-			await reconcileRuntimeRoom(env, roomId);
-		} catch (error) {
-			console.error(
-				JSON.stringify({
-					event: "room_cleanup_reconciliation_failed",
-					roomId,
-					message: error instanceof Error ? error.message : "unknown error",
-				}),
-			);
-		}
-	}
+		runtimeCleanupBatchSize,
+	);
+	await reconcileRuntimeRooms(env, roomIds, deadline);
+}
+
+async function reconcileRuntimeRooms(env: Env, roomIds: string[], deadline: number): Promise<void> {
+	let nextIndex = 0;
+	await Promise.all(
+		Array.from({ length: Math.min(runtimeCleanupConcurrency, roomIds.length) }, async () => {
+			while (Date.now() < deadline) {
+				const roomId = roomIds[nextIndex++];
+				if (!roomId) return;
+				try {
+					await reconcileRuntimeRoom(env, roomId);
+				} catch (error) {
+					console.error(
+						JSON.stringify({
+							event: "room_cleanup_reconciliation_failed",
+							roomId,
+							message: error instanceof Error ? error.message : "unknown error",
+						}),
+					);
+				}
+			}
+		}),
+	);
 }
 
 async function reconcileRuntimeRoom(env: Env, roomId: string): Promise<void> {
