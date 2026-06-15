@@ -63,7 +63,7 @@ export function App() {
 	const [error, setError] = useState("");
 	const [loading, setLoading] = useState(Boolean(roomId));
 	const snapshotRequestSequence = useRef(0);
-	const builderInviteToken = useBuilderInviteToken(roomId);
+	const [builderInviteToken, clearBuilderInviteToken] = useBuilderInviteToken(roomId);
 
 	useEffect(() => {
 		const synchronizeHistory = () => {
@@ -154,6 +154,7 @@ export function App() {
 			history.pushState({ roomId: next.room.id }, "", cleanPath);
 		}
 		snapshotRequestSequence.current += 1;
+		clearBuilderInviteToken();
 		setRoomId(next.room.id);
 		setIdentity(identity);
 		setSnapshot(next);
@@ -1535,15 +1536,16 @@ function builderInviteTokenFromUrl(): string | undefined {
 	return token || undefined;
 }
 
-function useBuilderInviteToken(roomId: string | null): string | undefined {
+function useBuilderInviteToken(roomId: string | null): [string | undefined, () => void] {
 	const [token, setToken] = useState(builderInviteTokenFromUrl);
+	const clearToken = useCallback(() => setToken(undefined), []);
 	useEffect(() => {
 		const synchronizeToken = () => setToken(builderInviteTokenFromUrl());
 		synchronizeToken();
 		window.addEventListener("hashchange", synchronizeToken);
 		return () => window.removeEventListener("hashchange", synchronizeToken);
 	}, [roomId]);
-	return token;
+	return [token, clearToken];
 }
 
 function identityKey(roomId: string): string {
