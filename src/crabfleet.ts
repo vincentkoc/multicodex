@@ -86,6 +86,10 @@ export function crabfleetSimulationEnabled(value: string | undefined): boolean {
 	return value === "true";
 }
 
+export function definitiveCrabfleetReplayConflict(error: unknown): boolean {
+	return error instanceof CrabfleetRequestError && error.upstreamStatus === 409;
+}
+
 export function participantStateForCrabfleetStatus(
 	status: string,
 	current: Participant["state"],

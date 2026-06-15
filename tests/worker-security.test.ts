@@ -465,6 +465,8 @@ test("scheduled reconciliation fans runtime cleanup across per-room invocations"
 	assert.match(runtimeCleanup, /reconcileFailedLaunchCleanup/);
 	assert.match(runtimeCleanup, /roomRootProvisioningAttempted/);
 	assert.match(runtimeCleanup, /recoverPersistedRoomRootCrabbox/);
+	assert.match(runtimeCleanup, /definitiveCrabfleetReplayConflict/);
+	assert.match(runtimeCleanup, /if \(definitiveCrabfleetReplayConflict\(error\)\) return null/);
 	assert.match(runtimeCleanup, /stopRoomCrabboxes/);
 	assert.match(runtimeCleanup, /resetRoomProvisioning/);
 	assert.match(runtimeCleanup, /await endRoom/);

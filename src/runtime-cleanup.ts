@@ -1,4 +1,5 @@
 import {
+	definitiveCrabfleetReplayConflict,
 	parseRootCrabboxRequest,
 	participantStateForCrabfleetStatus,
 	recoverRoomRootCrabbox,
@@ -27,13 +28,24 @@ export const cleanupActionLeaseMilliseconds = 2 * 60 * 1000;
 export async function recoverPersistedRoomRootCrabbox(
 	env: Env,
 	snapshot: RoomSnapshot,
-): ReturnType<typeof recoverRoomRootCrabbox> {
+): Promise<Awaited<ReturnType<typeof recoverRoomRootCrabbox>> | null> {
 	const persisted = await readRoomRootProvisioningRequest(env.DB, snapshot.room.id);
 	// Pre-0014 rooms cannot have the exact request persisted. Reconstruct only for that legacy case.
 	const request = persisted
 		? parseRootCrabboxRequest(persisted)
 		: roomRootCrabboxRequest(env, snapshot.room, snapshot.participants, snapshot.tasks);
-	return recoverRoomRootCrabbox(env, snapshot.room, snapshot.participants, snapshot.tasks, request);
+	try {
+		return await recoverRoomRootCrabbox(
+			env,
+			snapshot.room,
+			snapshot.participants,
+			snapshot.tasks,
+			request,
+		);
+	} catch (error) {
+		if (definitiveCrabfleetReplayConflict(error)) return null;
+		throw error;
+	}
 }
 
 export async function cleanupFailedLaunchRoom(
@@ -119,28 +131,30 @@ export async function reconcileRuntimeRoom(env: Env, roomId: string): Promise<vo
 		snapshot = await readRoomSnapshot(env.DB, roomId);
 		if (!snapshot.room.crabfleetRootSessionId && runtimeMayExist) {
 			const root = await recoverPersistedRoomRootCrabbox(env, snapshot);
-			if (
-				!(await markRoomCleanup(
-					env.DB,
-					roomId,
-					snapshot.room.briefRevision,
-					root.binding.session.rootSessionId || root.binding.session.id,
-					"cleanup-ending",
-					["cleanup-ending"],
-					[
-						{
-							participantId: root.participantId,
-							sessionId: root.binding.session.id,
-							browserUrl: root.binding.browserUrl,
-							summary: root.binding.session.summary,
-							state: participantStateForCrabfleetStatus(root.binding.session.status, "joined"),
-						},
-					],
-				))
-			) {
-				throw new HttpError(409, "room cleanup state changed during root recovery");
+			if (root) {
+				if (
+					!(await markRoomCleanup(
+						env.DB,
+						roomId,
+						snapshot.room.briefRevision,
+						root.binding.session.rootSessionId || root.binding.session.id,
+						"cleanup-ending",
+						["cleanup-ending"],
+						[
+							{
+								participantId: root.participantId,
+								sessionId: root.binding.session.id,
+								browserUrl: root.binding.browserUrl,
+								summary: root.binding.session.summary,
+								state: participantStateForCrabfleetStatus(root.binding.session.status, "joined"),
+							},
+						],
+					))
+				) {
+					throw new HttpError(409, "room cleanup state changed during root recovery");
+				}
+				snapshot = await readRoomSnapshot(env.DB, roomId);
 			}
-			snapshot = await readRoomSnapshot(env.DB, roomId);
 		}
 		if (snapshot.room.crabfleetRootSessionId) {
 			await stopRoomCrabboxes(
@@ -184,28 +198,30 @@ async function reconcileFailedLaunchCleanup(env: Env, roomId: string): Promise<v
 			(await roomRootProvisioningAttempted(env.DB, roomId))
 		) {
 			const root = await recoverPersistedRoomRootCrabbox(env, snapshot);
-			if (
-				!(await markRoomCleanup(
-					env.DB,
-					roomId,
-					snapshot.room.briefRevision,
-					root.binding.session.rootSessionId || root.binding.session.id,
-					"cleanup-planning",
-					["cleanup-planning"],
-					[
-						{
-							participantId: root.participantId,
-							sessionId: root.binding.session.id,
-							browserUrl: root.binding.browserUrl,
-							summary: root.binding.session.summary,
-							state: participantStateForCrabfleetStatus(root.binding.session.status, "joined"),
-						},
-					],
-				))
-			) {
-				throw new HttpError(409, "launch cleanup state changed during root recovery");
+			if (root) {
+				if (
+					!(await markRoomCleanup(
+						env.DB,
+						roomId,
+						snapshot.room.briefRevision,
+						root.binding.session.rootSessionId || root.binding.session.id,
+						"cleanup-planning",
+						["cleanup-planning"],
+						[
+							{
+								participantId: root.participantId,
+								sessionId: root.binding.session.id,
+								browserUrl: root.binding.browserUrl,
+								summary: root.binding.session.summary,
+								state: participantStateForCrabfleetStatus(root.binding.session.status, "joined"),
+							},
+						],
+					))
+				) {
+					throw new HttpError(409, "launch cleanup state changed during root recovery");
+				}
+				snapshot = await readRoomSnapshot(env.DB, roomId);
 			}
-			snapshot = await readRoomSnapshot(env.DB, roomId);
 		}
 		if (snapshot.room.crabfleetRootSessionId) {
 			await stopRoomCrabboxes(

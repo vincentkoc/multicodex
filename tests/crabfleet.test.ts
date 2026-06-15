@@ -6,6 +6,7 @@ import {
 	crabfleetOwner,
 	crabfleetRuntime,
 	crabfleetSimulationEnabled,
+	definitiveCrabfleetReplayConflict,
 	participantStateForCrabfleetStatus,
 	parseRootCrabboxRequest,
 	PartialProvisioningError,
@@ -172,6 +173,15 @@ test("Crabfleet replay conflicts are definitive while preparing replays stay amb
 	try {
 		globalThis.fetch = async () => new Response("conflict", { status: 409 });
 		await assert.rejects(
+			recoverRoomRootCrabbox(
+				{ CRABFLEET_SERVICE_TOKEN: "test" } as Env,
+				room,
+				[participant("host")],
+				[],
+			),
+			(error) => definitiveCrabfleetReplayConflict(error),
+		);
+		await assert.rejects(
 			provisionRoomCrabboxes(
 				{ CRABFLEET_SERVICE_TOKEN: "test" } as Env,
 				room,
@@ -186,6 +196,15 @@ test("Crabfleet replay conflicts are definitive while preparing replays stay amb
 		);
 
 		globalThis.fetch = async () => new Response("still preparing", { status: 503 });
+		await assert.rejects(
+			recoverRoomRootCrabbox(
+				{ CRABFLEET_SERVICE_TOKEN: "test" } as Env,
+				room,
+				[participant("host")],
+				[],
+			),
+			(error) => !definitiveCrabfleetReplayConflict(error),
+		);
 		await assert.rejects(
 			provisionRoomCrabboxes(
 				{ CRABFLEET_SERVICE_TOKEN: "test" } as Env,
