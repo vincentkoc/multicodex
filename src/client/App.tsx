@@ -517,7 +517,11 @@ function RoomWorkbench({
 		onError("");
 		try {
 			await run();
-			await onRefresh();
+			try {
+				await onRefresh();
+			} catch (cause) {
+				onError(`action completed; room refresh failed: ${errorMessage(cause)}`);
+			}
 			return true;
 		} catch (cause) {
 			onError(errorMessage(cause));

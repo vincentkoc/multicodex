@@ -342,17 +342,14 @@ async function createCrabbox(
 async function crabfleetFetch(env: Env, path: string, init: RequestInit = {}): Promise<Response> {
 	let response: Response;
 	try {
-		response = await fetch(
-			new URL(path, env.CRABFLEET_API_URL || "https://crabfleet.openclaw.ai"),
-			{
-				...init,
-				signal: init.signal ?? AbortSignal.timeout(20_000),
-				headers: {
-					authorization: `Bearer ${env.CRABFLEET_SERVICE_TOKEN}`,
-					...init.headers,
-				},
+		response = await fetch(crabfleetUrl(env, path), {
+			...init,
+			signal: init.signal ?? AbortSignal.timeout(20_000),
+			headers: {
+				authorization: `Bearer ${env.CRABFLEET_SERVICE_TOKEN}`,
+				...init.headers,
 			},
-		);
+		});
 	} catch {
 		throw new CrabfleetRequestError(null);
 	}
@@ -361,6 +358,14 @@ async function crabfleetFetch(env: Env, path: string, init: RequestInit = {}): P
 		throw new CrabfleetRequestError(response.status);
 	}
 	return response;
+}
+
+function crabfleetUrl(env: Env, path: string): URL {
+	const url = new URL(env.CRABFLEET_API_URL || "https://crabfleet.openclaw.ai");
+	url.pathname = `${url.pathname.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+	url.search = "";
+	url.hash = "";
+	return url;
 }
 
 function ambiguousCrabfleetCreate(error: unknown): boolean {

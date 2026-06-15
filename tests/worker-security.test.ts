@@ -418,7 +418,8 @@ test("mutations refresh through the central snapshot sequence and recap actions 
 	const chatEnd = source.indexOf("function Message", chatStart);
 	const chatSource = source.slice(chatStart, chatEnd);
 
-	assert.match(workbenchSource, /await run\(\);\s*await onRefresh\(\)/);
+	assert.match(workbenchSource, /await run\(\);\s*try \{\s*await onRefresh\(\)/);
+	assert.match(workbenchSource, /action completed; room refresh failed/);
 	assert.doesNotMatch(workbenchSource, /onSnapshot/);
 	assert.match(chatSource, /await postMessage/);
 	assert.ok(chatSource.indexOf('setText("")') < chatSource.indexOf("await onRefresh()"));

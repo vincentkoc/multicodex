@@ -336,6 +336,30 @@ test("Crabfleet upstream errors do not expose response bodies", async () => {
 	}
 });
 
+test("Crabfleet requests preserve configured gateway path prefixes", async () => {
+	const originalFetch = globalThis.fetch;
+	let requestUrl = "";
+	globalThis.fetch = async (input) => {
+		requestUrl = String(input);
+		return Response.json({ crabboxes: [] });
+	};
+	try {
+		await readRoomCrabboxes(
+			{
+				CRABFLEET_API_URL: "https://gateway.example/internal/crabfleet/",
+				CRABFLEET_SERVICE_TOKEN: "test",
+			} as unknown as Env,
+			"root",
+		);
+		assert.equal(
+			new URL(requestUrl).pathname,
+			"/internal/crabfleet/api/openclaw/session-roots/root",
+		);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
 const room: Room = {
 	id: "room",
 	slug: "room",
