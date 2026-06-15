@@ -42,7 +42,7 @@
 		"ALLOWED_REPOS": "vincentkoc/multicodex,openclaw/gogcli",
 		"CRABFLEET_API_URL": "https://crabfleet.openclaw.ai",
 		"CRABFLEET_OWNER": "multicodex",
-		"CRABFLEET_RUNTIME": "container",
+		"CRABFLEET_RUNTIME": "crabbox",
 		"DEFAULT_BASE_BRANCH": "main",
 		"DEFAULT_REPO": "vincentkoc/multicodex",
 		"MAX_ACTIVE_ROOMS": "20",
