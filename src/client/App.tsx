@@ -693,7 +693,7 @@ function RoomWorkbench({
 			<Recap
 				snapshot={snapshot}
 				roleMap={roleMap}
-				onBack={() => setView("workbench")}
+				onBack={snapshot.room.status === "ended" ? undefined : () => setView("workbench")}
 				action={recapAction}
 				busy={busy}
 				error={error}
@@ -1428,7 +1428,7 @@ function Recap({
 }: {
 	snapshot: RoomSnapshot;
 	roleMap: Map<string, Catalog["roles"][number]>;
-	onBack: () => void;
+	onBack?: () => void;
 	backLabel?: string;
 	action?: { label: string; run: () => void };
 	busy: string;
@@ -1443,10 +1443,12 @@ function Recap({
 		<main class="recap-shell">
 			<header class="recap-header">
 				<Brand compact />
-				<button class="button ghost" onClick={onBack}>
-					<LayoutDashboard size={16} />
-					{backLabel}
-				</button>
+				{onBack ? (
+					<button class="button ghost" onClick={onBack}>
+						<LayoutDashboard size={16} />
+						{backLabel}
+					</button>
+				) : null}
 			</header>
 			<section class="recap-hero">
 				<span class="eyebrow">MultiCodex room recap</span>
