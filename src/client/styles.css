@@ -875,6 +875,14 @@ textarea:focus {
 	padding-bottom: 40px;
 }
 
+.mission-panel.workspace-open {
+	height: calc(100vh - 64px);
+	overflow: hidden;
+	padding-bottom: 0;
+	position: sticky;
+	top: 64px;
+}
+
 .mission-toolbar {
 	background: var(--paper);
 	border-bottom: 1px solid var(--line);
@@ -888,6 +896,58 @@ textarea:focus {
 	line-height: 1.08;
 	margin-top: 6px;
 	max-width: 760px;
+}
+
+.workspace-pane {
+	background: #111815;
+	display: grid;
+	grid-template-rows: auto minmax(0, 1fr);
+	height: 100%;
+	min-height: 0;
+}
+
+.workspace-pane-toolbar {
+	align-items: center;
+	background: var(--paper);
+	border-bottom: 1px solid var(--line);
+	display: flex;
+	justify-content: space-between;
+	min-height: 64px;
+	padding: 10px 14px;
+}
+
+.workspace-pane-toolbar > div,
+.workspace-pane-actions {
+	align-items: center;
+	display: flex;
+	gap: 9px;
+}
+
+.workspace-pane-toolbar h1 {
+	font-size: 15px;
+	margin-top: 2px;
+}
+
+.workspace-live-mark {
+	background: var(--green);
+	border-radius: 50%;
+	box-shadow: 0 0 0 4px rgba(22, 130, 93, 0.12);
+	height: 8px;
+	width: 8px;
+}
+
+.workspace-frame-shell {
+	background: #111815;
+	min-height: 0;
+}
+
+.workspace-frame {
+	background: #111815;
+	border: 0;
+	display: block;
+	height: 100%;
+	min-height: 620px;
+	width: 100%;
 }
 
 .host-controls {
@@ -1531,6 +1591,27 @@ textarea:focus {
 
 	.workbench {
 		display: block;
+	}
+
+	.mission-panel.workspace-open {
+		height: min(78vh, 760px);
+		min-height: 560px;
+		position: static;
+	}
+
+	.workspace-pane-toolbar {
+		align-items: flex-start;
+	}
+
+	.workspace-pane-actions .button {
+		font-size: 0;
+		height: 40px;
+		padding: 0;
+		width: 40px;
+	}
+
+	.workspace-frame {
+		min-height: 0;
 	}
 
 	.team-panel,

@@ -39,6 +39,24 @@ test("worker mutation routes keep terminal rooms immutable", async () => {
 	assert.match(refreshSource, /expectedStatuses: runtimeRefreshStatuses/);
 });
 
+test("workspace tickets are minted only for the authenticated participant under the room root", async () => {
+	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
+	const start = source.indexOf("const workspaceMatch");
+	const end = source.indexOf("const messagesMatch", start);
+	const workspaceSource = source.slice(start, end);
+
+	assert.match(
+		workspaceSource,
+		/requireRoomParticipant\(\s*env\.DB,\s*roomId,\s*participantToken\(request\),\s*false/,
+	);
+	assert.match(workspaceSource, /snapshot\.room\.crabfleetRootSessionId/);
+	assert.match(workspaceSource, /participant\.crabfleetSessionId/);
+	assert.match(
+		workspaceSource,
+		/createCrabboxEmbedUrl\(\s*env,\s*snapshot\.room\.crabfleetRootSessionId,\s*participant\.crabfleetSessionId/,
+	);
+});
+
 test("room creation and joins are recoverable", async () => {
 	const [worker, client] = await Promise.all([
 		readFile(new URL("../src/worker.ts", import.meta.url), "utf8"),

@@ -4,6 +4,8 @@ import { runConductorTurn } from "./conductor.ts";
 import {
 	AmbiguousRootProvisioningError,
 	PartialProvisioningError,
+	crabfleetSimulationEnabled,
+	createCrabboxEmbedUrl,
 	participantStateForCrabfleetStatus,
 	provisionRoomCrabboxes,
 	readRoomCrabboxes,
@@ -312,6 +314,35 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 				snapshot: snapshotForViewer(snapshot, joined.participant.id),
 				participantId: joined.participant.id,
 				participantToken: joined.participantToken,
+			},
+			201,
+		);
+	}
+
+	const workspaceMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/workspace$/);
+	if (request.method === "POST" && workspaceMatch) {
+		const roomId = decodeURIComponent(workspaceMatch[1] ?? "");
+		const participant = await requireRoomParticipant(
+			env.DB,
+			roomId,
+			participantToken(request),
+			false,
+		);
+		const snapshot = await readRoomSnapshot(env.DB, roomId);
+		if (!snapshot.room.crabfleetRootSessionId || !participant.crabfleetSessionId) {
+			throw new HttpError(409, "participant workspace is not ready");
+		}
+		if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) {
+			if (!participant.browserUrl) throw new HttpError(409, "participant workspace is not ready");
+			return json({ browserUrl: participant.browserUrl }, 201);
+		}
+		return json(
+			{
+				browserUrl: await createCrabboxEmbedUrl(
+					env,
+					snapshot.room.crabfleetRootSessionId,
+					participant.crabfleetSessionId,
+				),
 			},
 			201,
 		);

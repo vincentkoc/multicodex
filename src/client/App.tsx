@@ -15,6 +15,7 @@ import {
 	Send,
 	Shuffle,
 	Sparkles,
+	SquareTerminal,
 	TimerReset,
 	UserPlus,
 	Users,
@@ -40,6 +41,7 @@ import {
 	issueRoomSocketTicket,
 	joinRoom,
 	nudgeParticipant,
+	openParticipantWorkspace,
 	postMessage,
 	readMessagesPage,
 	readRoom,
@@ -604,12 +606,19 @@ function RoomWorkbench({
 	const [busy, setBusy] = useState("");
 	const [copied, setCopied] = useState(false);
 	const [nudge, setNudge] = useState<NudgeDraft | null>(null);
+	const [workspace, setWorkspace] = useState<{ participantId: string; browserUrl: string } | null>(
+		null,
+	);
+	const [workspaceBusy, setWorkspaceBusy] = useState(false);
 	const { participantId, participantToken } = identity;
 	const me = snapshot.participants.find((participant) => participant.id === participantId)!;
 	const isHost = snapshot.room.hostParticipantId === participantId;
 	const readOnly = me.kind === "observer";
 	const canNudge = isHost && roomAllowsRuntimeNudge(snapshot.room.status);
 	const roleMap = useMemo(() => new Map(roleCatalog.map((role) => [role.id, role])), [roleCatalog]);
+	const workspaceParticipant = snapshot.participants.find(
+		(participant) => participant.id === workspace?.participantId && participant.browserUrl,
+	);
 
 	useEffect(() => {
 		if (snapshot.room.status === "presenting" || snapshot.room.status === "ended") setView("recap");
@@ -618,6 +627,10 @@ function RoomWorkbench({
 	useEffect(() => {
 		if (!canNudge) setNudge(null);
 	}, [canNudge]);
+
+	useEffect(() => {
+		if (workspace && !workspaceParticipant) setWorkspace(null);
+	}, [workspace, workspaceParticipant]);
 
 	async function action(label: string, run: () => Promise<RoomSnapshot>): Promise<boolean> {
 		setBusy(label);
@@ -646,6 +659,21 @@ function RoomWorkbench({
 		await navigator.clipboard.writeText(invite.toString());
 		setCopied(true);
 		window.setTimeout(() => setCopied(false), 1600);
+	}
+
+	async function openWorkspace(participant: Participant) {
+		setWorkspaceBusy(true);
+		onError("");
+		try {
+			setWorkspace({
+				participantId: participant.id,
+				browserUrl: await openParticipantWorkspace(snapshot.room.id, participantToken),
+			});
+		} catch (cause) {
+			onError(errorMessage(cause));
+		} finally {
+			setWorkspaceBusy(false);
+		}
 	}
 
 	async function changeTask(task: Task, state: TaskState) {
@@ -786,14 +814,18 @@ function RoomWorkbench({
 									{(participant.browserUrl || (canNudge && participant.kind !== "observer")) && (
 										<div class="row-actions">
 											{participant.browserUrl && (
-												<a
+												<button
 													class="icon-button"
-													href={participant.browserUrl}
-													target="_blank"
-													title="open Codex workspace"
+													title="open embedded Codex workspace"
+													disabled={workspaceBusy}
+													onClick={() => openWorkspace(participant)}
 												>
-													<ExternalLink size={15} />
-												</a>
+													{workspaceBusy ? (
+														<RefreshCw class="spin" size={15} />
+													) : (
+														<SquareTerminal size={15} />
+													)}
+												</button>
 											)}
 											{canNudge && participant.kind !== "observer" && (
 												<button
@@ -826,115 +858,125 @@ function RoomWorkbench({
 					</div>
 				</aside>
 
-				<section class="mission-panel">
-					<div class="mission-toolbar">
-						<div>
-							<span class="eyebrow">current mission</span>
-							<h1>{ideaTitle(snapshot)}</h1>
-						</div>
-						{isHost && (
-							<HostControls
-								snapshot={snapshot}
-								busy={busy}
-								action={(name) =>
-									action(name, () => roomAction(snapshot.room.id, participantToken, name))
-								}
-								onRecap={() => setView("recap")}
-							/>
-						)}
-					</div>
-
-					<section class="brief-band">
-						<div class="brief-promise">
-							<span class="brief-index">01</span>
-							<div>
-								<span class="eyebrow">product promise</span>
-								<p>
-									{snapshot.room.brief.productGoal ||
-										"talk with the team, then shuffle or draft the first plan."}
-								</p>
-							</div>
-						</div>
-						<div class="brief-demo">
-							<Sparkles size={18} />
-							<div>
-								<span class="eyebrow">demo moment</span>
-								<p>
-									{snapshot.room.brief.demoMoment ||
-										"the conductor catches a mismatch before integration."}
-								</p>
-							</div>
-						</div>
-					</section>
-
-					<section class="lanes-section">
-						<div class="section-heading">
-							<div>
-								<span class="eyebrow">build lanes</span>
-								<h2>
-									{snapshot.tasks.length
-										? `${snapshot.tasks.length} scoped tasks`
-										: "waiting for a plan"}
-								</h2>
-							</div>
-							{!readOnly &&
-								["building", "integrating", "presenting"].includes(snapshot.room.status) && (
-									<button
-										class="button ghost"
-										disabled={busy === "refresh"}
-										onClick={() =>
-											action("refresh", () =>
-												roomAction(snapshot.room.id, participantToken, "refresh"),
-											)
+				<section class={`mission-panel${workspaceParticipant ? " workspace-open" : ""}`}>
+					{workspaceParticipant ? (
+						<WorkspacePanel
+							participant={workspaceParticipant}
+							browserUrl={workspace!.browserUrl}
+							onClose={() => setWorkspace(null)}
+						/>
+					) : (
+						<>
+							<div class="mission-toolbar">
+								<div>
+									<span class="eyebrow">current mission</span>
+									<h1>{ideaTitle(snapshot)}</h1>
+								</div>
+								{isHost && (
+									<HostControls
+										snapshot={snapshot}
+										busy={busy}
+										action={(name) =>
+											action(name, () => roomAction(snapshot.room.id, participantToken, name))
 										}
-									>
-										<RefreshCw size={15} />
-										refresh
-									</button>
-								)}
-						</div>
-						{snapshot.tasks.length ? (
-							<div class="task-board">
-								{snapshot.tasks.map((task, index) => (
-									<TaskLane
-										key={task.id}
-										task={task}
-										owner={snapshot.participants.find(
-											(participant) => participant.id === task.ownerParticipantId,
-										)}
-										color={
-											roleMap.get(
-												snapshot.participants.find(
-													(participant) => participant.id === task.ownerParticipantId,
-												)?.roleId || "",
-											)?.color || roleFallbacks[index % roleFallbacks.length]!
-										}
-										canEdit={
-											!readOnly &&
-											(isHost || (task.ownerParticipantId === me.id && task.state !== "cut"))
-										}
-										canCut={isHost}
-										onState={(state) => changeTask(task, state)}
+										onRecap={() => setView("recap")}
 									/>
-								))}
+								)}
 							</div>
-						) : (
-							<EmptyPlan isHost={isHost} />
-						)}
-					</section>
 
-					<section class="activity-section">
-						<div class="section-heading">
-							<div>
-								<span class="eyebrow">conductor log</span>
-								<h2>visible orchestration</h2>
-							</div>
-							<span class="count-badge">
-								{snapshot.conductorActions.length + snapshot.decisions.length}
-							</span>
-						</div>
-						<ActivityLog snapshot={snapshot} />
-					</section>
+							<section class="brief-band">
+								<div class="brief-promise">
+									<span class="brief-index">01</span>
+									<div>
+										<span class="eyebrow">product promise</span>
+										<p>
+											{snapshot.room.brief.productGoal ||
+												"talk with the team, then shuffle or draft the first plan."}
+										</p>
+									</div>
+								</div>
+								<div class="brief-demo">
+									<Sparkles size={18} />
+									<div>
+										<span class="eyebrow">demo moment</span>
+										<p>
+											{snapshot.room.brief.demoMoment ||
+												"the conductor catches a mismatch before integration."}
+										</p>
+									</div>
+								</div>
+							</section>
+
+							<section class="lanes-section">
+								<div class="section-heading">
+									<div>
+										<span class="eyebrow">build lanes</span>
+										<h2>
+											{snapshot.tasks.length
+												? `${snapshot.tasks.length} scoped tasks`
+												: "waiting for a plan"}
+										</h2>
+									</div>
+									{!readOnly &&
+										["building", "integrating", "presenting"].includes(snapshot.room.status) && (
+											<button
+												class="button ghost"
+												disabled={busy === "refresh"}
+												onClick={() =>
+													action("refresh", () =>
+														roomAction(snapshot.room.id, participantToken, "refresh"),
+													)
+												}
+											>
+												<RefreshCw size={15} />
+												refresh
+											</button>
+										)}
+								</div>
+								{snapshot.tasks.length ? (
+									<div class="task-board">
+										{snapshot.tasks.map((task, index) => (
+											<TaskLane
+												key={task.id}
+												task={task}
+												owner={snapshot.participants.find(
+													(participant) => participant.id === task.ownerParticipantId,
+												)}
+												color={
+													roleMap.get(
+														snapshot.participants.find(
+															(participant) => participant.id === task.ownerParticipantId,
+														)?.roleId || "",
+													)?.color || roleFallbacks[index % roleFallbacks.length]!
+												}
+												canEdit={
+													!readOnly &&
+													(isHost || (task.ownerParticipantId === me.id && task.state !== "cut"))
+												}
+												canCut={isHost}
+												onState={(state) => changeTask(task, state)}
+											/>
+										))}
+									</div>
+								) : (
+									<EmptyPlan isHost={isHost} />
+								)}
+							</section>
+
+							<section class="activity-section">
+								<div class="section-heading">
+									<div>
+										<span class="eyebrow">conductor log</span>
+										<h2>visible orchestration</h2>
+									</div>
+									<span class="count-badge">
+										{snapshot.conductorActions.length + snapshot.decisions.length}
+									</span>
+								</div>
+								<ActivityLog snapshot={snapshot} />
+							</section>
+						</>
+					)}
 				</section>
 
 				<ChatPanel
@@ -958,6 +1000,53 @@ function RoomWorkbench({
 					onSend={sendNudge}
 				/>
 			)}
+		</div>
+	);
+}
+
+function WorkspacePanel({
+	participant,
+	browserUrl,
+	onClose,
+}: {
+	participant: Participant;
+	browserUrl: string;
+	onClose: () => void;
+}) {
+	return (
+		<div class="workspace-pane">
+			<div class="workspace-pane-toolbar">
+				<div>
+					<span class="workspace-live-mark" />
+					<div>
+						<span class="eyebrow">embedded Codex workspace</span>
+						<h1>{participant.displayName}</h1>
+					</div>
+				</div>
+				<div class="workspace-pane-actions">
+					<a
+						class="icon-button"
+						href={browserUrl}
+						target="_blank"
+						rel="noreferrer"
+						title="open workspace in new tab"
+					>
+						<ExternalLink size={16} />
+					</a>
+					<button class="button ghost" onClick={onClose}>
+						<LayoutDashboard size={15} />
+						back to plan
+					</button>
+				</div>
+			</div>
+			<div class="workspace-frame-shell">
+				<iframe
+					class="workspace-frame"
+					src={browserUrl}
+					title={`${participant.displayName} Codex workspace`}
+					allow="clipboard-read; clipboard-write"
+				/>
+			</div>
 		</div>
 	);
 }

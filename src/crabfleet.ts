@@ -293,6 +293,33 @@ export async function sendCrabboxNudge(
 	await responseJson(response);
 }
 
+export async function createCrabboxEmbedUrl(
+	env: Env,
+	rootSessionId: string,
+	sessionId: string,
+): Promise<string> {
+	if (crabfleetSimulationEnabled(env.MULTICODEX_SIMULATION_MODE)) {
+		throw new HttpError(500, "real Crabfleet requests are disabled in simulation");
+	}
+	if (!env.CRABFLEET_SERVICE_TOKEN)
+		throw new HttpError(503, "Crabfleet service token is not configured");
+	const response = await crabfleetFetch(
+		env,
+		`/api/openclaw/crabboxes/${encodeURIComponent(sessionId)}/embed-ticket`,
+		{
+			method: "POST",
+			body: JSON.stringify({ rootSessionId, ttlSeconds: 3_600 }),
+			headers: { "content-type": "application/json" },
+		},
+	);
+	const body = await responseJson<unknown>(response);
+	const browserUrl = isRecord(body) ? nonEmptyString(body.browserUrl) : null;
+	if (!browserUrl || !validBrowserUrl(browserUrl)) {
+		throw new HttpError(502, "Crabfleet returned an invalid embed ticket");
+	}
+	return browserUrl;
+}
+
 export async function stopRoomCrabboxes(
 	env: Env,
 	rootSessionId: string,
