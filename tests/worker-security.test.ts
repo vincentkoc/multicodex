@@ -176,6 +176,12 @@ test("WebSocket reconnects resync the current room snapshot", async () => {
 	assert.match(socketSource, /sequence === snapshotRequestSequence\.current/);
 	assert.match(socketSource, /window\.setInterval/);
 	assert.match(socketSource, /10_000/);
+	assert.match(socketSource, /60_000/);
+	assert.match(socketSource, /socketConnected \? 60_000 : 10_000/);
+	assert.doesNotMatch(
+		socketSource,
+		/if \(!roomId \|\| !snapshot \|\| socketConnected \|\| snapshot\.room\.status === "ended"\)/,
+	);
 	assert.match(socketSource, /socketConnected/);
 	assert.match(socketSource, /setSocketConnected\(true\)/);
 	assert.match(socketSource, /setSocketConnected\(false\)/);

@@ -132,13 +132,14 @@ export function App() {
 	}, [roomId, identity?.participantToken, refreshRoom]);
 
 	useEffect(() => {
-		if (!roomId || !snapshot || socketConnected || snapshot.room.status === "ended") return;
+		if (!roomId || !snapshot || snapshot.room.status === "ended") return;
 		let disposed = false;
+		const intervalMilliseconds = socketConnected ? 60_000 : 10_000;
 		const interval = window.setInterval(() => {
 			refreshRoom().catch((cause: Error) => {
 				if (!disposed) setError(cause.message);
 			});
-		}, 10_000);
+		}, intervalMilliseconds);
 		return () => {
 			disposed = true;
 			window.clearInterval(interval);
