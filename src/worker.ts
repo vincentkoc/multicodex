@@ -1297,7 +1297,7 @@ async function repairParticipantWorkspace(
 			snapshot.room,
 			repairTarget,
 			task,
-			previousSessionId,
+			leaseId,
 		);
 		if (
 			!(await replaceParticipantRuntime(

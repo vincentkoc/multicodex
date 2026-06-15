@@ -378,7 +378,7 @@ test("participant repair provisions a replacement under the existing room root",
 			{ ...room, status: "building", crabfleetRootSessionId: "root" },
 			target,
 			undefined,
-			"stale",
+			"lease-repair-attempt",
 		);
 		assert.equal(binding.participantId, "child");
 		assert.equal(binding.binding.session.id, "replacement");
@@ -387,7 +387,7 @@ test("participant repair provisions a replacement under the existing room root",
 			repo: "example/repo",
 			branch: "multicodex/room/child",
 			baseBranch: "main",
-			requestId: "multicodex:room:repair:child:stale",
+			requestId: "multicodex:room:repair:child:lease-repair-attempt",
 			parentSessionId: "root",
 			rootSessionId: "root",
 			purpose: "room task",
