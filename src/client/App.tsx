@@ -613,14 +613,17 @@ function RoomWorkbench({
 
 	async function sendNudge() {
 		if (!nudge || !canNudge) return;
-		await action("nudge", () =>
-			nudgeParticipant(snapshot.room.id, participantToken, {
-				participantId: nudge.participant.id,
-				message: nudge.message,
-				reason: nudge.reason,
-			}),
-		);
-		setNudge(null);
+		if (
+			await action("nudge", () =>
+				nudgeParticipant(snapshot.room.id, participantToken, {
+					participantId: nudge.participant.id,
+					message: nudge.message,
+					reason: nudge.reason,
+				}),
+			)
+		) {
+			setNudge(null);
+		}
 	}
 
 	const timer = useRoomTimer(snapshot.room.endsAt);

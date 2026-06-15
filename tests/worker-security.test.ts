@@ -261,6 +261,7 @@ test("observer controls stay read-only and presentation waits for success", asyn
 		/const canNudge = isHost && roomAllowsRuntimeNudge\(snapshot\.room\.status\)/,
 	);
 	assert.match(source, /if \(!nudge \|\| !canNudge\) return/);
+	assert.match(source, /if \(\s*await action\("nudge"[\s\S]*setNudge\(null\)/);
 	assert.match(source, /canCut=\{isHost\}/);
 	assert.match(source, /\.filter\(\(state\) => canCut \|\| state !== "cut"\)/);
 	assert.match(source, /task\.ownerParticipantId === me\.id && task\.state !== "cut"/);
@@ -447,10 +448,7 @@ test("scheduled reconciliation fans runtime cleanup across per-room invocations"
 	assert.match(runtimeCleanup, /resetRoomProvisioning/);
 	assert.match(runtimeCleanup, /await endRoom/);
 	assert.match(runtimeCleanup, /finally \{\s*await releaseRoomRuntimeLease/);
-	assert.match(
-		runtimeCleanup,
-		/function requireRuntimeRecoveryRepo[\s\S]*repoAllowed[\s\S]*room repo must be re-enabled before runtime cleanup can continue/,
-	);
+	assert.doesNotMatch(runtimeCleanup, /repoAllowed|requireRuntimeRecoveryRepo/);
 	assert.match(runtimeCleanup, /readRoomRootProvisioningRequest/);
 	assert.match(runtimeCleanup, /parseRootCrabboxRequest\(persisted\)/);
 	const recoverySource = `${worker}\n${runtimeCleanup}`;

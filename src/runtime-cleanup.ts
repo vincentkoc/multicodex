@@ -6,7 +6,6 @@ import {
 } from "./crabfleet.ts";
 import type { RoomSnapshot, RoomStatus } from "./domain.ts";
 import { HttpError } from "./http.ts";
-import { repoAllowed } from "./repos.ts";
 import {
 	addMessage,
 	beginRoomCleanup,
@@ -28,7 +27,6 @@ export async function recoverPersistedRoomRootCrabbox(
 	env: Env,
 	snapshot: RoomSnapshot,
 ): ReturnType<typeof recoverRoomRootCrabbox> {
-	requireRuntimeRecoveryRepo(env, snapshot.room);
 	const persisted = await readRoomRootProvisioningRequest(env.DB, snapshot.room.id);
 	if (!persisted) {
 		throw new HttpError(409, "persisted root Crabfleet request is unavailable");
@@ -199,11 +197,5 @@ async function reconcileFailedLaunchCleanup(env: Env, roomId: string): Promise<v
 		}
 	} finally {
 		await releaseRoomRuntimeLease(env.DB, roomId, cleanupLeaseId);
-	}
-}
-
-function requireRuntimeRecoveryRepo(env: Env, room: RoomSnapshot["room"]): void {
-	if (!repoAllowed(room.repo, env.ALLOWED_REPOS, env.DEFAULT_REPO)) {
-		throw new HttpError(409, "room repo must be re-enabled before runtime cleanup can continue");
 	}
 }
