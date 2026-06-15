@@ -816,7 +816,19 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 	}
 
 	if (url.pathname.startsWith("/api/")) throw new HttpError(404, "not found");
-	return env.ASSETS.fetch(request);
+	return assetResponse(env, request);
+}
+
+async function assetResponse(env: Env, request: Request): Promise<Response> {
+	const response = await env.ASSETS.fetch(request);
+	const headers = new Headers(response.headers);
+	headers.set("content-security-policy", "frame-ancestors 'none'");
+	headers.set("x-frame-options", "DENY");
+	return new Response(response.body, {
+		status: response.status,
+		statusText: response.statusText,
+		headers,
+	});
 }
 
 async function reconcileRooms(env: Env): Promise<void> {

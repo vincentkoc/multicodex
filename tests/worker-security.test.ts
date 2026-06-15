@@ -47,6 +47,9 @@ test("room creation and joins are recoverable", async () => {
 	assert.match(client, /if \(!inviteToken\) return <PublicRoom/);
 	assert.doesNotMatch(client, /inviteToken: kind !== "observer"/);
 	assert.match(client, /builderInviteTokenFromUrl/);
+	assert.match(client, /useBuilderInviteToken\(roomId\)/);
+	assert.match(client, /window\.addEventListener\("hashchange", synchronizeToken\)/);
+	assert.match(client, /window\.removeEventListener\("hashchange", synchronizeToken\)/);
 	assert.match(client, /invite\.hash = new URLSearchParams/);
 	assert.match(client, /location\.hash\.replace/);
 	assert.doesNotMatch(client, /invite\.searchParams\.set/);
@@ -149,6 +152,19 @@ test("browser history navigation resynchronizes room state", async () => {
 	assert.match(source, /const nextRoomId = roomIdFromPath\(\)/);
 	assert.match(source, /setIdentity\(nextRoomId \? loadIdentity\(nextRoomId\) : null\)/);
 	assert.match(source, /setSnapshot\(null\)/);
+});
+
+test("asset responses prohibit framing authenticated controls", async () => {
+	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
+	const start = source.indexOf("async function assetResponse");
+	const end = source.indexOf("async function reconcileRooms", start);
+	const assetSource = source.slice(start, end);
+
+	assert.match(source, /return assetResponse\(env, request\)/);
+	assert.match(assetSource, /content-security-policy/);
+	assert.match(assetSource, /frame-ancestors 'none'/);
+	assert.match(assetSource, /x-frame-options/);
+	assert.match(assetSource, /DENY/);
 });
 
 test("room entry persists only minimal identity with tab-scoped fallback", async () => {

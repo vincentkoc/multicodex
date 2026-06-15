@@ -63,6 +63,7 @@ export function App() {
 	const [error, setError] = useState("");
 	const [loading, setLoading] = useState(Boolean(roomId));
 	const snapshotRequestSequence = useRef(0);
+	const builderInviteToken = useBuilderInviteToken(roomId);
 
 	useEffect(() => {
 		const synchronizeHistory = () => {
@@ -188,10 +189,10 @@ export function App() {
 	}
 	const observerCanUseBuilderInvite =
 		validParticipant?.kind === "observer" &&
-		Boolean(builderInviteTokenFromUrl()) &&
+		Boolean(builderInviteToken) &&
 		["setup", "planning"].includes(snapshot.room.status);
 	if (!validIdentity || observerCanUseBuilderInvite) {
-		return <JoinRoom snapshot={snapshot} onEnter={enterRoom} />;
+		return <JoinRoom snapshot={snapshot} inviteToken={builderInviteToken} onEnter={enterRoom} />;
 	}
 
 	return (
@@ -303,14 +304,15 @@ function CreateRoom({
 
 function JoinRoom({
 	snapshot,
+	inviteToken,
 	onEnter,
 }: {
 	snapshot: RoomSnapshot;
+	inviteToken: string | undefined;
 	onEnter: (snapshot: RoomSnapshot, identity: RoomIdentity) => boolean;
 }) {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
-	const inviteToken = useMemo(builderInviteTokenFromUrl, [snapshot.room.id]);
 	const [kind, setKind] = useState<"human" | "ai" | "observer">(inviteToken ? "human" : "observer");
 	const joinRequestId = useMemo(() => loadJoinRequestId(snapshot.room.id), [snapshot.room.id]);
 
@@ -1531,6 +1533,17 @@ function roomIdFromPath(): string | null {
 function builderInviteTokenFromUrl(): string | undefined {
 	const token = new URLSearchParams(location.hash.replace(/^#/, "")).get("invite")?.trim();
 	return token || undefined;
+}
+
+function useBuilderInviteToken(roomId: string | null): string | undefined {
+	const [token, setToken] = useState(builderInviteTokenFromUrl);
+	useEffect(() => {
+		const synchronizeToken = () => setToken(builderInviteTokenFromUrl());
+		synchronizeToken();
+		window.addEventListener("hashchange", synchronizeToken);
+		return () => window.removeEventListener("hashchange", synchronizeToken);
+	}, [roomId]);
+	return token;
 }
 
 function identityKey(roomId: string): string {
