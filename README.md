@@ -81,8 +81,10 @@ when a shared service capability is intentional. Use a GitHub token that can
 create branches only in the intended event repo.
 
 `CRABFLEET_RUNTIME` selects `container` or `crabbox`. The event deployment uses
-the deployed `crabbox` runtime so every builder gets an isolated Crabbox
-workspace with terminal nudges routed through the coordinator.
+Crabfleet's built-in `container` runtime because it prepares, authenticates, and
+autostarts foreground Codex before exposing the terminal. Use `crabbox` only
+with a provider profile that independently guarantees the same Codex-ready
+contract.
 `CRABFLEET_OWNER` is the trusted service-owned Crabfleet identity applied to
 every room session; participant-supplied names and GitHub logins are never used
 as Crabfleet owners.

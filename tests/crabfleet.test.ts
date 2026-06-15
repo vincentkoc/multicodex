@@ -23,11 +23,11 @@ import {
 } from "../src/crabfleet.ts";
 import type { Participant, Room } from "../src/domain.ts";
 
-test("Crabfleet runtime selection keeps crabbox as the conservative fallback", () => {
+test("Crabfleet runtime selection defaults to a Codex-ready container", () => {
 	assert.equal(crabfleetRuntime("container"), "container");
 	assert.equal(crabfleetRuntime("crabbox"), "crabbox");
-	assert.equal(crabfleetRuntime(undefined), "crabbox");
-	assert.equal(crabfleetRuntime("unknown"), "crabbox");
+	assert.equal(crabfleetRuntime(undefined), "container");
+	assert.equal(crabfleetRuntime("unknown"), "container");
 	assert.equal(crabfleetOwner(undefined), "multicodex");
 	assert.equal(crabfleetOwner("Event Service"), "event-service");
 	assert.equal(crabfleetSimulationEnabled("true"), true);
@@ -391,7 +391,7 @@ test("participant repair provisions a replacement under the existing room root",
 			purpose: "room task",
 			summary: "repairing assigned task",
 			prompt: "Resume your assigned room task from the current branch.",
-			runtime: "crabbox",
+			runtime: "container",
 			profile: "default",
 		});
 	} finally {
