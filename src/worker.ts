@@ -51,6 +51,7 @@ import {
 	markRoomCleanup,
 	readRoomMessagesPage,
 	readRoomSnapshot,
+	recordRoomCleanupAttempt,
 	recordProvisioningBinding,
 	releaseRoomCreationReservation,
 	releaseRoomRuntimeLease,
@@ -931,6 +932,18 @@ async function reconcileRuntimeRooms(env: Env, roomIds: string[], deadline: numb
 							message: error instanceof Error ? error.message : "unknown error",
 						}),
 					);
+				} finally {
+					try {
+						await recordRoomCleanupAttempt(env.DB, roomId, Date.now());
+					} catch (error) {
+						console.error(
+							JSON.stringify({
+								event: "room_cleanup_attempt_rotation_failed",
+								roomId,
+								message: error instanceof Error ? error.message : "unknown error",
+							}),
+						);
+					}
 				}
 			}
 		}),

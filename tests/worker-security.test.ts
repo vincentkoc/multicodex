@@ -377,6 +377,7 @@ test("scheduled reconciliation expires inactive planning and runtime rooms", asy
 	assert.match(expirySource, /runtimeCleanupConcurrency/);
 	assert.match(expirySource, /Date\.now\(\) < deadline/);
 	assert.match(expirySource, /Promise\.all/);
+	assert.match(expirySource, /finally \{\s*try \{\s*await recordRoomCleanupAttempt/);
 	assert.match(expirySource, /provisioningStale/);
 	assert.match(expirySource, /claimStaleProvisioningCleanup/);
 	assert.match(expirySource, /beginRoomCleanup/);

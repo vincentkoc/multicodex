@@ -1424,6 +1424,27 @@ export async function listRuntimeRoomIdsNeedingCleanup(
 	return result.results.map((row) => row.id);
 }
 
+export async function recordRoomCleanupAttempt(
+	db: D1Database,
+	roomId: string,
+	attemptedAt: number,
+): Promise<void> {
+	await db
+		.prepare(
+			`UPDATE rooms SET updated_at = ?
+       WHERE id = ?
+         AND (
+           status IN ('cleanup-planning', 'cleanup-ending', 'provisioning')
+           OR (
+             ends_at IS NOT NULL AND ends_at <= ?
+             AND status IN ('building', 'integrating', 'presenting')
+           )
+         )`,
+		)
+		.bind(attemptedAt, roomId, attemptedAt)
+		.run();
+}
+
 export function participantBranch(
 	roomSlug: string,
 	displayName: string,

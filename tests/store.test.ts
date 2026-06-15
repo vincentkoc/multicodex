@@ -190,6 +190,18 @@ test("expired runtime, stale provisioning, and pending cleanup rooms are discove
 	assert.match(expirySource, /LIMIT \?/);
 });
 
+test("cleanup attempts rotate eligible rooms behind newer work", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function recordRoomCleanupAttempt");
+	const end = source.indexOf("export function participantBranch", start);
+	const attemptSource = source.slice(start, end);
+
+	assert.match(attemptSource, /UPDATE rooms SET updated_at = \?/);
+	assert.match(attemptSource, /status IN \('cleanup-planning', 'cleanup-ending', 'provisioning'\)/);
+	assert.match(attemptSource, /ends_at IS NOT NULL AND ends_at <= \?/);
+	assert.match(attemptSource, /\.bind\(attemptedAt, roomId, attemptedAt\)/);
+});
+
 test("task updates are atomically fenced against terminal rooms", async () => {
 	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
 	const start = source.indexOf("export async function updateTaskState");
