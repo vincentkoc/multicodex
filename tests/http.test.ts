@@ -6,6 +6,7 @@ import {
 	optionalParticipantToken,
 	participantToken,
 	readBoundedText,
+	readJson,
 	slugify,
 } from "../src/http.ts";
 
@@ -29,6 +30,21 @@ test("bounded request reader rejects oversized chunked input", async () => {
 	await assert.rejects(
 		readBoundedText(request, 6),
 		(error) => error instanceof HttpError && error.status === 413,
+	);
+});
+
+test("JSON request reader requires an object payload", async () => {
+	for (const body of ["null", "[]", '"text"', "42"]) {
+		await assert.rejects(
+			readJson(new Request("https://example.test", { method: "POST", body })),
+			(error) => error instanceof HttpError && error.status === 400,
+		);
+	}
+	assert.deepEqual(
+		await readJson<{ ok: boolean }>(
+			new Request("https://example.test", { method: "POST", body: '{"ok":true}' }),
+		),
+		{ ok: true },
 	);
 });
 

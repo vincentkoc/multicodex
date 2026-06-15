@@ -172,6 +172,12 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		}
 		const title = clean(body.title, 100) || "OpenAI event room";
 		const hostName = clean(body.hostName, 80) || "Host";
+		if (
+			body.durationMinutes !== undefined &&
+			(typeof body.durationMinutes !== "number" || !Number.isFinite(body.durationMinutes))
+		) {
+			throw new HttpError(400, "valid duration minutes required");
+		}
 		const durationMinutes = Math.max(5, Math.min(240, Math.floor(body.durationMinutes ?? 30)));
 		const repo = clean(body.repo, 160) || env.DEFAULT_REPO || "vincentkoc/multicodex";
 		if (!repoAllowed(repo, env.ALLOWED_REPOS, env.DEFAULT_REPO)) {

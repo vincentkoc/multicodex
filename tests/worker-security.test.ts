@@ -65,6 +65,8 @@ test("room creation and joins are recoverable", async () => {
 	assert.match(createSource, /finally \{\s*await releaseRoomCreationReservation/);
 	assert.match(createSource, /baseBranch/);
 	assert.match(createSource, /requestId/);
+	assert.match(createSource, /typeof body\.durationMinutes !== "number"/);
+	assert.match(createSource, /Number\.isFinite\(body\.durationMinutes\)/);
 	assert.match(joinSource, /requestId/);
 	assert.match(joinSource, /maxAiSeats/);
 	assert.match(joinSource, /roomBuilderInviteAuthorized/);

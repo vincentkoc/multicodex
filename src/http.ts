@@ -33,11 +33,16 @@ export function json(body: unknown, status = 200): Response {
 
 export async function readJson<T>(request: Request, maxBytes = 64 * 1024): Promise<T> {
 	const text = await readBoundedText(request, maxBytes);
+	let parsed: unknown;
 	try {
-		return JSON.parse(text) as T;
+		parsed = JSON.parse(text);
 	} catch {
 		throw new HttpError(400, "invalid json");
 	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new HttpError(400, "json object required");
+	}
+	return parsed as T;
 }
 
 export async function readBoundedText(
