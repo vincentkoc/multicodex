@@ -79,7 +79,7 @@ class CrabfleetRequestError extends HttpError {
 }
 
 export function crabfleetRuntime(value: string | undefined): "container" | "crabbox" {
-	return value === "container" ? "container" : "crabbox";
+	return value === "crabbox" ? "crabbox" : "container";
 }
 
 export function crabfleetOwner(value: string | undefined): string {
