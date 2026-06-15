@@ -36,6 +36,7 @@ import {
 	catalog,
 	type Catalog,
 	createRoom,
+	issueRoomSocketTicket,
 	joinRoom,
 	nudgeParticipant,
 	postMessage,
@@ -119,14 +120,22 @@ export function App() {
 		if (!roomId || !snapshot) return;
 		let socket: WebSocket | null = null;
 		let retry: number | null = null;
+		let connecting = false;
 		let disposed = false;
 		const syncRoom = () => {
 			refreshRoom().catch((cause: Error) => {
 				if (!disposed) setError(cause.message);
 			});
 		};
-		const connect = () => {
-			socket = new WebSocket(roomSocketUrl(roomId));
+		const connect = async () => {
+			if (connecting || disposed) return;
+			connecting = true;
+			const ticket = identity?.participantToken
+				? await issueRoomSocketTicket(roomId, identity.participantToken).catch(() => null)
+				: null;
+			connecting = false;
+			if (disposed) return;
+			socket = new WebSocket(roomSocketUrl(roomId, ticket));
 			socket.onopen = syncRoom;
 			socket.onmessage = (event) => {
 				if (event.data === "pong") return;
@@ -134,16 +143,16 @@ export function App() {
 				if (payload.type === "changed") syncRoom();
 			};
 			socket.onclose = () => {
-				if (!disposed) retry = window.setTimeout(connect, 1200);
+				if (!disposed) retry = window.setTimeout(() => void connect(), 1200);
 			};
 		};
-		connect();
+		void connect();
 		return () => {
 			disposed = true;
 			if (retry) window.clearTimeout(retry);
 			socket?.close();
 		};
-	}, [roomId, Boolean(snapshot), refreshRoom]);
+	}, [roomId, Boolean(snapshot), identity?.participantToken, refreshRoom]);
 
 	function enterRoom(next: RoomSnapshot, nextIdentity: RoomIdentity): boolean {
 		const identity = minimalRoomIdentity(nextIdentity);

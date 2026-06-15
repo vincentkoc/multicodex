@@ -1,6 +1,11 @@
 export const maxRoomWebSockets = 64;
-export const maxRoomWebSocketsPerSource = 8;
-export const roomWebSocketSourceHeader = "x-multicodex-socket-source";
+export const maxPublicRoomWebSockets = 16;
+export const maxObserverRoomWebSockets = 16;
+export const maxParticipantWebSockets = 4;
+export const publicRoomWebSocketTag = "public";
+export const observerRoomWebSocketTag = "observer";
+export const builderRoomWebSocketTag = "builder";
+export const roomWebSocketTicketHeader = "x-multicodex-socket-ticket";
 
 const socketMessageWindowMilliseconds = 10_000;
 const maxSocketMessagesPerWindow = 30;
@@ -15,8 +20,8 @@ export function sameOriginWebSocketRequest(request: Request): boolean {
 	return origin !== null && origin === new URL(request.url).origin;
 }
 
-export function roomWebSocketSourceTag(sourceKey: string | null): string | null {
-	return sourceKey && /^[a-f0-9]{64}$/.test(sourceKey) ? `source:${sourceKey}` : null;
+export function participantRoomWebSocketTag(participantId: string): string {
+	return `participant:${participantId}`;
 }
 
 export function recordSocketMessage(

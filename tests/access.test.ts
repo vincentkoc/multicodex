@@ -25,8 +25,7 @@ test("event admission blocks repeated failures by source and resets after succes
 	assert.equal(blocked.authorized, false);
 	assert.equal(blocked.state?.failedAttempts, 5);
 	assert.ok((blocked.state?.blockedUntil ?? 0) > 2_000);
-	assert.equal(applyEventAccessAttempt(blocked.state, true, 2_001).authorized, false);
-	const recovered = applyEventAccessAttempt(blocked.state, true, blocked.state!.blockedUntil);
+	const recovered = applyEventAccessAttempt(blocked.state, true, 2_001);
 	assert.equal(recovered.authorized, true);
 	assert.equal(recovered.state, null);
 });

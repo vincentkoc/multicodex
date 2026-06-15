@@ -33,7 +33,7 @@ import {
 	roomPlanCoversActiveParticipants,
 } from "./room-state.ts";
 import { RoomHub } from "./room-hub.ts";
-import { roomWebSocketSourceHeader, sameOriginWebSocketRequest } from "./socket-admission.ts";
+import { roomWebSocketTicketHeader, sameOriginWebSocketRequest } from "./socket-admission.ts";
 import { requestSourceKey } from "./source-key.ts";
 import {
 	addConductorAction,
@@ -226,8 +226,21 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		const roomId = decodeURIComponent(roomWsMatch[1] ?? "");
 		if (!(await roomExists(env.DB, roomId))) throw new HttpError(404, "room not found");
 		const headers = new Headers(request.headers);
-		headers.set(roomWebSocketSourceHeader, await requestSourceKey(request));
+		headers.delete(roomWebSocketTicketHeader);
+		const ticket = clean(url.searchParams.get("ticket"), 100);
+		if (ticket) headers.set(roomWebSocketTicketHeader, ticket);
 		return env.ROOM_HUB.getByName(roomId).fetch(new Request(request, { headers }));
+	}
+
+	const socketTicketMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/socket-ticket$/);
+	if (request.method === "POST" && socketTicketMatch) {
+		const roomId = decodeURIComponent(socketTicketMatch[1] ?? "");
+		const participant = await requireRoomParticipant(env.DB, roomId, participantToken(request));
+		const ticket = await env.ROOM_HUB.getByName(roomId).issueParticipantTicket(
+			participant.id,
+			participant.kind,
+		);
+		return json({ ticket }, 201);
 	}
 
 	const joinMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/join$/);

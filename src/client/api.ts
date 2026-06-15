@@ -87,6 +87,13 @@ export function joinRoom(
 	return request(`/api/rooms/${encodeURIComponent(roomId)}/join`, { method: "POST", body: input });
 }
 
+export function issueRoomSocketTicket(roomId: string, participantToken: string): Promise<string> {
+	return request<{ ticket: string }>(`/api/rooms/${encodeURIComponent(roomId)}/socket-ticket`, {
+		method: "POST",
+		participantToken,
+	}).then((result) => result.ticket);
+}
+
 export function catalog(): Promise<Catalog> {
 	return request("/api/catalog");
 }
@@ -143,7 +150,9 @@ export function setTaskState(
 	});
 }
 
-export function roomSocketUrl(roomId: string): string {
+export function roomSocketUrl(roomId: string, ticket?: string | null): string {
 	const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-	return `${protocol}//${location.host}/api/rooms/${encodeURIComponent(roomId)}/ws`;
+	const url = new URL(`${protocol}//${location.host}/api/rooms/${encodeURIComponent(roomId)}/ws`);
+	if (ticket) url.searchParams.set("ticket", ticket);
+	return url.toString();
 }

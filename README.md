@@ -41,8 +41,9 @@ Production keeps simulation explicitly disabled.
 - An authenticated participant only receives the URL for their own workspace.
 - Only the host capability can approve a plan, provision workspaces, nudge a
   session, present, or end a room.
-- Room WebSockets require the app's origin, cap live connections per room and
-  edge source, and close clients that exceed the message-rate budget.
+- Room WebSockets require the app's origin and close clients that exceed the
+  message-rate budget. One-time participant tickets reserve builder capacity
+  separately from a bounded public-view pool.
 - Builder and AI seats require the room-specific invite link copied by the host;
   public room links can still admit read-only observers.
 - Active builder seats are capped at five. The Worker is the only component that

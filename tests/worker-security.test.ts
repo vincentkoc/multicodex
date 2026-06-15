@@ -500,26 +500,34 @@ test("public WebSocket handshakes use a lightweight room existence check", async
 
 	assert.match(socketSource, /roomExists\(env\.DB, roomId\)/);
 	assert.match(socketSource, /sameOriginWebSocketRequest\(request\)/);
-	assert.match(
-		socketSource,
-		/headers\.set\(roomWebSocketSourceHeader, await requestSourceKey\(request\)\)/,
-	);
+	assert.match(socketSource, /headers\.delete\(roomWebSocketTicketHeader\)/);
+	assert.match(socketSource, /headers\.set\(roomWebSocketTicketHeader, ticket\)/);
 	assert.doesNotMatch(socketSource, /readRoomSnapshot/);
 });
 
-test("RoomHub bounds public websocket work", async () => {
-	const source = await readFile(new URL("../src/room-hub.ts", import.meta.url), "utf8");
+test("RoomHub reserves websocket capacity for authenticated participants", async () => {
+	const [source, worker, client] = await Promise.all([
+		readFile(new URL("../src/room-hub.ts", import.meta.url), "utf8"),
+		readFile(new URL("../src/worker.ts", import.meta.url), "utf8"),
+		readFile(new URL("../src/client/App.tsx", import.meta.url), "utf8"),
+	]);
 
 	assert.match(source, /this\.ctx\.getWebSockets\(\)\.length >= maxRoomWebSockets/);
-	assert.match(
-		source,
-		/this\.ctx\.getWebSockets\(sourceTag\)\.length >= maxRoomWebSocketsPerSource/,
-	);
+	assert.match(source, /maxParticipantWebSockets/);
+	assert.match(source, /maxObserverRoomWebSockets/);
+	assert.match(source, /participant\.kind === "observer"/);
+	assert.match(source, /issueParticipantTicket/);
+	assert.match(source, /consumeParticipantTicket/);
+	assert.match(source, /CREATE TABLE IF NOT EXISTS socket_tickets/);
 	assert.match(source, /sameOriginWebSocketRequest\(request\)/);
-	assert.match(source, /this\.ctx\.acceptWebSocket\(pair\[1\], \[sourceTag\]\)/);
+	assert.match(source, /\[categoryTag, participantTag\]/);
 	assert.match(source, /recordSocketMessage/);
 	assert.match(source, /socket\.close\(1008, "message rate exceeded"\)/);
 	assert.match(source, /socket\.close\(1003, "unsupported message"\)/);
+	assert.match(worker, /socketTicketMatch/);
+	assert.match(worker, /issueParticipantTicket\(\s*participant\.id,\s*participant\.kind,\s*\)/);
+	assert.match(client, /issueRoomSocketTicket/);
+	assert.match(client, /roomSocketUrl\(roomId, ticket\)/);
 });
 
 test("room creation gates event codes through a per-source Durable Object", async () => {

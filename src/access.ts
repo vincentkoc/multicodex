@@ -36,10 +36,10 @@ export function applyEventAccessAttempt(
 	valid: boolean,
 	now: number,
 ): { authorized: boolean; state: EventAdmissionState | null } {
+	if (valid) return { authorized: true, state: null };
 	if (previous && previous.blockedUntil > now) {
 		return { authorized: false, state: previous };
 	}
-	if (valid) return { authorized: true, state: null };
 	const currentWindow = previous && now - previous.windowStartedAt < eventAttemptWindowMilliseconds;
 	const failedAttempts = currentWindow ? previous.failedAttempts + 1 : 1;
 	return {
