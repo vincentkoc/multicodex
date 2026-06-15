@@ -34,6 +34,7 @@ import type {
 } from "../domain.ts";
 import {
 	roomAllowsMessages,
+	roomAllowsPlanning,
 	roomAllowsRuntimeNudge,
 	roomAllowsRuntimeRefresh,
 } from "../room-state.ts";
@@ -613,7 +614,8 @@ function RoomWorkbench({
 	const { participantId, participantToken } = identity;
 	const me = snapshot.participants.find((participant) => participant.id === participantId)!;
 	const isHost = snapshot.room.hostParticipantId === participantId;
-	const canInviteBuilders = isHost && Boolean(identity.builderInviteToken);
+	const canInviteBuilders =
+		isHost && Boolean(identity.builderInviteToken) && roomAllowsPlanning(snapshot.room.status);
 	const readOnly = me.kind === "observer";
 	const canNudge = isHost && roomAllowsRuntimeNudge(snapshot.room.status);
 	const roleMap = useMemo(() => new Map(roleCatalog.map((role) => [role.id, role])), [roleCatalog]);

@@ -206,20 +206,18 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			throw new HttpError(429, "active room limit reached");
 		}
 		const sourceKey = await requestSourceKey(request);
-		let creationBudgetConsumed = false;
+		let creationBudgetWindowStartedAt: number | null = null;
 		try {
-			if (
-				!(await consumeRoomCreationBudget(
-					env.DB,
-					sourceKey,
-					Date.now(),
-					maxRoomsPerSourceWindow,
-					roomCreationBudgetWindowMilliseconds,
-				))
-			) {
+			creationBudgetWindowStartedAt = await consumeRoomCreationBudget(
+				env.DB,
+				sourceKey,
+				Date.now(),
+				maxRoomsPerSourceWindow,
+				roomCreationBudgetWindowMilliseconds,
+			);
+			if (creationBudgetWindowStartedAt === null) {
 				throw new HttpError(429, "room creation rate exceeded");
 			}
-			creationBudgetConsumed = true;
 			const baseBranch =
 				String(env.MULTICODEX_SIMULATION_MODE) === "true"
 					? clean(env.DEFAULT_BASE_BRANCH, 100) || "main"
@@ -233,7 +231,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 				activeRoomLimit: roomLimit,
 				requestId,
 			});
-			creationBudgetConsumed = false;
+			creationBudgetWindowStartedAt = null;
 			context.waitUntil(broadcastSnapshot(env, created.snapshot));
 			return json(
 				{
@@ -245,10 +243,10 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 				201,
 			);
 		} catch (error) {
-			if (creationBudgetConsumed) {
+			if (creationBudgetWindowStartedAt !== null) {
 				try {
 					if (!(await roomCreationExists(env.DB, requestId))) {
-						await refundRoomCreationBudget(env.DB, sourceKey);
+						await refundRoomCreationBudget(env.DB, sourceKey, creationBudgetWindowStartedAt);
 					}
 				} catch (refundError) {
 					console.error(

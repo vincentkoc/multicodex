@@ -143,7 +143,7 @@ export async function consumeRoomCreationBudget(
 	now: number,
 	maxRooms: number,
 	windowMilliseconds: number,
-): Promise<boolean> {
+): Promise<number | null> {
 	const staleBefore = now - windowMilliseconds;
 	const [, result] = await db.batch([
 		db.prepare("DELETE FROM room_creation_budgets WHERE window_started_at <= ?").bind(staleBefore),
@@ -162,23 +162,32 @@ export async function consumeRoomCreationBudget(
          END
        WHERE room_creation_budgets.window_started_at <= ?
           OR room_creation_budgets.creation_count < ?
-       RETURNING creation_count`,
+       RETURNING window_started_at`,
 			)
 			.bind(sourceKey, now, staleBefore, staleBefore, staleBefore, maxRooms),
 	]);
-	return (result?.results?.length ?? 0) > 0;
+	const budget = result?.results?.[0] as { window_started_at?: unknown } | undefined;
+	return typeof budget?.window_started_at === "number" ? budget.window_started_at : null;
 }
 
-export async function refundRoomCreationBudget(db: D1Database, sourceKey: string): Promise<void> {
+export async function refundRoomCreationBudget(
+	db: D1Database,
+	sourceKey: string,
+	windowStartedAt: number,
+): Promise<void> {
 	await db.batch([
 		db
 			.prepare(
-				"UPDATE room_creation_budgets SET creation_count = creation_count - 1 WHERE source_key = ?",
+				`UPDATE room_creation_budgets SET creation_count = creation_count - 1
+         WHERE source_key = ? AND window_started_at = ?`,
 			)
-			.bind(sourceKey),
+			.bind(sourceKey, windowStartedAt),
 		db
-			.prepare("DELETE FROM room_creation_budgets WHERE source_key = ? AND creation_count <= 0")
-			.bind(sourceKey),
+			.prepare(
+				`DELETE FROM room_creation_budgets
+         WHERE source_key = ? AND window_started_at = ? AND creation_count <= 0`,
+			)
+			.bind(sourceKey, windowStartedAt),
 	]);
 }
 

@@ -143,6 +143,7 @@ test("room creation and joins are recoverable", async () => {
 	assert.doesNotMatch(client, /invite\.searchParams\.set/);
 	assert.match(client, /invite people/);
 	assert.match(client, /identity\.builderInviteToken/);
+	assert.match(client, /roomAllowsPlanning\(snapshot\.room\.status\)/);
 	assert.match(client, /identity=\{validIdentity\}/);
 	assert.match(client, /identity\?\.participantToken/);
 	assert.match(client, /\{!identity && <option value="observer">Observer<\/option>\}/);
