@@ -116,6 +116,47 @@ type ActionRow = {
 	created_at: number;
 };
 
+export async function reserveRoomCreation(
+	db: D1Database,
+	requestId: string,
+	activeRoomLimit: number,
+	expiresAt: number,
+): Promise<boolean> {
+	const now = Date.now();
+	const [, reservationResult] = await db.batch([
+		db.prepare("DELETE FROM room_creation_reservations WHERE expires_at <= ?").bind(now),
+		db
+			.prepare(
+				`INSERT OR IGNORE INTO room_creation_reservations (request_id, expires_at, created_at)
+         SELECT ?, ?, ?
+         WHERE (
+           SELECT COUNT(*) FROM rooms WHERE status != 'ended'
+         ) + (
+           SELECT COUNT(*) FROM room_creation_reservations WHERE expires_at > ?
+         ) < ?`,
+			)
+			.bind(requestId, expiresAt, now, now, activeRoomLimit),
+	]);
+	if (reservationResult?.meta.changes === 1) return true;
+	const existing = await db
+		.prepare(
+			"SELECT 1 AS found FROM room_creation_reservations WHERE request_id = ? AND expires_at > ?",
+		)
+		.bind(requestId, now)
+		.first<{ found: number }>();
+	return existing?.found === 1;
+}
+
+export async function releaseRoomCreationReservation(
+	db: D1Database,
+	requestId: string,
+): Promise<void> {
+	await db
+		.prepare("DELETE FROM room_creation_reservations WHERE request_id = ?")
+		.bind(requestId)
+		.run();
+}
+
 export async function createRoom(
 	db: D1Database,
 	input: {

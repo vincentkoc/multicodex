@@ -794,7 +794,11 @@ function RoomWorkbench({
 												)?.roleId || "",
 											)?.color || roleFallbacks[index % roleFallbacks.length]!
 										}
-										canEdit={!readOnly && (isHost || task.ownerParticipantId === me.id)}
+										canEdit={
+											!readOnly &&
+											(isHost || (task.ownerParticipantId === me.id && task.state !== "cut"))
+										}
+										canCut={isHost}
 										onState={(state) => changeTask(task, state)}
 									/>
 								))}
@@ -927,12 +931,14 @@ function TaskLane({
 	owner,
 	color,
 	canEdit,
+	canCut,
 	onState,
 }: {
 	task: Task;
 	owner?: Participant;
 	color: string;
 	canEdit: boolean;
+	canCut: boolean;
 	onState: (state: TaskState) => void;
 }) {
 	return (
@@ -961,11 +967,13 @@ function TaskLane({
 						aria-label={`state for ${task.title}`}
 						onChange={(event) => onState(event.currentTarget.value as TaskState)}
 					>
-						{taskStates.map((state) => (
-							<option key={state} value={state}>
-								{state}
-							</option>
-						))}
+						{taskStates
+							.filter((state) => canCut || state !== "cut")
+							.map((state) => (
+								<option key={state} value={state}>
+									{state}
+								</option>
+							))}
 					</select>
 				)}
 			</div>

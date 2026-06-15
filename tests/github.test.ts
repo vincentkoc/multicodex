@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { Room } from "../src/domain.ts";
+import type { Participant, Room } from "../src/domain.ts";
 import { ensureRoomBranches, resolveRepoDefaultBranch } from "../src/github.ts";
 
 const room = {
@@ -14,7 +14,8 @@ const room = {
 type BranchOwnership = { room_id: string; initial_sha: string };
 
 function branchDb(initialOwnership: BranchOwnership | null = null): D1Database {
-	let ownership = initialOwnership;
+	const ownerships = new Map<string, BranchOwnership>();
+	if (initialOwnership) ownerships.set(room.integrationBranch, initialOwnership);
 	return {
 		prepare(sql: string) {
 			let values: unknown[] = [];
@@ -24,14 +25,24 @@ function branchDb(initialOwnership: BranchOwnership | null = null): D1Database {
 					return statement;
 				},
 				async first() {
-					return ownership;
+					if (sql.includes("WHERE room_id = ? ORDER BY created_at")) {
+						return (
+							[...ownerships.values()].find(
+								(ownership) => ownership.room_id === String(values[0]),
+							) ?? null
+						);
+					}
+					if (sql.includes("WHERE branch = ?")) {
+						return ownerships.get(String(values[0])) ?? null;
+					}
+					return null;
 				},
 				async run() {
-					if (sql.startsWith("INSERT OR IGNORE") && !ownership) {
-						ownership = {
+					if (sql.startsWith("INSERT OR IGNORE") && !ownerships.has(String(values[1]))) {
+						ownerships.set(String(values[1]), {
 							room_id: String(values[0]),
 							initial_sha: String(values[2]),
-						};
+						});
 					}
 					return { success: true, meta: { changes: 1 } };
 				},
@@ -80,16 +91,34 @@ test("branch provisioning skips GitHub credentials only in explicit simulation",
 
 test("branch provisioning safely reuses a room-owned ref after work advances it", async () => {
 	const originalFetch = globalThis.fetch;
-	const responses = [
-		Response.json({ object: { sha: "base-sha" } }),
-		Response.json({ object: { sha: "advanced-room-sha" } }),
-	];
+	const responses = [Response.json({ object: { sha: "advanced-room-sha" } })];
 	globalThis.fetch = async () => responses.shift()!;
 	try {
 		await ensureRoomBranches(
 			githubEnv(branchDb({ room_id: room.id, initial_sha: "base-sha" })),
 			room,
 			[],
+		);
+		assert.equal(responses.length, 0);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test("branch provisioning reuses one durable baseline across launch retries", async () => {
+	const originalFetch = globalThis.fetch;
+	const responses = [
+		Response.json({ object: { sha: "advanced-room-sha" } }),
+		Response.json({}, { status: 404 }),
+		Response.json({ object: { sha: "base-sha" } }),
+		Response.json({ object: { sha: "base-sha" } }),
+	];
+	globalThis.fetch = async () => responses.shift()!;
+	try {
+		await ensureRoomBranches(
+			githubEnv(branchDb({ room_id: room.id, initial_sha: "base-sha" })),
+			room,
+			[{ branch: "multicodex/room/builder" }] as Participant[],
 		);
 		assert.equal(responses.length, 0);
 	} finally {

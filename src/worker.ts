@@ -52,8 +52,10 @@ import {
 	readRoomMessagesPage,
 	readRoomSnapshot,
 	recordProvisioningBinding,
+	releaseRoomCreationReservation,
 	releaseRoomRuntimeLease,
 	replayCreatedRoom,
+	reserveRoomCreation,
 	renewProvisioningLease,
 	replacePlan,
 	requireRoomParticipant,
@@ -92,6 +94,7 @@ const runtimeNudgeStatuses: RoomStatus[] = ["building", "integrating"];
 const provisioningLeaseMilliseconds = 2 * 60 * 1000;
 const runtimeActionLeaseMilliseconds = 30_000;
 const cleanupActionLeaseMilliseconds = 2 * 60 * 1000;
+const roomCreationReservationMilliseconds = 60_000;
 const prelaunchInactivityMilliseconds = 6 * 60 * 60 * 1000;
 
 export default {
@@ -156,26 +159,41 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		if (!repoAllowed(repo, env.ALLOWED_REPOS, env.DEFAULT_REPO)) {
 			throw new HttpError(400, "repo is not enabled for this MultiCodex deployment");
 		}
-		const baseBranch = await resolveRepoDefaultBranch(env, repo);
-		const created = await createRoom(env.DB, {
-			title,
-			hostName,
-			repo,
-			baseBranch,
-			durationMinutes,
-			activeRoomLimit: activeRoomLimit(env.MAX_ACTIVE_ROOMS),
-			requestId,
-		});
-		context.waitUntil(broadcastSnapshot(env, created.snapshot));
-		return json(
-			{
-				snapshot: snapshotForViewer(created.snapshot, created.snapshot.room.hostParticipantId),
-				participantId: created.snapshot.room.hostParticipantId,
-				participantToken: created.participantToken,
-				builderInviteToken: created.builderInviteToken,
-			},
-			201,
-		);
+		const roomLimit = activeRoomLimit(env.MAX_ACTIVE_ROOMS);
+		if (
+			!(await reserveRoomCreation(
+				env.DB,
+				requestId,
+				roomLimit,
+				Date.now() + roomCreationReservationMilliseconds,
+			))
+		) {
+			throw new HttpError(429, "active room limit reached");
+		}
+		try {
+			const baseBranch = await resolveRepoDefaultBranch(env, repo);
+			const created = await createRoom(env.DB, {
+				title,
+				hostName,
+				repo,
+				baseBranch,
+				durationMinutes,
+				activeRoomLimit: roomLimit,
+				requestId,
+			});
+			context.waitUntil(broadcastSnapshot(env, created.snapshot));
+			return json(
+				{
+					snapshot: snapshotForViewer(created.snapshot, created.snapshot.room.hostParticipantId),
+					participantId: created.snapshot.room.hostParticipantId,
+					participantToken: created.participantToken,
+					builderInviteToken: created.builderInviteToken,
+				},
+				201,
+			);
+		} finally {
+			await releaseRoomCreationReservation(env.DB, requestId);
+		}
 	}
 
 	const roomMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)$/);

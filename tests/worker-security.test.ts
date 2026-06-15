@@ -36,6 +36,10 @@ test("room creation and joins are recoverable", async () => {
 	assert.ok(
 		createSource.indexOf("replayCreatedRoom") < createSource.indexOf("resolveRepoDefaultBranch"),
 	);
+	assert.ok(
+		createSource.indexOf("reserveRoomCreation") < createSource.indexOf("resolveRepoDefaultBranch"),
+	);
+	assert.match(createSource, /finally \{\s*await releaseRoomCreationReservation/);
 	assert.match(createSource, /baseBranch/);
 	assert.match(createSource, /requestId/);
 	assert.match(joinSource, /requestId/);
@@ -212,10 +216,9 @@ test("observer controls stay read-only and presentation waits for success", asyn
 		/const canNudge = isHost && roomAllowsRuntimeNudge\(snapshot\.room\.status\)/,
 	);
 	assert.match(source, /if \(!nudge \|\| !canNudge\) return/);
-	assert.match(
-		source,
-		/canEdit=\{!readOnly && \(isHost \|\| task\.ownerParticipantId === me\.id\)\}/,
-	);
+	assert.match(source, /canCut=\{isHost\}/);
+	assert.match(source, /\.filter\(\(state\) => canCut \|\| state !== "cut"\)/);
+	assert.match(source, /task\.ownerParticipantId === me\.id && task\.state !== "cut"/);
 	assert.match(source, /if \(await action\("present"\)\) onRecap\(\)/);
 	assert.match(
 		source,

@@ -40,6 +40,21 @@ test("plan tasks resolve owners by participant id instead of list position", () 
 	assert.equal(participantForTask([observer, builder], "builder")?.id, "builder");
 });
 
+test("room creation reservations fence external work to available capacity", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function reserveRoomCreation");
+	const end = source.indexOf("export async function createRoom", start);
+	const reservationSource = source.slice(start, end);
+
+	assert.match(reservationSource, /DELETE FROM room_creation_reservations WHERE expires_at <= \?/);
+	assert.match(reservationSource, /COUNT\(\*\) FROM rooms WHERE status != 'ended'/);
+	assert.match(
+		reservationSource,
+		/COUNT\(\*\) FROM room_creation_reservations WHERE expires_at > \?/,
+	);
+	assert.match(reservationSource, /releaseRoomCreationReservation/);
+});
+
 test("builder joins atomically invalidate stale plans and enforce the five-seat cap", async () => {
 	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
 	const start = source.indexOf("export async function addParticipant");

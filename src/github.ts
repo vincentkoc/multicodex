@@ -34,7 +34,8 @@ export async function ensureRoomBranches(
 	}
 	const [owner, repo] = room.repo.split("/");
 	if (!owner || !repo) throw new HttpError(400, "repo must be owner/name");
-	const baseSha = await readBranchSha(env, owner, repo, room.baseBranch);
+	const persistedBaseSha = await readRoomBranchBaseline(env.DB, room.id);
+	const baseSha = persistedBaseSha ?? (await readBranchSha(env, owner, repo, room.baseBranch));
 	await heartbeat();
 	if (!baseSha) throw new HttpError(502, "GitHub base branch was not found");
 	const branches = [
@@ -49,6 +50,9 @@ export async function ensureRoomBranches(
 		if (ownership) {
 			if (ownership.room_id !== room.id) {
 				throw new HttpError(409, `GitHub branch ${branch} belongs to another room`);
+			}
+			if (ownership.initial_sha !== baseSha) {
+				throw new HttpError(409, `GitHub branch ${branch} does not share the room launch baseline`);
 			}
 			if (!existingSha) throw new HttpError(409, `GitHub branch ${branch} was deleted`);
 			continue;
@@ -109,6 +113,16 @@ async function readBranchOwnership(
 		.prepare("SELECT room_id, initial_sha FROM room_branch_refs WHERE branch = ?")
 		.bind(branch)
 		.first<{ room_id: string; initial_sha: string }>();
+}
+
+async function readRoomBranchBaseline(db: D1Database, roomId: string): Promise<string | null> {
+	const ownership = await db
+		.prepare(
+			"SELECT initial_sha FROM room_branch_refs WHERE room_id = ? ORDER BY created_at ASC LIMIT 1",
+		)
+		.bind(roomId)
+		.first<{ initial_sha: string }>();
+	return ownership?.initial_sha ?? null;
 }
 
 async function readBranchSha(
