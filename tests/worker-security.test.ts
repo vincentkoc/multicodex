@@ -51,6 +51,12 @@ test("room creation and joins are recoverable", async () => {
 	assert.ok(
 		createSource.indexOf("reserveRoomCreation") < createSource.indexOf("resolveRepoDefaultBranch"),
 	);
+	assert.match(createSource, /const reservationLeaseId = await reserveRoomCreation/);
+	assert.match(createSource, /replayCreatedRoom\(env\.DB, requestId\)/);
+	assert.match(
+		createSource,
+		/releaseRoomCreationReservation\(env\.DB, requestId, reservationLeaseId\)/,
+	);
 	assert.match(createSource, /finally \{\s*await releaseRoomCreationReservation/);
 	assert.match(createSource, /baseBranch/);
 	assert.match(createSource, /requestId/);

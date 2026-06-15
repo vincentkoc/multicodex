@@ -136,39 +136,34 @@ export async function reserveRoomCreation(
 	requestId: string,
 	activeRoomLimit: number,
 	expiresAt: number,
-): Promise<boolean> {
+): Promise<string | null> {
 	const now = Date.now();
+	const leaseId = newId("lease");
 	const [, reservationResult] = await db.batch([
 		db.prepare("DELETE FROM room_creation_reservations WHERE expires_at <= ?").bind(now),
 		db
 			.prepare(
-				`INSERT OR IGNORE INTO room_creation_reservations (request_id, expires_at, created_at)
-         SELECT ?, ?, ?
-         WHERE (
-           SELECT COUNT(*) FROM rooms WHERE status != 'ended'
-         ) + (
-           SELECT COUNT(*) FROM room_creation_reservations WHERE expires_at > ?
-         ) < ?`,
+				`INSERT OR IGNORE INTO room_creation_reservations (request_id, lease_id, expires_at, created_at)
+	         SELECT ?, ?, ?, ?
+	         WHERE (
+	           SELECT COUNT(*) FROM rooms WHERE status != 'ended'
+	         ) + (
+	           SELECT COUNT(*) FROM room_creation_reservations WHERE expires_at > ?
+	         ) < ?`,
 			)
-			.bind(requestId, expiresAt, now, now, activeRoomLimit),
+			.bind(requestId, leaseId, expiresAt, now, now, activeRoomLimit),
 	]);
-	if (reservationResult?.meta.changes === 1) return true;
-	const existing = await db
-		.prepare(
-			"SELECT 1 AS found FROM room_creation_reservations WHERE request_id = ? AND expires_at > ?",
-		)
-		.bind(requestId, now)
-		.first<{ found: number }>();
-	return existing?.found === 1;
+	return reservationResult?.meta.changes === 1 ? leaseId : null;
 }
 
 export async function releaseRoomCreationReservation(
 	db: D1Database,
 	requestId: string,
+	leaseId: string,
 ): Promise<void> {
 	await db
-		.prepare("DELETE FROM room_creation_reservations WHERE request_id = ?")
-		.bind(requestId)
+		.prepare("DELETE FROM room_creation_reservations WHERE request_id = ? AND lease_id = ?")
+		.bind(requestId, leaseId)
 		.run();
 }
 
@@ -603,18 +598,19 @@ export async function upgradeObserverParticipant(
 		throw new HttpError(409, "room is no longer accepting builder seats");
 	}
 	const now = Date.now();
+	const upgradeClaimId = newId("upgrade");
 	const branch = participantBranch(currentRoom.slug, input.displayName, participantId);
 	const upgradedGuard =
-		"EXISTS (SELECT 1 FROM participants WHERE id = ? AND room_id = ? AND kind = ? AND join_request_id = ?)";
+		"EXISTS (SELECT 1 FROM participants WHERE id = ? AND room_id = ? AND kind = ? AND join_request_id = ? AND upgrade_claim_id = ?)";
 	const [result] = await db.batch([
 		db
 			.prepare(
 				`UPDATE OR IGNORE participants
-	       SET kind = ?, display_name = ?, github_login = ?, role_id = NULL, task_id = NULL,
-	           join_request_id = ?, branch = ?, state = 'joined', updated_at = ?
-	       WHERE id = ? AND room_id = ? AND kind = 'observer'
-	         AND EXISTS (SELECT 1 FROM rooms WHERE id = ? AND status IN ('setup', 'planning'))
-	         AND (SELECT COUNT(*) FROM participants WHERE room_id = ? AND kind != 'observer') < 5
+		       SET kind = ?, display_name = ?, github_login = ?, role_id = NULL, task_id = NULL,
+		           join_request_id = ?, upgrade_claim_id = ?, branch = ?, state = 'joined', updated_at = ?
+		       WHERE id = ? AND room_id = ? AND kind = 'observer'
+		         AND EXISTS (SELECT 1 FROM rooms WHERE id = ? AND status IN ('setup', 'planning'))
+		         AND (SELECT COUNT(*) FROM participants WHERE room_id = ? AND kind != 'observer') < 5
 	         AND (
 	           ? != 'ai' OR (
 	             SELECT COUNT(*) FROM participants WHERE room_id = ? AND kind = 'ai'
@@ -626,6 +622,7 @@ export async function upgradeObserverParticipant(
 				input.displayName,
 				input.githubLogin ?? null,
 				input.requestId,
+				upgradeClaimId,
 				branch,
 				now,
 				participantId,
@@ -638,20 +635,20 @@ export async function upgradeObserverParticipant(
 			),
 		db
 			.prepare(`DELETE FROM tasks WHERE room_id = ? AND ${upgradedGuard}`)
-			.bind(roomId, participantId, roomId, input.kind, input.requestId),
+			.bind(roomId, participantId, roomId, input.kind, input.requestId, upgradeClaimId),
 		db
 			.prepare(
 				`UPDATE participants SET task_id = NULL, updated_at = ? WHERE room_id = ? AND ${upgradedGuard}`,
 			)
-			.bind(now, roomId, participantId, roomId, input.kind, input.requestId),
+			.bind(now, roomId, participantId, roomId, input.kind, input.requestId, upgradeClaimId),
 		db
 			.prepare(
 				`UPDATE rooms
-	       SET brief_json = json_set(brief_json, '$.planApproved', json('false')),
-	           brief_revision = brief_revision + 1, updated_at = ?
-	       WHERE id = ? AND status IN ('setup', 'planning') AND ${upgradedGuard}`,
+		       SET brief_json = json_set(brief_json, '$.planApproved', json('false')),
+		           brief_revision = brief_revision + 1, updated_at = ?
+		       WHERE id = ? AND status IN ('setup', 'planning') AND ${upgradedGuard}`,
 			)
-			.bind(now, roomId, participantId, roomId, input.kind, input.requestId),
+			.bind(now, roomId, participantId, roomId, input.kind, input.requestId, upgradeClaimId),
 		db
 			.prepare(
 				`INSERT INTO room_messages
@@ -668,9 +665,21 @@ export async function upgradeObserverParticipant(
 				roomId,
 				input.kind,
 				input.requestId,
+				upgradeClaimId,
 			),
+		db
+			.prepare(
+				"UPDATE participants SET upgrade_claim_id = NULL WHERE id = ? AND room_id = ? AND upgrade_claim_id = ?",
+			)
+			.bind(participantId, roomId, upgradeClaimId),
 	]);
 	if (result?.meta.changes !== 1) {
+		const replay = await db
+			.prepare("SELECT * FROM participants WHERE id = ? AND room_id = ? AND join_request_id = ?")
+			.bind(participantId, roomId, input.requestId)
+			.first<ParticipantRow>();
+		const upgradedReplay = participantReplay(replay, input);
+		if (upgradedReplay) return upgradedReplay;
 		throw new HttpError(409, "room is no longer accepting this builder seat");
 	}
 	return {

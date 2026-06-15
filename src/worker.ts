@@ -176,14 +176,22 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			throw new HttpError(400, "repo is not enabled for this MultiCodex deployment");
 		}
 		const roomLimit = activeRoomLimit(env.MAX_ACTIVE_ROOMS);
-		if (
-			!(await reserveRoomCreation(
-				env.DB,
-				requestId,
-				roomLimit,
-				Date.now() + roomCreationReservationMilliseconds,
-			))
-		) {
+		const reservationLeaseId = await reserveRoomCreation(
+			env.DB,
+			requestId,
+			roomLimit,
+			Date.now() + roomCreationReservationMilliseconds,
+		);
+		if (!reservationLeaseId) {
+			const replay = await replayCreatedRoom(env.DB, requestId);
+			if (replay) {
+				return json({
+					snapshot: snapshotForViewer(replay.snapshot, replay.snapshot.room.hostParticipantId),
+					participantId: replay.snapshot.room.hostParticipantId,
+					participantToken: replay.participantToken,
+					builderInviteToken: replay.builderInviteToken,
+				});
+			}
 			throw new HttpError(429, "active room limit reached");
 		}
 		try {
@@ -211,7 +219,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 				201,
 			);
 		} finally {
-			await releaseRoomCreationReservation(env.DB, requestId);
+			await releaseRoomCreationReservation(env.DB, requestId, reservationLeaseId);
 		}
 	}
 

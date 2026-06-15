@@ -52,6 +52,10 @@ test("room creation reservations fence external work to available capacity", asy
 		reservationSource,
 		/COUNT\(\*\) FROM room_creation_reservations WHERE expires_at > \?/,
 	);
+	assert.match(reservationSource, /const leaseId = newId\("lease"\)/);
+	assert.match(reservationSource, /request_id, lease_id, expires_at, created_at/);
+	assert.match(reservationSource, /changes === 1 \? leaseId : null/);
+	assert.match(reservationSource, /request_id = \? AND lease_id = \?/);
 	assert.match(reservationSource, /releaseRoomCreationReservation/);
 });
 
@@ -97,6 +101,11 @@ test("observer upgrades preserve identity and atomically claim a builder seat", 
 	assert.match(upgradeSource, /kind != 'observer'\) < 5/);
 	assert.match(upgradeSource, /COUNT\(\*\) FROM participants WHERE room_id = \? AND kind = 'ai'/);
 	assert.match(upgradeSource, /join_request_id = \?/);
+	assert.match(upgradeSource, /const upgradeClaimId = newId\("upgrade"\)/);
+	assert.match(upgradeSource, /upgrade_claim_id = \?/);
+	assert.match(upgradeSource, /join_request_id = \? AND upgrade_claim_id = \?/);
+	assert.match(upgradeSource, /SET upgrade_claim_id = NULL/);
+	assert.match(upgradeSource, /participantReplay\(replay, input\)/);
 	assert.match(upgradeSource, /DELETE FROM tasks/);
 	assert.match(upgradeSource, /brief_revision = brief_revision \+ 1/);
 	assert.match(upgradeSource, /participantToken: current\.access_token/);

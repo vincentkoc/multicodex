@@ -107,3 +107,23 @@ test("root provisioning requests preserve exact replay inputs", async () => {
 
 	assert.match(migration, /root_provisioning_request_json TEXT/);
 });
+
+test("room creation reservations have per-attempt leases", async () => {
+	const migration = await readFile(
+		new URL("../migrations/0015_room_creation_reservation_leases.sql", import.meta.url),
+		"utf8",
+	);
+
+	assert.match(migration, /lease_id TEXT/);
+	assert.match(migration, /UNIQUE INDEX idx_room_creation_reservations_lease/);
+});
+
+test("observer upgrades have transaction-scoped claims", async () => {
+	const migration = await readFile(
+		new URL("../migrations/0016_participant_upgrade_claims.sql", import.meta.url),
+		"utf8",
+	);
+
+	assert.match(migration, /upgrade_claim_id TEXT/);
+	assert.match(migration, /UNIQUE INDEX idx_participants_upgrade_claim/);
+});
