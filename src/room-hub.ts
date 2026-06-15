@@ -12,6 +12,7 @@ import {
 	publicRoomWebSocketTag,
 	publicRoomWebSocketSourceTag,
 	recordSocketMessage,
+	roomWebSocketSourceHeader,
 	roomWebSocketTicketHeader,
 	sameOriginWebSocketRequest,
 	type SocketRateState,
@@ -33,21 +34,24 @@ export class RoomHub extends DurableObject<Env> {
 	}
 
 	async issueParticipantTicket(participantId: string, participantKind: string): Promise<string> {
-		return this.issueSocketTicket(participantId, participantKind);
-	}
-
-	async issuePublicTicket(sourceKey: string): Promise<string> {
-		return this.issueSocketTicket(sourceKey, "public");
-	}
-
-	private issueSocketTicket(participantId: string, participantKind: string): string {
 		const now = Date.now();
 		const ticket = crypto.randomUUID();
-		this.ctx.storage.sql.exec(
-			"DELETE FROM socket_tickets WHERE participant_id = ? OR expires_at <= ?",
-			participantId,
-			now,
-		);
+		this.ctx.storage.sql.exec("DELETE FROM socket_tickets WHERE expires_at <= ?", now);
+		// Preserve concurrent-tab tickets while bounding unused capabilities per participant.
+		const pending = this.ctx.storage.sql
+			.exec<{ ticket: string }>(
+				`SELECT ticket FROM socket_tickets
+				 WHERE participant_id = ?
+				 ORDER BY expires_at ASC, ticket ASC`,
+				participantId,
+			)
+			.toArray();
+		for (const existing of pending.slice(
+			0,
+			Math.max(0, pending.length - maxParticipantWebSockets + 1),
+		)) {
+			this.ctx.storage.sql.exec("DELETE FROM socket_tickets WHERE ticket = ?", existing.ticket);
+		}
 		this.ctx.storage.sql.exec(
 			`INSERT INTO socket_tickets (ticket, participant_id, participant_kind, expires_at)
 			 VALUES (?, ?, ?, ?)`,
@@ -67,13 +71,13 @@ export class RoomHub extends DurableObject<Env> {
 			return new Response("same-origin websocket required", { status: 403 });
 		}
 		const suppliedTicket = request.headers.get(roomWebSocketTicketHeader);
-		const admission = suppliedTicket ? this.consumeSocketTicket(suppliedTicket) : null;
-		if (!admission) {
+		const participant = suppliedTicket ? this.consumeParticipantTicket(suppliedTicket) : null;
+		if (suppliedTicket && !participant) {
 			return new Response("valid websocket ticket required", { status: 401 });
 		}
-		const participant = admission.kind === "public" ? null : admission;
-		const publicSourceTag =
-			admission.kind === "public" ? publicRoomWebSocketSourceTag(admission.id) : null;
+		const publicSourceTag = participant
+			? null
+			: publicRoomWebSocketSourceTag(request.headers.get(roomWebSocketSourceHeader));
 		if (!participant && !publicSourceTag) {
 			return new Response("public websocket admission required", { status: 403 });
 		}
@@ -150,7 +154,7 @@ export class RoomHub extends DurableObject<Env> {
 		socket.close(1003, "unsupported message");
 	}
 
-	private consumeSocketTicket(ticket: string): { id: string; kind: string } | null {
+	private consumeParticipantTicket(ticket: string): { id: string; kind: string } | null {
 		const row = this.ctx.storage.sql
 			.exec<{ participant_id: string; participant_kind: string; expires_at: number }>(
 				`SELECT participant_id, participant_kind, expires_at

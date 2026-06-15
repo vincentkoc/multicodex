@@ -105,19 +105,6 @@ export function issueRoomSocketTicket(roomId: string, participantToken: string):
 	}).then((result) => result.ticket);
 }
 
-export function issuePublicRoomSocketTicket(
-	roomId: string,
-	browserSourceId: string,
-): Promise<string> {
-	return request<{ ticket: string }>(
-		`/api/rooms/${encodeURIComponent(roomId)}/public-socket-ticket`,
-		{
-			method: "POST",
-			body: { browserSourceId },
-		},
-	).then((result) => result.ticket);
-}
-
 export function catalog(): Promise<Catalog> {
 	return request("/api/catalog");
 }

@@ -159,7 +159,9 @@ test("WebSocket reconnects resync the current room snapshot", async () => {
 	assert.match(socketSource, /if \(payload\.type === "changed"\) syncRoom\(\)/);
 	assert.match(socketSource, /snapshotRequestSequence/);
 	assert.match(socketSource, /sequence === snapshotRequestSequence\.current/);
-	assert.match(socketSource, /issuePublicRoomSocketTicket\(roomId, publicSocketSourceId\)/);
+	assert.match(socketSource, /window\.setInterval/);
+	assert.match(socketSource, /10_000/);
+	assert.match(socketSource, /!identity\?\.participantToken/);
 	assert.match(socketSource, /ApiError/);
 	assert.match(socketSource, /cause\.status !== 403/);
 	assert.match(socketSource, /clearIdentity\(roomId\)/);
@@ -217,8 +219,6 @@ test("room entry persists only minimal identity with tab-scoped fallback", async
 	assert.match(persistenceSource, /sessionStorage\.setItem/);
 	assert.match(persistenceSource, /localStorage\.removeItem/);
 	assert.match(persistenceSource, /sessionStorage\.removeItem/);
-	assert.match(source, /multicodex\.public-socket-source/);
-	assert.match(source, /validPublicSocketSourceId/);
 	assert.doesNotMatch(persistenceSource, /JSON\.stringify\(nextIdentity\)/);
 	assert.match(source, /if \(onEnter\(result\.snapshot, result\)\) clearCreateRequestId\(\)/);
 	assert.match(source, /if \(onEnter\(result\.snapshot, result\)\) clearJoinRequestId/);
@@ -520,9 +520,10 @@ test("public WebSocket handshakes use a lightweight room existence check", async
 	assert.match(socketSource, /sameOriginWebSocketRequest\(request\)/);
 	assert.match(socketSource, /headers\.delete\(roomWebSocketTicketHeader\)/);
 	assert.match(socketSource, /headers\.set\(roomWebSocketTicketHeader, ticket\)/);
-	assert.match(socketSource, /publicSocketTicketMatch/);
-	assert.match(socketSource, /issuePublicTicket\(sourceKey\)/);
-	assert.match(socketSource, /requestSourceKey\(request, clean\(body\.browserSourceId, 100\)\)/);
+	assert.match(
+		socketSource,
+		/headers\.set\(roomWebSocketSourceHeader, await requestSourceKey\(request\)\)/,
+	);
 	assert.doesNotMatch(socketSource, /readRoomSnapshot/);
 });
 
@@ -538,10 +539,10 @@ test("RoomHub reserves websocket capacity for authenticated participants", async
 	assert.match(source, /maxObserverRoomWebSockets/);
 	assert.match(source, /maxPublicRoomWebSocketsPerSource/);
 	assert.match(source, /publicRoomWebSocketSourceTag/);
-	assert.match(source, /issuePublicTicket/);
 	assert.match(source, /participant\.kind === "observer"/);
 	assert.match(source, /issueParticipantTicket/);
-	assert.match(source, /consumeSocketTicket/);
+	assert.match(source, /consumeParticipantTicket/);
+	assert.match(source, /pending\.slice/);
 	assert.match(source, /CREATE TABLE IF NOT EXISTS socket_tickets/);
 	assert.match(source, /sameOriginWebSocketRequest\(request\)/);
 	assert.match(source, /\[categoryTag, participantTag\]/);
@@ -549,10 +550,8 @@ test("RoomHub reserves websocket capacity for authenticated participants", async
 	assert.match(source, /socket\.close\(1008, "message rate exceeded"\)/);
 	assert.match(source, /socket\.close\(1003, "unsupported message"\)/);
 	assert.match(worker, /socketTicketMatch/);
-	assert.match(worker, /publicSocketTicketMatch/);
 	assert.match(worker, /issueParticipantTicket\(\s*participant\.id,\s*participant\.kind,\s*\)/);
 	assert.match(client, /issueRoomSocketTicket/);
-	assert.match(client, /issuePublicRoomSocketTicket/);
 	assert.match(client, /roomSocketUrl\(roomId, ticket\)/);
 });
 

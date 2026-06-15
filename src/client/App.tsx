@@ -37,7 +37,6 @@ import {
 	catalog,
 	type Catalog,
 	createRoom,
-	issuePublicRoomSocketTicket,
 	issueRoomSocketTicket,
 	joinRoom,
 	nudgeParticipant,
@@ -67,7 +66,6 @@ export function App() {
 	const [error, setError] = useState("");
 	const [loading, setLoading] = useState(Boolean(roomId));
 	const snapshotRequestSequence = useRef(0);
-	const publicSocketSourceId = useRef(loadPublicSocketSourceId()).current;
 	const [builderInviteToken, clearBuilderInviteToken] = useBuilderInviteToken(roomId);
 
 	useEffect(() => {
@@ -132,6 +130,21 @@ export function App() {
 	}, [roomId, identity?.participantToken, refreshRoom]);
 
 	useEffect(() => {
+		if (!roomId || identity?.participantToken || !snapshot || snapshot.room.status === "ended")
+			return;
+		let disposed = false;
+		const interval = window.setInterval(() => {
+			refreshRoom().catch((cause: Error) => {
+				if (!disposed) setError(cause.message);
+			});
+		}, 10_000);
+		return () => {
+			disposed = true;
+			window.clearInterval(interval);
+		};
+	}, [roomId, identity?.participantToken, snapshot?.room.status, refreshRoom]);
+
+	useEffect(() => {
 		if (!roomId || !snapshot || snapshot.room.status === "ended") return;
 		let socket: WebSocket | null = null;
 		let retry: number | null = null;
@@ -156,15 +169,15 @@ export function App() {
 		const connect = async () => {
 			if (connecting || disposed) return;
 			connecting = true;
-			let ticket: string;
-			try {
-				ticket = identity?.participantToken
-					? await issueRoomSocketTicket(roomId, identity.participantToken)
-					: await issuePublicRoomSocketTicket(roomId, publicSocketSourceId);
-			} catch {
-				connecting = false;
-				scheduleReconnect();
-				return;
+			let ticket: string | null = null;
+			if (identity?.participantToken) {
+				try {
+					ticket = await issueRoomSocketTicket(roomId, identity.participantToken);
+				} catch {
+					connecting = false;
+					scheduleReconnect();
+					return;
+				}
 			}
 			connecting = false;
 			if (disposed) return;
@@ -186,13 +199,7 @@ export function App() {
 			if (retry !== null) window.clearTimeout(retry);
 			socket?.close();
 		};
-	}, [
-		roomId,
-		snapshot?.room.status,
-		identity?.participantToken,
-		publicSocketSourceId,
-		refreshRoom,
-	]);
+	}, [roomId, snapshot?.room.status, identity?.participantToken, refreshRoom]);
 
 	function enterRoom(next: RoomSnapshot, nextIdentity: RoomIdentity): boolean {
 		const identity = minimalRoomIdentity(nextIdentity);
@@ -1619,10 +1626,6 @@ function identityKey(roomId: string): string {
 	return `multicodex.identity.${roomId}`;
 }
 
-function publicSocketSourceKey(): string {
-	return "multicodex.public-socket-source";
-}
-
 function joinRequestKey(roomId: string): string {
 	return `multicodex.join-request.${roomId}`;
 }
@@ -1661,32 +1664,6 @@ function clearSessionRequestId(key: string): void {
 	} catch {
 		// Storage may be unavailable in hardened browser contexts.
 	}
-}
-
-function loadPublicSocketSourceId(): string {
-	const key = publicSocketSourceKey();
-	const sourceId = crypto.randomUUID();
-	try {
-		const existing = localStorage.getItem(key);
-		if (validPublicSocketSourceId(existing)) return existing;
-		localStorage.setItem(key, sourceId);
-		return sourceId;
-	} catch {
-		try {
-			const existing = sessionStorage.getItem(key);
-			if (validPublicSocketSourceId(existing)) return existing;
-			sessionStorage.setItem(key, sourceId);
-		} catch {
-			// The in-memory value remains stable for this mounted application.
-		}
-		return sourceId;
-	}
-}
-
-function validPublicSocketSourceId(value: string | null): value is string {
-	return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-		value ?? "",
-	);
 }
 
 function minimalRoomIdentity(identity: RoomIdentity): RoomIdentity {
