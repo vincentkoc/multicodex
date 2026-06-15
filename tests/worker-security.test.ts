@@ -167,11 +167,15 @@ test("browser history navigation resynchronizes room state", async () => {
 });
 
 test("asset responses prohibit framing authenticated controls", async () => {
-	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
+	const [source, config] = await Promise.all([
+		readFile(new URL("../src/worker.ts", import.meta.url), "utf8"),
+		readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
+	]);
 	const start = source.indexOf("async function assetResponse");
 	const end = source.indexOf("async function reconcileRooms", start);
 	const assetSource = source.slice(start, end);
 
+	assert.match(config, /"run_worker_first": true/);
 	assert.match(source, /return assetResponse\(env, request\)/);
 	assert.match(assetSource, /content-security-policy/);
 	assert.match(assetSource, /frame-ancestors 'none'/);
