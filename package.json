@@ -2,8 +2,12 @@
 	"name": "multicodex",
 	"version": "0.1.0",
 	"private": true,
+	"bin": {
+		"multicodex": "packages/cli/bin/multicodex.mjs"
+	},
 	"type": "module",
 	"scripts": {
+		"alpha:host": "node --experimental-strip-types packages/cli/src/index.ts host --repo .",
 		"build": "wrangler types && vite build && tsc --noEmit",
 		"check": "pnpm typecheck && pnpm test && pnpm lint && pnpm format",
 		"db:local": "wrangler d1 migrations apply DB --local",
@@ -12,10 +16,12 @@
 		"format": "oxfmt --check .",
 		"format:fix": "oxfmt .",
 		"lint": "oxlint .",
+		"multicodex": "node --experimental-strip-types packages/cli/src/index.ts",
 		"test": "node --test --experimental-strip-types tests/*.test.ts",
 		"typecheck": "wrangler types && tsc --noEmit"
 	},
 	"dependencies": {
+		"acpx": "0.10.0",
 		"lucide-preact": "^0.468.0",
 		"preact": "^10.29.2"
 	},

@@ -1,4 +1,5 @@
 node_modules/
+.multicodex-alpha/
 dist/
 .wrangler/
 .dev.vars
