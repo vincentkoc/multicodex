@@ -438,13 +438,20 @@ test("scheduled reconciliation expires inactive planning and runtime rooms", asy
 	const failedCleanupStart = expirySource.indexOf("async function reconcileFailedLaunchCleanup");
 	const failedCleanupSource = expirySource.slice(failedCleanupStart);
 	assert.ok(
-		failedCleanupSource.indexOf("repoAllowed") <
+		failedCleanupSource.indexOf("requireRuntimeRecoveryRepo") <
 			failedCleanupSource.indexOf("recoverRoomRootCrabbox"),
+	);
+	assert.match(
+		worker,
+		/function requireRuntimeRecoveryRepo[\s\S]*repoAllowed[\s\S]*room repo must be re-enabled before runtime cleanup can continue/,
 	);
 	const recoveryCalls = [...worker.matchAll(/const root = await recoverRoomRootCrabbox/g)];
 	assert.equal(recoveryCalls.length, 4);
 	for (const recovery of recoveryCalls) {
-		assert.match(worker.slice(Math.max(0, recovery.index - 400), recovery.index), /repoAllowed\(/);
+		assert.match(
+			worker.slice(Math.max(0, recovery.index - 400), recovery.index),
+			/requireRuntimeRecoveryRepo\(/,
+		);
 	}
 });
 

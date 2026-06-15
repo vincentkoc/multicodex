@@ -746,9 +746,9 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		try {
 			if (
 				!snapshot.room.crabfleetRootSessionId &&
-				(await roomRootProvisioningAttempted(env.DB, roomId)) &&
-				repoAllowed(snapshot.room.repo, env.ALLOWED_REPOS, env.DEFAULT_REPO)
+				(await roomRootProvisioningAttempted(env.DB, roomId))
 			) {
+				requireRuntimeRecoveryRepo(env, snapshot.room);
 				const root = await recoverRoomRootCrabbox(
 					env,
 					snapshot.room,
@@ -839,11 +839,8 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		try {
 			snapshot = await readRoomSnapshot(env.DB, roomId);
 			context.waitUntil(broadcastSnapshot(env, snapshot));
-			if (
-				!snapshot.room.crabfleetRootSessionId &&
-				runtimeMayExist &&
-				repoAllowed(snapshot.room.repo, env.ALLOWED_REPOS, env.DEFAULT_REPO)
-			) {
+			if (!snapshot.room.crabfleetRootSessionId && runtimeMayExist) {
+				requireRuntimeRecoveryRepo(env, snapshot.room);
 				const root = await recoverRoomRootCrabbox(
 					env,
 					snapshot.room,
@@ -1053,11 +1050,8 @@ async function reconcileRuntimeRoom(env: Env, roomId: string): Promise<void> {
 	if (!cleanupLeaseId) return;
 	try {
 		snapshot = await readRoomSnapshot(env.DB, roomId);
-		if (
-			!snapshot.room.crabfleetRootSessionId &&
-			runtimeMayExist &&
-			repoAllowed(snapshot.room.repo, env.ALLOWED_REPOS, env.DEFAULT_REPO)
-		) {
+		if (!snapshot.room.crabfleetRootSessionId && runtimeMayExist) {
+			requireRuntimeRecoveryRepo(env, snapshot.room);
 			const root = await recoverRoomRootCrabbox(
 				env,
 				snapshot.room,
@@ -1127,9 +1121,9 @@ async function reconcileFailedLaunchCleanup(env: Env, roomId: string): Promise<v
 		let snapshot = await readRoomSnapshot(env.DB, roomId);
 		if (
 			!snapshot.room.crabfleetRootSessionId &&
-			(await roomRootProvisioningAttempted(env.DB, roomId)) &&
-			repoAllowed(snapshot.room.repo, env.ALLOWED_REPOS, env.DEFAULT_REPO)
+			(await roomRootProvisioningAttempted(env.DB, roomId))
 		) {
+			requireRuntimeRecoveryRepo(env, snapshot.room);
 			const root = await recoverRoomRootCrabbox(
 				env,
 				snapshot.room,
@@ -1195,6 +1189,12 @@ function participantsWithAssignments(
 		...participant,
 		roleId: roles.get(participant.id) ?? participant.roleId,
 	}));
+}
+
+function requireRuntimeRecoveryRepo(env: Env, room: RoomSnapshot["room"]): void {
+	if (!repoAllowed(room.repo, env.ALLOWED_REPOS, env.DEFAULT_REPO)) {
+		throw new HttpError(409, "room repo must be re-enabled before runtime cleanup can continue");
+	}
 }
 
 async function requireHost(db: D1Database, roomId: string, token: string): Promise<Participant> {
