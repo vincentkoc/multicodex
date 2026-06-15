@@ -12,6 +12,7 @@ import {
 	PartialProvisioningError,
 	provisionRoomCrabboxes,
 	readRoomCrabboxes,
+	readinessDeadlineMilliseconds,
 	readinessPollDelays,
 	recoverRoomRootCrabbox,
 	roomRootCrabboxRequest,
@@ -38,10 +39,13 @@ test("Crabfleet runtime selection keeps crabbox as the conservative fallback", (
 	assert.equal(participantStateForCrabfleetStatus("provisioning", "joined"), "joined");
 });
 
-test("readiness polling preserves free-tier subrequest headroom", () => {
-	assert.deepEqual(readinessPollDelays, [1_000, 2_000, 4_000, 8_000, 12_000]);
-	assert.equal(readinessPollDelays.length, 5);
-	assert.ok(readinessPollDelays.reduce((total, delay) => total + delay, 0) < 30_000);
+test("readiness polling covers Crabbox cold starts while preserving subrequest headroom", () => {
+	assert.deepEqual(readinessPollDelays, [1_000, 2_000, 4_000, 8_000, 12_000, 16_000, 20_000]);
+	assert.equal(readinessPollDelays.length, 7);
+	assert.ok(
+		readinessPollDelays.reduce((total, delay) => total + delay, 0) < readinessDeadlineMilliseconds,
+	);
+	assert.ok(readinessDeadlineMilliseconds < 90_000);
 });
 
 test("partial room provisioning returns every created session for durable cleanup", async () => {
