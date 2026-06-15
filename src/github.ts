@@ -28,10 +28,8 @@ export async function ensureRoomBranches(
 	heartbeat: () => Promise<void> = async () => {},
 ): Promise<void> {
 	await heartbeat();
-	if (!env.GITHUB_TOKEN) {
-		if (String(env.MULTICODEX_SIMULATION_MODE) === "true") return;
-		throw new HttpError(503, "GitHub token is not configured");
-	}
+	if (String(env.MULTICODEX_SIMULATION_MODE) === "true") return;
+	if (!env.GITHUB_TOKEN) throw new HttpError(503, "GitHub token is not configured");
 	const [owner, repo] = room.repo.split("/");
 	if (!owner || !repo) throw new HttpError(400, "repo must be owner/name");
 	let baseSha = await readRoomLaunchBaseline(env.DB, room.id);

@@ -28,7 +28,7 @@ const snapshot = {
 		roomId: "room",
 		kind: "human" as const,
 		displayName: id,
-		githubLogin: null,
+		githubLogin: `${id}-github`,
 		roleId: null,
 		taskId: null,
 		crabfleetSessionId: `${id}-session-secret`,
@@ -77,6 +77,7 @@ test("public snapshots hide every runtime capability", () => {
 	assert.ok(visible.participants.every((participant) => participant.crabfleetSessionId === null));
 	assert.ok(visible.participants.every((participant) => participant.browserUrl === null));
 	assert.ok(visible.participants.every((participant) => participant.runtimeSummary === ""));
+	assert.ok(visible.participants.every((participant) => participant.githubLogin === null));
 	assert.deepEqual(visible.conductorActions[0]?.targetIds, ["guest"]);
 	assert.deepEqual(visible.conductorActions[0]?.evidenceRefs, []);
 	assert.deepEqual(visible.runtimeRedactions, []);
@@ -97,6 +98,10 @@ test("participants only receive their own workspace URL", () => {
 		"https://runtime.example/guest-secret",
 	);
 	assert.ok(visible.participants.every((participant) => participant.crabfleetSessionId === null));
+	assert.equal(
+		visible.participants.find((participant) => participant.id === "host")?.githubLogin,
+		"host-github",
+	);
 	assert.doesNotMatch(
 		visible.participants.map((participant) => participant.runtimeSummary).join(" "),
 		/root-secret|session-secret/,

@@ -34,10 +34,13 @@ Production keeps simulation explicitly disabled.
 - A random per-seat capability authenticates room mutations. Public participant
   IDs are never accepted as credentials.
 - Public room snapshots contain the visible collaboration timeline, but never
-  Crabfleet root IDs, child session IDs, workspace URLs, or runtime summaries.
+  GitHub handles, Crabfleet root IDs, child session IDs, workspace URLs, or
+  runtime summaries.
 - An authenticated participant only receives the URL for their own workspace.
 - Only the host capability can approve a plan, provision workspaces, nudge a
   session, present, or end a room.
+- Room WebSockets require the app's origin, cap live connections per room, and
+  close clients that exceed the message-rate budget.
 - Builder and AI seats require the room-specific invite link copied by the host;
   public room links can still admit read-only observers.
 - Active builder seats are capped at five. The Worker is the only component that

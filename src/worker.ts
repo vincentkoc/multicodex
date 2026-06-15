@@ -33,6 +33,7 @@ import {
 	roomPlanCoversActiveParticipants,
 } from "./room-state.ts";
 import { RoomHub } from "./room-hub.ts";
+import { sameOriginWebSocketRequest } from "./socket-admission.ts";
 import {
 	addConductorAction,
 	addMessage,
@@ -216,6 +217,9 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 	if (request.method === "GET" && roomWsMatch) {
 		if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
 			throw new HttpError(426, "websocket upgrade required");
+		}
+		if (!sameOriginWebSocketRequest(request)) {
+			throw new HttpError(403, "same-origin websocket required");
 		}
 		const roomId = decodeURIComponent(roomWsMatch[1] ?? "");
 		if (!(await roomExists(env.DB, roomId))) throw new HttpError(404, "room not found");

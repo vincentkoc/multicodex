@@ -495,7 +495,18 @@ test("public WebSocket handshakes use a lightweight room existence check", async
 	const socketSource = source.slice(start, end);
 
 	assert.match(socketSource, /roomExists\(env\.DB, roomId\)/);
+	assert.match(socketSource, /sameOriginWebSocketRequest\(request\)/);
 	assert.doesNotMatch(socketSource, /readRoomSnapshot/);
+});
+
+test("RoomHub bounds public websocket work", async () => {
+	const source = await readFile(new URL("../src/room-hub.ts", import.meta.url), "utf8");
+
+	assert.match(source, /this\.ctx\.getWebSockets\(\)\.length >= maxRoomWebSockets/);
+	assert.match(source, /sameOriginWebSocketRequest\(request\)/);
+	assert.match(source, /recordSocketMessage/);
+	assert.match(source, /socket\.close\(1008, "message rate exceeded"\)/);
+	assert.match(source, /socket\.close\(1003, "unsupported message"\)/);
 });
 
 test("public terminal room links render the preserved recap", async () => {

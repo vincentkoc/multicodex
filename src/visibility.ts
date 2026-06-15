@@ -17,6 +17,7 @@ export function snapshotForViewer(
 			room: { ...snapshot.room, crabfleetRootSessionId: null },
 			participants: snapshot.participants.map((participant) => ({
 				...participant,
+				githubLogin: viewerId ? participant.githubLogin : null,
 				crabfleetSessionId: null,
 				browserUrl: null,
 				runtimeSummary: viewerId ? participant.runtimeSummary : "",

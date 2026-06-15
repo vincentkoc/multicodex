@@ -95,6 +95,28 @@ test("branch provisioning skips GitHub credentials only in explicit simulation",
 	await ensureRoomBranches({ MULTICODEX_SIMULATION_MODE: "true" } as unknown as Env, room, []);
 });
 
+test("branch provisioning never calls GitHub in explicit simulation", async () => {
+	const originalFetch = globalThis.fetch;
+	let requests = 0;
+	globalThis.fetch = async () => {
+		requests += 1;
+		throw new Error("GitHub must not be called");
+	};
+	try {
+		await ensureRoomBranches(
+			{
+				MULTICODEX_SIMULATION_MODE: "true",
+				GITHUB_TOKEN: "configured-but-unused",
+			} as unknown as Env,
+			room,
+			[],
+		);
+		assert.equal(requests, 0);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
 test("branch provisioning safely reuses a room-owned ref after work advances it", async () => {
 	const originalFetch = globalThis.fetch;
 	const responses = [Response.json({ object: { sha: "advanced-room-sha" } })];
