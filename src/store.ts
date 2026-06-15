@@ -1435,6 +1435,58 @@ export async function updateParticipantRuntime(
 	return result.meta.changes === 1;
 }
 
+export async function replaceParticipantRuntime(
+	db: D1Database,
+	roomId: string,
+	participantId: string,
+	previousSessionId: string,
+	rootSessionId: string,
+	leaseId: string,
+	input: {
+		sessionId: string;
+		browserUrl: string;
+		summary: string;
+		state: Participant["state"];
+	},
+	expectedStatuses: RoomStatus[],
+): Promise<boolean> {
+	if (!expectedStatuses.length) return false;
+	const now = Date.now();
+	const result = await db
+		.prepare(
+			`UPDATE participants
+       SET crabfleet_session_id = ?, browser_url = ?, runtime_summary = ?, state = ?, updated_at = ?
+       WHERE id = ? AND room_id = ? AND crabfleet_session_id = ?
+         AND EXISTS (
+           SELECT 1 FROM rooms
+           WHERE id = ? AND crabfleet_root_session_id = ?
+             AND status IN (${expectedStatuses.map(() => "?").join(", ")})
+         )
+         AND EXISTS (
+           SELECT 1 FROM room_runtime_leases
+           WHERE room_id = ? AND lease_id = ? AND expires_at > ?
+         )`,
+		)
+		.bind(
+			input.sessionId,
+			input.browserUrl,
+			input.summary,
+			input.state,
+			now,
+			participantId,
+			roomId,
+			previousSessionId,
+			roomId,
+			rootSessionId,
+			...expectedStatuses,
+			roomId,
+			leaseId,
+			now,
+		)
+		.run();
+	return result.meta.changes === 1;
+}
+
 export async function updateTaskState(
 	db: D1Database,
 	roomId: string,

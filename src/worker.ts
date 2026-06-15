@@ -7,8 +7,10 @@ import {
 	crabfleetSimulationEnabled,
 	createCrabboxEmbedUrl,
 	participantStateForCrabfleetStatus,
+	provisionParticipantCrabbox,
 	provisionRoomCrabboxes,
 	readRoomCrabboxes,
+	readinessDeadlineMilliseconds,
 	roomRootCrabboxRequest,
 	sendCrabboxNudge,
 	stopRoomCrabboxes,
@@ -70,6 +72,7 @@ import {
 	refreshProvisioningBinding,
 	releaseRoomCreationReservation,
 	releaseRoomRuntimeLease,
+	replaceParticipantRuntime,
 	replayCreatedRoom,
 	reserveRoomCreation,
 	renewProvisioningLease,
@@ -109,6 +112,7 @@ const scopeChangeStatuses: RoomStatus[] = [
 const runtimeRefreshStatuses: RoomStatus[] = ["building", "integrating", "presenting"];
 const runtimeNudgeStatuses: RoomStatus[] = ["building", "integrating"];
 const runtimeActionLeaseMilliseconds = 30_000;
+const runtimeRepairLeaseMilliseconds = readinessDeadlineMilliseconds + 30_000;
 const runtimeRefreshCooldownMilliseconds = 15_000;
 const roomCreationReservationMilliseconds = 60_000;
 const prelaunchInactivityMilliseconds = 6 * 60 * 60 * 1000;
@@ -696,6 +700,21 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		return json(snapshotForViewer(snapshot, actor.id));
 	}
 
+	const repairMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/repair-workspace$/);
+	if (request.method === "POST" && repairMatch) {
+		const roomId = decodeURIComponent(repairMatch[1] ?? "");
+		const actor = await requireRoomParticipant(env.DB, roomId, participantToken(request), false);
+		const body = await readJson<{ participantId?: string }>(request);
+		const snapshot = await repairParticipantWorkspace(
+			env,
+			roomId,
+			actor,
+			clean(body.participantId, 100),
+		);
+		context.waitUntil(broadcastSnapshot(env, snapshot));
+		return json(snapshotForViewer(snapshot, actor.id));
+	}
+
 	const nudgeMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/nudge$/);
 	if (request.method === "POST" && nudgeMatch) {
 		const roomId = decodeURIComponent(nudgeMatch[1] ?? "");
@@ -1219,6 +1238,95 @@ async function nudgeParticipant(
 			body: `Nudged ${target.displayName}: ${auditDetail}`,
 			replyToId: null,
 		});
+	} finally {
+		await releaseRoomRuntimeLease(env.DB, roomId, leaseId);
+	}
+}
+
+async function repairParticipantWorkspace(
+	env: Env,
+	roomId: string,
+	actor: Participant,
+	targetParticipantId: string,
+): Promise<RoomSnapshot> {
+	let snapshot = await readRoomSnapshot(env.DB, roomId);
+	if (!roomAllowsRuntimeRefresh(snapshot.room.status)) {
+		throw new HttpError(409, "room runtime is not active");
+	}
+	let target = snapshot.participants.find((participant) => participant.id === targetParticipantId);
+	if (!target || target.kind === "observer")
+		throw new HttpError(404, "participant workspace not found");
+	if (actor.id !== target.id && actor.id !== snapshot.room.hostParticipantId) {
+		throw new HttpError(403, "only the participant or host can repair this workspace");
+	}
+	if (!snapshot.room.crabfleetRootSessionId || !target.crabfleetSessionId) {
+		throw new HttpError(409, "participant workspace is not ready");
+	}
+	if (target.crabfleetSessionId === snapshot.room.crabfleetRootSessionId) {
+		throw new HttpError(409, "root workspace repair requires ending the room");
+	}
+	const leaseId = await claimRoomRuntimeLease(
+		env.DB,
+		roomId,
+		"session_repair",
+		runtimeRefreshStatuses,
+		runtimeRepairLeaseMilliseconds,
+	);
+	if (!leaseId) throw new HttpError(409, "room runtime is busy or ending");
+	try {
+		snapshot = await readRoomSnapshot(env.DB, roomId);
+		target = snapshot.participants.find((participant) => participant.id === targetParticipantId);
+		if (!roomAllowsRuntimeRefresh(snapshot.room.status)) {
+			throw new HttpError(409, "room runtime is not active");
+		}
+		if (!target || target.kind === "observer") {
+			throw new HttpError(404, "participant workspace not found");
+		}
+		const repairTarget = target;
+		if (actor.id !== target.id && actor.id !== snapshot.room.hostParticipantId) {
+			throw new HttpError(403, "only the participant or host can repair this workspace");
+		}
+		const rootSessionId = snapshot.room.crabfleetRootSessionId;
+		const previousSessionId = repairTarget.crabfleetSessionId;
+		if (!rootSessionId || !previousSessionId) {
+			throw new HttpError(409, "participant workspace is not ready");
+		}
+		const task = snapshot.tasks.find((item) => item.ownerParticipantId === repairTarget.id);
+		const replacement = await provisionParticipantCrabbox(
+			env,
+			snapshot.room,
+			repairTarget,
+			task,
+			previousSessionId,
+		);
+		if (
+			!(await replaceParticipantRuntime(
+				env.DB,
+				roomId,
+				repairTarget.id,
+				previousSessionId,
+				rootSessionId,
+				leaseId,
+				{
+					sessionId: replacement.binding.session.id,
+					browserUrl: replacement.binding.browserUrl,
+					summary: replacement.binding.session.summary,
+					state: "working",
+				},
+				runtimeRefreshStatuses,
+			))
+		) {
+			throw new HttpError(409, "participant workspace changed during repair");
+		}
+		await addMessage(env.DB, roomId, {
+			authorKind: "system",
+			authorId: "system",
+			targetKind: "participant",
+			targetId: repairTarget.id,
+			body: `${repairTarget.displayName}'s Codex workspace was replaced from its current branch.`,
+			replyToId: null,
+		});
+		return readRoomSnapshot(env.DB, roomId);
 	} finally {
 		await releaseRoomRuntimeLease(env.DB, roomId, leaseId);
 	}

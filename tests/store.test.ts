@@ -136,6 +136,21 @@ test("runtime refreshes use an atomic room cooldown", async () => {
 	assert.match(refreshSource, /status IN \('building', 'integrating', 'presenting'\)/);
 });
 
+test("participant runtime replacement is fenced to the old session, room root, and active lease", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function replaceParticipantRuntime");
+	const end = source.indexOf("export async function updateTaskState", start);
+	const replacementSource = source.slice(start, end);
+
+	assert.match(replacementSource, /crabfleet_session_id = \?/);
+	assert.match(replacementSource, /crabfleet_root_session_id = \?/);
+	assert.match(replacementSource, /room_runtime_leases/);
+	assert.match(replacementSource, /lease_id = \?/);
+	assert.match(replacementSource, /expires_at > \?/);
+	assert.match(replacementSource, /status IN/);
+	assert.match(replacementSource, /previousSessionId/);
+});
+
 test("room creation persists the resolved repository base branch", async () => {
 	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
 	const start = source.indexOf("export async function createRoom");
