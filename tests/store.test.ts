@@ -344,6 +344,7 @@ test("failed launch reset rotates the provisioning replay generation", async () 
 	assert.match(resetSource, /brief_revision = \?/);
 	assert.match(resetSource, /AND brief_revision = \?/);
 	assert.match(resetSource, /root_provisioning_attempted_at = NULL/);
+	assert.match(resetSource, /root_provisioning_request_json = NULL/);
 	assert.match(resetSource, /INSERT OR IGNORE INTO room_runtime_redactions/);
 	assert.match(resetSource, /expectedStatuses/);
 	assert.match(resetSource, /return roomResult\?\.meta\.changes === 1/);
@@ -376,9 +377,13 @@ test("root provisioning attempts are durable before external creation", async ()
 	const attemptSource = source.slice(start, end);
 
 	assert.match(attemptSource, /root_provisioning_attempted_at/);
+	assert.match(attemptSource, /root_provisioning_request_json = COALESCE/);
+	assert.match(attemptSource, /root_provisioning_request_json IS NULL/);
+	assert.match(attemptSource, /root_provisioning_request_json = \?/);
 	assert.match(attemptSource, /status = 'provisioning'/);
 	assert.match(attemptSource, /brief_revision = \?/);
 	assert.match(attemptSource, /roomRootProvisioningAttempted/);
+	assert.match(attemptSource, /readRoomRootProvisioningRequest/);
 });
 
 test("conductor claims atomically enforce room cooldown and hourly budget", async () => {

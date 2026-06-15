@@ -7,7 +7,7 @@ import {
 	participantStateForCrabfleetStatus,
 	provisionRoomCrabboxes,
 	readRoomCrabboxes,
-	recoverRoomRootCrabbox,
+	roomRootCrabboxRequest,
 	sendCrabboxNudge,
 	stopRoomCrabboxes,
 } from "./crabfleet.ts";
@@ -24,6 +24,11 @@ import {
 import { planForBrief, planForParticipants } from "./planning.ts";
 import { repoAllowed } from "./repos.ts";
 import { runtimeRedactor } from "./runtime-redaction.ts";
+import {
+	cleanupActionLeaseMilliseconds,
+	provisioningLeaseMilliseconds,
+	recoverPersistedRoomRootCrabbox,
+} from "./runtime-cleanup.ts";
 import {
 	roomAllowsPlanning,
 	roomAllowsPresentation,
@@ -58,7 +63,6 @@ import {
 	markRoomCleanup,
 	readRoomMessagesPage,
 	readRoomSnapshot,
-	recordRoomCleanupAttempt,
 	recordProvisioningBinding,
 	refreshProvisioningBinding,
 	releaseRoomCreationReservation,
@@ -100,15 +104,11 @@ const scopeChangeStatuses: RoomStatus[] = [
 ];
 const runtimeRefreshStatuses: RoomStatus[] = ["building", "integrating", "presenting"];
 const runtimeNudgeStatuses: RoomStatus[] = ["building", "integrating"];
-const provisioningLeaseMilliseconds = 5 * 60 * 1000;
 const runtimeActionLeaseMilliseconds = 30_000;
-const cleanupActionLeaseMilliseconds = 2 * 60 * 1000;
 const roomCreationReservationMilliseconds = 60_000;
 const prelaunchInactivityMilliseconds = 6 * 60 * 60 * 1000;
 const scheduledReconciliationBudgetMilliseconds = 8 * 60 * 1000;
 const prelaunchExpiryBatchSize = 1;
-const runtimeCleanupBatchSize = 1;
-const runtimeCleanupConcurrency = 1;
 const roomMessageBudgetWindowMilliseconds = 10_000;
 const maxRoomMessagesPerParticipantWindow = 10;
 
@@ -513,8 +513,21 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		};
 		try {
 			await ensureRoomBranches(env, snapshot.room, snapshot.participants, renewLaunchLease);
-			if (!(await markRootProvisioningAttempt(env.DB, roomId, launchRevision))) {
-				throw new HttpError(409, "room launch was cancelled");
+			const rootRequest = roomRootCrabboxRequest(
+				env,
+				snapshot.room,
+				snapshot.participants,
+				snapshot.tasks,
+			);
+			if (
+				!(await markRootProvisioningAttempt(
+					env.DB,
+					roomId,
+					launchRevision,
+					JSON.stringify(rootRequest),
+				))
+			) {
+				throw new AmbiguousRootProvisioningError();
 			}
 			bindings = await provisionRoomCrabboxes(
 				env,
@@ -537,6 +550,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 						throw new HttpError(409, "room launch was cancelled");
 					}
 				},
+				rootRequest,
 			);
 			const rootSessionId =
 				bindings[0]?.binding.session.rootSessionId || bindings[0]?.binding.session.id;
@@ -748,13 +762,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 				!snapshot.room.crabfleetRootSessionId &&
 				(await roomRootProvisioningAttempted(env.DB, roomId))
 			) {
-				requireRuntimeRecoveryRepo(env, snapshot.room);
-				const root = await recoverRoomRootCrabbox(
-					env,
-					snapshot.room,
-					snapshot.participants,
-					snapshot.tasks,
-				);
+				const root = await recoverPersistedRoomRootCrabbox(env, snapshot);
 				if (
 					!(await markRoomCleanup(
 						env.DB,
@@ -840,13 +848,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 			snapshot = await readRoomSnapshot(env.DB, roomId);
 			context.waitUntil(broadcastSnapshot(env, snapshot));
 			if (!snapshot.room.crabfleetRootSessionId && runtimeMayExist) {
-				requireRuntimeRecoveryRepo(env, snapshot.room);
-				const root = await recoverRoomRootCrabbox(
-					env,
-					snapshot.room,
-					snapshot.participants,
-					snapshot.tasks,
-				);
+				const root = await recoverPersistedRoomRootCrabbox(env, snapshot);
 				if (
 					!(await markRoomCleanup(
 						env.DB,
@@ -964,218 +966,28 @@ async function reconcileRooms(env: Env): Promise<void> {
 		env.DB,
 		now,
 		now - provisioningLeaseMilliseconds,
-		runtimeCleanupBatchSize,
+		activeRoomLimit(env.MAX_ACTIVE_ROOMS),
 	);
 	await reconcileRuntimeRooms(env, roomIds, deadline);
 }
 
 async function reconcileRuntimeRooms(env: Env, roomIds: string[], deadline: number): Promise<void> {
-	let nextIndex = 0;
 	await Promise.all(
-		Array.from({ length: Math.min(runtimeCleanupConcurrency, roomIds.length) }, async () => {
-			while (Date.now() < deadline) {
-				const roomId = roomIds[nextIndex++];
-				if (!roomId) return;
-				try {
-					await reconcileRuntimeRoom(env, roomId);
-				} catch (error) {
-					console.error(
-						JSON.stringify({
-							event: "room_cleanup_reconciliation_failed",
-							roomId,
-							message: error instanceof Error ? error.message : "unknown error",
-						}),
-					);
-				} finally {
-					try {
-						await recordRoomCleanupAttempt(env.DB, roomId, Date.now());
-					} catch (error) {
-						console.error(
-							JSON.stringify({
-								event: "room_cleanup_attempt_rotation_failed",
-								roomId,
-								message: error instanceof Error ? error.message : "unknown error",
-							}),
-						);
-					}
-				}
+		roomIds.map(async (roomId) => {
+			if (Date.now() >= deadline) return;
+			try {
+				await env.ROOM_HUB.getByName(roomId).reconcileRuntime(roomId);
+			} catch (error) {
+				console.error(
+					JSON.stringify({
+						event: "room_cleanup_reconciliation_failed",
+						roomId,
+						message: error instanceof Error ? error.message : "unknown error",
+					}),
+				);
 			}
 		}),
 	);
-}
-
-async function reconcileRuntimeRoom(env: Env, roomId: string): Promise<void> {
-	let snapshot = await readRoomSnapshot(env.DB, roomId);
-	const now = Date.now();
-	const cleanupPending =
-		snapshot.room.status === "cleanup-planning" || snapshot.room.status === "cleanup-ending";
-	const expired = snapshot.room.endsAt !== null && snapshot.room.endsAt <= now;
-	const provisioningStale =
-		snapshot.room.status === "provisioning" &&
-		snapshot.room.updatedAt <= now - provisioningLeaseMilliseconds;
-	if (!cleanupPending && !expired && !provisioningStale) return;
-	if (snapshot.room.status === "cleanup-planning" && !expired) {
-		await reconcileFailedLaunchCleanup(env, roomId);
-		return;
-	}
-	if (snapshot.room.status === "provisioning") {
-		if (
-			!(await claimStaleProvisioningCleanup(env.DB, roomId, now - provisioningLeaseMilliseconds))
-		) {
-			return;
-		}
-		snapshot = await readRoomSnapshot(env.DB, roomId);
-		if (!expired) {
-			await reconcileFailedLaunchCleanup(env, roomId);
-			return;
-		}
-	}
-	const runtimeMayExist =
-		snapshot.room.crabfleetRootSessionId !== null ||
-		(await roomRootProvisioningAttempted(env.DB, roomId));
-	const expectedStatuses: RoomStatus[] = [
-		"building",
-		"integrating",
-		"presenting",
-		"cleanup-planning",
-		"cleanup-ending",
-	];
-	const cleanupLeaseId = await beginRoomCleanup(
-		env.DB,
-		roomId,
-		snapshot.room.crabfleetRootSessionId,
-		expectedStatuses,
-		cleanupActionLeaseMilliseconds,
-	);
-	if (!cleanupLeaseId) return;
-	try {
-		snapshot = await readRoomSnapshot(env.DB, roomId);
-		if (!snapshot.room.crabfleetRootSessionId && runtimeMayExist) {
-			requireRuntimeRecoveryRepo(env, snapshot.room);
-			const root = await recoverRoomRootCrabbox(
-				env,
-				snapshot.room,
-				snapshot.participants,
-				snapshot.tasks,
-			);
-			if (
-				!(await markRoomCleanup(
-					env.DB,
-					roomId,
-					snapshot.room.briefRevision,
-					root.binding.session.rootSessionId || root.binding.session.id,
-					"cleanup-ending",
-					["cleanup-ending"],
-					[
-						{
-							participantId: root.participantId,
-							sessionId: root.binding.session.id,
-							browserUrl: root.binding.browserUrl,
-							summary: root.binding.session.summary,
-							state: participantStateForCrabfleetStatus(root.binding.session.status, "joined"),
-						},
-					],
-				))
-			) {
-				throw new HttpError(409, "room cleanup state changed during root recovery");
-			}
-			snapshot = await readRoomSnapshot(env.DB, roomId);
-		}
-		if (snapshot.room.crabfleetRootSessionId) {
-			await stopRoomCrabboxes(
-				env,
-				snapshot.room.crabfleetRootSessionId,
-				snapshot.participants.flatMap((item) =>
-					item.crabfleetSessionId ? [item.crabfleetSessionId] : [],
-				),
-			);
-		}
-		if (await endRoom(env.DB, roomId)) {
-			await addMessage(env.DB, roomId, {
-				authorKind: "conductor",
-				authorId: "conductor",
-				targetKind: "room",
-				targetId: null,
-				body: expired
-					? "Sprint expired. Workspaces were stopped and the final state was preserved."
-					: "Room cleanup completed. The final state was preserved.",
-				replyToId: null,
-			});
-		}
-	} finally {
-		await releaseRoomRuntimeLease(env.DB, roomId, cleanupLeaseId);
-		await broadcastSnapshot(env, await readRoomSnapshot(env.DB, roomId));
-	}
-}
-
-async function reconcileFailedLaunchCleanup(env: Env, roomId: string): Promise<void> {
-	const cleanupLeaseId = await claimRoomRuntimeLease(
-		env.DB,
-		roomId,
-		"launch_cleanup",
-		["cleanup-planning"],
-		cleanupActionLeaseMilliseconds,
-	);
-	if (!cleanupLeaseId) return;
-	try {
-		let snapshot = await readRoomSnapshot(env.DB, roomId);
-		if (
-			!snapshot.room.crabfleetRootSessionId &&
-			(await roomRootProvisioningAttempted(env.DB, roomId))
-		) {
-			requireRuntimeRecoveryRepo(env, snapshot.room);
-			const root = await recoverRoomRootCrabbox(
-				env,
-				snapshot.room,
-				snapshot.participants,
-				snapshot.tasks,
-			);
-			if (
-				!(await markRoomCleanup(
-					env.DB,
-					roomId,
-					snapshot.room.briefRevision,
-					root.binding.session.rootSessionId || root.binding.session.id,
-					"cleanup-planning",
-					["cleanup-planning"],
-					[
-						{
-							participantId: root.participantId,
-							sessionId: root.binding.session.id,
-							browserUrl: root.binding.browserUrl,
-							summary: root.binding.session.summary,
-							state: participantStateForCrabfleetStatus(root.binding.session.status, "joined"),
-						},
-					],
-				))
-			) {
-				throw new HttpError(409, "launch cleanup state changed during root recovery");
-			}
-			snapshot = await readRoomSnapshot(env.DB, roomId);
-		}
-		if (snapshot.room.crabfleetRootSessionId) {
-			await stopRoomCrabboxes(
-				env,
-				snapshot.room.crabfleetRootSessionId,
-				snapshot.participants.flatMap((item) =>
-					item.crabfleetSessionId ? [item.crabfleetSessionId] : [],
-				),
-			);
-		}
-		if (
-			!(await resetRoomProvisioning(
-				env.DB,
-				roomId,
-				["cleanup-planning"],
-				snapshot.room.briefRevision,
-			))
-		) {
-			throw new HttpError(409, "launch cleanup state changed before reset");
-		}
-	} finally {
-		await releaseRoomRuntimeLease(env.DB, roomId, cleanupLeaseId);
-		await broadcastSnapshot(env, await readRoomSnapshot(env.DB, roomId));
-	}
 }
 
 function participantsWithAssignments(
@@ -1189,12 +1001,6 @@ function participantsWithAssignments(
 		...participant,
 		roleId: roles.get(participant.id) ?? participant.roleId,
 	}));
-}
-
-function requireRuntimeRecoveryRepo(env: Env, room: RoomSnapshot["room"]): void {
-	if (!repoAllowed(room.repo, env.ALLOWED_REPOS, env.DEFAULT_REPO)) {
-		throw new HttpError(409, "room repo must be re-enabled before runtime cleanup can continue");
-	}
 }
 
 async function requireHost(db: D1Database, roomId: string, token: string): Promise<Participant> {

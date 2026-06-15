@@ -17,6 +17,8 @@ import {
 	sameOriginWebSocketRequest,
 	type SocketRateState,
 } from "./socket-admission.ts";
+import { reconcileRuntimeRoom } from "./runtime-cleanup.ts";
+import { recordRoomCleanupAttempt } from "./store.ts";
 
 export class RoomHub extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
@@ -61,6 +63,18 @@ export class RoomHub extends DurableObject<Env> {
 			now + 30_000,
 		);
 		return ticket;
+	}
+
+	async reconcileRuntime(roomId: string): Promise<void> {
+		try {
+			await reconcileRuntimeRoom(this.env, roomId);
+		} finally {
+			try {
+				await recordRoomCleanupAttempt(this.env.DB, roomId, Date.now());
+			} finally {
+				this.broadcast(JSON.stringify({ type: "changed", roomId, at: Date.now() }));
+			}
+		}
 	}
 
 	async fetch(request: Request): Promise<Response> {

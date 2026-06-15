@@ -15,6 +15,26 @@ export type CrabboxBinding = {
 	browserUrl: string;
 };
 
+type CrabboxCreateRequest = {
+	owner: string;
+	repo: string;
+	branch: string;
+	baseBranch: string;
+	requestId: string;
+	runtime: "container" | "crabbox";
+	profile: string;
+	parentSessionId?: string;
+	rootSessionId?: string;
+	purpose: string;
+	summary: string;
+	prompt: string;
+};
+
+export type RootCrabboxRequest = {
+	participantId: string;
+	body: Omit<CrabboxCreateRequest, "parentSessionId" | "rootSessionId">;
+};
+
 export type ParticipantCrabboxBinding = { participantId: string; binding: CrabboxBinding };
 export type ProvisioningBindingObserver = (
 	item: ParticipantCrabboxBinding,
@@ -82,6 +102,7 @@ export async function provisionRoomCrabboxes(
 	participants: Participant[],
 	tasks: Task[],
 	onBinding?: ProvisioningBindingObserver,
+	rootRequest?: RootCrabboxRequest,
 ): Promise<ParticipantCrabboxBinding[]> {
 	const active = participants.filter((participant) => participant.kind !== "observer");
 	const host = active.find((participant) => participant.id === room.hostParticipantId) ?? active[0];
@@ -98,27 +119,30 @@ export async function provisionRoomCrabboxes(
 		`multicodex:${room.id}:${room.briefRevision}:${participantId}`;
 	const bindings: ParticipantCrabboxBinding[] = [];
 	try {
-		const root = await recoverRoomRootCrabbox(env, room, active, tasks);
+		const root = await recoverRoomRootCrabbox(env, room, active, tasks, rootRequest);
 		bindings.push(root);
 		await onBinding?.(bindings[0]!, bindings, "created");
 		for (const participant of active.filter((item) => item.id !== host.id)) {
 			const task = tasks.find((item) => item.ownerParticipantId === participant.id);
 			const item = {
 				participantId: participant.id,
-				binding: await createCrabbox(env, {
-					owner,
-					repo: room.repo,
-					branch: participant.branch || room.integrationBranch,
-					baseBranch: room.baseBranch,
-					requestId: requestId(participant.id),
-					parentSessionId: root.binding.session.id,
-					rootSessionId: root.binding.session.id,
-					purpose: task?.title || participant.roleId || "room task",
-					summary: "starting assigned task",
-					prompt: task
-						? taskPrompt(room.brief, participant, task)
-						: "Complete your assigned room task.",
-				}),
+				binding: await createCrabbox(
+					env,
+					crabboxCreateRequest(env, {
+						owner,
+						repo: room.repo,
+						branch: participant.branch || room.integrationBranch,
+						baseBranch: room.baseBranch,
+						requestId: requestId(participant.id),
+						parentSessionId: root.binding.session.id,
+						rootSessionId: root.binding.session.id,
+						purpose: task?.title || participant.roleId || "room task",
+						summary: "starting assigned task",
+						prompt: task
+							? taskPrompt(room.brief, participant, task)
+							: "Complete your assigned room task.",
+					}),
+				),
 			};
 			bindings.push(item);
 			await onBinding?.(item, bindings, "created");
@@ -140,6 +164,7 @@ export async function recoverRoomRootCrabbox(
 	room: Room,
 	participants: Participant[],
 	tasks: Task[],
+	rootRequest?: RootCrabboxRequest,
 ): Promise<ParticipantCrabboxBinding> {
 	const active = participants.filter((participant) => participant.kind !== "observer");
 	const host = active.find((participant) => participant.id === room.hostParticipantId) ?? active[0];
@@ -149,10 +174,29 @@ export async function recoverRoomRootCrabbox(
 	}
 	if (!env.CRABFLEET_SERVICE_TOKEN)
 		throw new HttpError(503, "Crabfleet service token is not configured");
+	const request = rootRequest ?? roomRootCrabboxRequest(env, room, participants, tasks);
+	if (request.participantId !== host.id) {
+		throw new HttpError(409, "persisted root Crabfleet request does not match the room host");
+	}
+	return {
+		participantId: request.participantId,
+		binding: await createCrabbox(env, request.body),
+	};
+}
+
+export function roomRootCrabboxRequest(
+	env: Env,
+	room: Room,
+	participants: Participant[],
+	tasks: Task[],
+): RootCrabboxRequest {
+	const active = participants.filter((participant) => participant.kind !== "observer");
+	const host = active.find((participant) => participant.id === room.hostParticipantId) ?? active[0];
+	if (!host) throw new HttpError(400, "room has no active participant");
 	const hostTask = tasks.find((task) => task.ownerParticipantId === host.id);
 	return {
 		participantId: host.id,
-		binding: await createCrabbox(env, {
+		body: crabboxCreateRequest(env, {
 			owner: crabfleetOwner(env.CRABFLEET_OWNER),
 			repo: room.repo,
 			branch: host.branch || room.integrationBranch,
@@ -164,6 +208,40 @@ export async function recoverRoomRootCrabbox(
 				? taskPrompt(room.brief, host, hostTask)
 				: "Coordinate the room integration.",
 		}),
+	};
+}
+
+export function parseRootCrabboxRequest(value: string): RootCrabboxRequest {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(value);
+	} catch {
+		throw new HttpError(409, "persisted root Crabfleet request is invalid");
+	}
+	if (!isRecord(parsed) || !isRecord(parsed.body)) {
+		throw new HttpError(409, "persisted root Crabfleet request is invalid");
+	}
+	const participantId = nonEmptyString(parsed.participantId);
+	const body = parsed.body;
+	const runtime = body.runtime === "container" || body.runtime === "crabbox" ? body.runtime : null;
+	const request = {
+		owner: nonEmptyString(body.owner),
+		repo: nonEmptyString(body.repo),
+		branch: nonEmptyString(body.branch),
+		baseBranch: nonEmptyString(body.baseBranch),
+		requestId: nonEmptyString(body.requestId),
+		runtime,
+		profile: nonEmptyString(body.profile),
+		purpose: nonEmptyString(body.purpose),
+		summary: nonEmptyString(body.summary),
+		prompt: nonEmptyString(body.prompt),
+	};
+	if (!participantId || Object.values(request).some((item) => item === null)) {
+		throw new HttpError(409, "persisted root Crabfleet request is invalid");
+	}
+	return {
+		participantId,
+		body: request as RootCrabboxRequest["body"],
 	};
 }
 
@@ -303,28 +381,10 @@ function delay(milliseconds: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function createCrabbox(
-	env: Env,
-	body: {
-		owner: string;
-		repo: string;
-		branch: string;
-		baseBranch: string;
-		requestId: string;
-		parentSessionId?: string;
-		rootSessionId?: string;
-		purpose: string;
-		summary: string;
-		prompt: string;
-	},
-): Promise<CrabboxBinding> {
+async function createCrabbox(env: Env, body: CrabboxCreateRequest): Promise<CrabboxBinding> {
 	const response = await crabfleetFetch(env, "/api/openclaw/crabboxes", {
 		method: "POST",
-		body: JSON.stringify({
-			...body,
-			runtime: crabfleetRuntime(env.CRABFLEET_RUNTIME),
-			profile: env.CRABFLEET_PROFILE || "default",
-		}),
+		body: JSON.stringify(body),
 		headers: { "content-type": "application/json" },
 	});
 	return validatedCrabboxBinding(
@@ -332,6 +392,17 @@ async function createCrabbox(
 		body.rootSessionId,
 		!body.parentSessionId,
 	);
+}
+
+function crabboxCreateRequest(
+	env: Env,
+	body: Omit<CrabboxCreateRequest, "runtime" | "profile">,
+): CrabboxCreateRequest {
+	return {
+		...body,
+		runtime: crabfleetRuntime(env.CRABFLEET_RUNTIME),
+		profile: env.CRABFLEET_PROFILE || "default",
+	};
 }
 
 async function crabfleetFetch(env: Env, path: string, init: RequestInit = {}): Promise<Response> {

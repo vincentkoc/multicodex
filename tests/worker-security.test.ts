@@ -122,11 +122,12 @@ test("cleanup retry preserves failed launches while end excludes unsafe lifecycl
 	assert.match(retrySource, /resetRoomProvisioning/);
 	assert.match(retrySource, /claimStaleProvisioningCleanup/);
 	assert.match(retrySource, /roomRootProvisioningAttempted/);
-	assert.match(retrySource, /recoverRoomRootCrabbox/);
+	assert.match(retrySource, /recoverPersistedRoomRootCrabbox/);
 	assert.match(retrySource, /claimRoomRuntimeLease/);
 	assert.match(retrySource, /finally \{\s*await releaseRoomRuntimeLease/);
 	assert.ok(
-		retrySource.indexOf("recoverRoomRootCrabbox") < retrySource.indexOf("resetRoomProvisioning"),
+		retrySource.indexOf("recoverPersistedRoomRootCrabbox") <
+			retrySource.indexOf("resetRoomProvisioning"),
 	);
 	assert.match(retrySource, /room provisioning is still active/);
 	assert.doesNotMatch(endSource, /"cleanup-planning"/);
@@ -138,7 +139,9 @@ test("cleanup retry preserves failed launches while end excludes unsafe lifecycl
 	);
 	assert.match(endSource, /beginRoomCleanup/);
 	assert.match(endSource, /const runtimeMayExist/);
-	assert.ok(endSource.indexOf("recoverRoomRootCrabbox") < endSource.indexOf("await endRoom"));
+	assert.ok(
+		endSource.indexOf("recoverPersistedRoomRootCrabbox") < endSource.indexOf("await endRoom"),
+	);
 	assert.match(endSource, /cleanupActionLeaseMilliseconds/);
 	assert.match(endSource, /if \(await endRoom\(env\.DB, roomId\)\)/);
 	assert.match(endSource, /finally \{\s*await releaseRoomRuntimeLease/);
@@ -400,10 +403,12 @@ test("local dev enables simulation without changing the production default", asy
 	);
 });
 
-test("scheduled reconciliation expires inactive planning and runtime rooms", async () => {
-	const [worker, config] = await Promise.all([
+test("scheduled reconciliation fans runtime cleanup across per-room invocations", async () => {
+	const [worker, config, roomHub, runtimeCleanup] = await Promise.all([
 		readFile(new URL("../src/worker.ts", import.meta.url), "utf8"),
 		readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
+		readFile(new URL("../src/room-hub.ts", import.meta.url), "utf8"),
+		readFile(new URL("../src/runtime-cleanup.ts", import.meta.url), "utf8"),
 	]);
 	const start = worker.indexOf("async function reconcileRooms");
 	const end = worker.indexOf("function participantsWithAssignments", start);
@@ -418,41 +423,35 @@ test("scheduled reconciliation expires inactive planning and runtime rooms", asy
 	assert.match(expirySource, /listRuntimeRoomIdsNeedingCleanup/);
 	assert.match(expirySource, /scheduledReconciliationBudgetMilliseconds/);
 	assert.match(worker, /const prelaunchExpiryBatchSize = 1/);
-	assert.match(worker, /const runtimeCleanupBatchSize = 1/);
-	assert.match(worker, /const runtimeCleanupConcurrency = 1/);
-	assert.match(expirySource, /runtimeCleanupBatchSize/);
-	assert.match(expirySource, /runtimeCleanupConcurrency/);
-	assert.match(expirySource, /Date\.now\(\) < deadline/);
+	assert.doesNotMatch(worker, /runtimeCleanupBatchSize|runtimeCleanupConcurrency/);
+	assert.match(expirySource, /activeRoomLimit\(env\.MAX_ACTIVE_ROOMS\)/);
+	assert.match(expirySource, /Date\.now\(\) >= deadline/);
 	assert.match(expirySource, /Promise\.all/);
-	assert.match(expirySource, /finally \{\s*try \{\s*await recordRoomCleanupAttempt/);
-	assert.match(expirySource, /provisioningStale/);
-	assert.match(expirySource, /claimStaleProvisioningCleanup/);
-	assert.match(expirySource, /beginRoomCleanup/);
-	assert.match(expirySource, /reconcileFailedLaunchCleanup/);
-	assert.match(expirySource, /roomRootProvisioningAttempted/);
-	assert.match(expirySource, /recoverRoomRootCrabbox/);
-	assert.match(expirySource, /stopRoomCrabboxes/);
-	assert.match(expirySource, /resetRoomProvisioning/);
-	assert.match(expirySource, /await endRoom/);
-	assert.match(expirySource, /finally \{\s*await releaseRoomRuntimeLease/);
-	const failedCleanupStart = expirySource.indexOf("async function reconcileFailedLaunchCleanup");
-	const failedCleanupSource = expirySource.slice(failedCleanupStart);
-	assert.ok(
-		failedCleanupSource.indexOf("requireRuntimeRecoveryRepo") <
-			failedCleanupSource.indexOf("recoverRoomRootCrabbox"),
-	);
+	assert.match(expirySource, /env\.ROOM_HUB\.getByName\(roomId\)\.reconcileRuntime\(roomId\)/);
+	assert.match(roomHub, /async reconcileRuntime\(roomId: string\)/);
+	assert.match(roomHub, /await reconcileRuntimeRoom\(this\.env, roomId\)/);
+	assert.match(roomHub, /await recordRoomCleanupAttempt\(this\.env\.DB, roomId, Date\.now\(\)\)/);
+	assert.match(runtimeCleanup, /provisioningStale/);
+	assert.match(runtimeCleanup, /claimStaleProvisioningCleanup/);
+	assert.match(runtimeCleanup, /beginRoomCleanup/);
+	assert.match(runtimeCleanup, /reconcileFailedLaunchCleanup/);
+	assert.match(runtimeCleanup, /roomRootProvisioningAttempted/);
+	assert.match(runtimeCleanup, /recoverPersistedRoomRootCrabbox/);
+	assert.match(runtimeCleanup, /stopRoomCrabboxes/);
+	assert.match(runtimeCleanup, /resetRoomProvisioning/);
+	assert.match(runtimeCleanup, /await endRoom/);
+	assert.match(runtimeCleanup, /finally \{\s*await releaseRoomRuntimeLease/);
 	assert.match(
-		worker,
+		runtimeCleanup,
 		/function requireRuntimeRecoveryRepo[\s\S]*repoAllowed[\s\S]*room repo must be re-enabled before runtime cleanup can continue/,
 	);
-	const recoveryCalls = [...worker.matchAll(/const root = await recoverRoomRootCrabbox/g)];
+	assert.match(runtimeCleanup, /readRoomRootProvisioningRequest/);
+	assert.match(runtimeCleanup, /parseRootCrabboxRequest\(persisted\)/);
+	const recoverySource = `${worker}\n${runtimeCleanup}`;
+	const recoveryCalls = [
+		...recoverySource.matchAll(/const root = await recoverPersistedRoomRootCrabbox/g),
+	];
 	assert.equal(recoveryCalls.length, 4);
-	for (const recovery of recoveryCalls) {
-		assert.match(
-			worker.slice(Math.max(0, recovery.index - 400), recovery.index),
-			/requireRuntimeRecoveryRepo\(/,
-		);
-	}
 });
 
 test("launch preparation renews provisioning while GitHub branches are created", async () => {
@@ -468,7 +467,13 @@ test("launch preparation renews provisioning while GitHub branches are created",
 	assert.match(launchSource, /nextProvisioningLeaseRenewalAt/);
 	assert.match(launchSource, /Math\.floor\(provisioningLeaseMilliseconds \/ 2\)/);
 	assert.match(launchSource, /renewProvisioningLease\(env\.DB, roomId, launchRevision\)/);
-	assert.match(launchSource, /markRootProvisioningAttempt\(env\.DB, roomId, launchRevision\)/);
+	assert.match(launchSource, /const rootRequest = roomRootCrabboxRequest/);
+	assert.match(launchSource, /markRootProvisioningAttempt\([\s\S]*JSON\.stringify\(rootRequest\)/);
+	assert.match(
+		launchSource,
+		/markRootProvisioningAttempt\([\s\S]*throw new AmbiguousRootProvisioningError/,
+	);
+	assert.match(launchSource, /bindings = await provisionRoomCrabboxes\([\s\S]*rootRequest/);
 	assert.match(
 		launchSource,
 		/stage === "created" \? recordProvisioningBinding : refreshProvisioningBinding/,
@@ -476,6 +481,10 @@ test("launch preparation renews provisioning while GitHub branches are created",
 	assert.match(launchSource, /\["provisioning"\],\s*launchRevision/);
 	assert.match(launchSource, /completeRoomProvisioning\(env\.DB, roomId, launchRevision/);
 	assert.match(launchSource, /context\.waitUntil\(broadcastSnapshot\(env, snapshot\)\)/);
+	assert.ok(
+		launchSource.indexOf("const rootRequest = roomRootCrabboxRequest") <
+			launchSource.indexOf("markRootProvisioningAttempt"),
+	);
 	assert.ok(
 		launchSource.indexOf("markRootProvisioningAttempt") <
 			launchSource.indexOf("bindings = await provisionRoomCrabboxes"),

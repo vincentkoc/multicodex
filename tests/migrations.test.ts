@@ -98,3 +98,12 @@ test("participant chat budgets are durable per room seat", async () => {
 	assert.match(migration, /window_started_at INTEGER NOT NULL/);
 	assert.match(migration, /message_count INTEGER NOT NULL/);
 });
+
+test("root provisioning requests preserve exact replay inputs", async () => {
+	const migration = await readFile(
+		new URL("../migrations/0014_root_provisioning_requests.sql", import.meta.url),
+		"utf8",
+	);
+
+	assert.match(migration, /root_provisioning_request_json TEXT/);
+});

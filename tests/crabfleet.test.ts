@@ -7,11 +7,13 @@ import {
 	crabfleetRuntime,
 	crabfleetSimulationEnabled,
 	participantStateForCrabfleetStatus,
+	parseRootCrabboxRequest,
 	PartialProvisioningError,
 	provisionRoomCrabboxes,
 	readRoomCrabboxes,
 	readinessPollDelays,
 	recoverRoomRootCrabbox,
+	roomRootCrabboxRequest,
 	sendCrabboxNudge,
 	stopRoomCrabboxes,
 } from "../src/crabfleet.ts";
@@ -111,37 +113,78 @@ test("partial room provisioning returns every created session for durable cleanu
 	assert.deepEqual(persistedStages, ["created", "created"]);
 });
 
-test("ambiguous root provisioning remains replayable after a stale cleanup claim", async () => {
+test("ambiguous root provisioning replays the persisted request after config drift", async () => {
 	const originalFetch = globalThis.fetch;
 	const requestIds: string[] = [];
+	const requestBodies: unknown[] = [];
 	let attempts = 0;
 	globalThis.fetch = async (_input, init) => {
 		attempts += 1;
-		requestIds.push((JSON.parse(String(init?.body)) as { requestId: string }).requestId);
+		const body = JSON.parse(String(init?.body)) as { requestId: string };
+		requestIds.push(body.requestId);
+		requestBodies.push(body);
 		if (attempts === 1) throw new Error("response lost");
 		return Response.json(crabbox("root", "ready"));
 	};
+	const originalEnv = {
+		CRABFLEET_OWNER: "Original Owner",
+		CRABFLEET_PROFILE: "original-profile",
+		CRABFLEET_RUNTIME: "container",
+		CRABFLEET_SERVICE_TOKEN: "test",
+	} as unknown as Env;
+	const persisted = JSON.stringify(
+		roomRootCrabboxRequest(originalEnv, room, [participant("host")], []),
+	);
 	try {
 		await assert.rejects(
 			provisionRoomCrabboxes(
-				{ CRABFLEET_SERVICE_TOKEN: "test" } as Env,
+				originalEnv,
 				room,
 				[participant("host")],
 				[],
+				undefined,
+				parseRootCrabboxRequest(persisted),
 			),
 			(error) => error instanceof AmbiguousRootProvisioningError,
 		);
 		const recovered = await recoverRoomRootCrabbox(
-			{ CRABFLEET_SERVICE_TOKEN: "test" } as Env,
+			{
+				CRABFLEET_OWNER: "Changed Owner",
+				CRABFLEET_PROFILE: "changed-profile",
+				CRABFLEET_RUNTIME: "crabbox",
+				CRABFLEET_SERVICE_TOKEN: "test",
+			} as unknown as Env,
 			{ ...room, updatedAt: 999 },
 			[participant("host")],
 			[],
+			parseRootCrabboxRequest(persisted),
 		);
 		assert.equal(recovered.binding.session.id, "root");
 	} finally {
 		globalThis.fetch = originalFetch;
 	}
 	assert.deepEqual(requestIds, ["multicodex:room:1:host", "multicodex:room:1:host"]);
+	assert.deepEqual(requestBodies[1], requestBodies[0]);
+});
+
+test("persisted root requests fail closed when corrupted", () => {
+	assert.throws(() => parseRootCrabboxRequest("{}"), /persisted root Crabfleet request is invalid/);
+	assert.throws(
+		() => parseRootCrabboxRequest('{"participantId":"host","body":{"runtime":"unknown"}}'),
+		/persisted root Crabfleet request is invalid/,
+	);
+});
+
+test("persisted root requests remain bound to the room host", async () => {
+	const env = { CRABFLEET_SERVICE_TOKEN: "test" } as Env;
+	const request = roomRootCrabboxRequest(env, room, [participant("host")], []);
+	await assert.rejects(
+		recoverRoomRootCrabbox(env, room, [participant("host")], [], {
+			...request,
+			participantId: "other",
+		}),
+		/does not match the room host/,
+	);
 });
 
 test("Crabfleet create responses require a valid workspace binding", async () => {

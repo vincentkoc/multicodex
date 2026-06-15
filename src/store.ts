@@ -26,6 +26,7 @@ type RoomRow = {
 	integration_branch: string;
 	crabfleet_root_session_id: string | null;
 	root_provisioning_attempted_at: number | null;
+	root_provisioning_request_json: string | null;
 	creation_request_id: string | null;
 	builder_invite_token: string | null;
 	brief_json: string;
@@ -870,7 +871,7 @@ export async function resetRoomProvisioning(
 			.prepare(
 				`UPDATE rooms
 	         SET status = 'planning', started_at = NULL, ends_at = NULL, crabfleet_root_session_id = NULL,
-	             root_provisioning_attempted_at = NULL,
+	             root_provisioning_attempted_at = NULL, root_provisioning_request_json = NULL,
 	             brief_json = json_set(brief_json, '$.planApproved', json('false')),
 	             brief_revision = ?, updated_at = ?
 	         WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})
@@ -1016,16 +1017,19 @@ export async function markRootProvisioningAttempt(
 	db: D1Database,
 	roomId: string,
 	expectedBriefRevision: number,
+	requestJson: string,
 ): Promise<boolean> {
 	const now = Date.now();
 	const result = await db
 		.prepare(
 			`UPDATE rooms
        SET root_provisioning_attempted_at = COALESCE(root_provisioning_attempted_at, ?),
+           root_provisioning_request_json = COALESCE(root_provisioning_request_json, ?),
            updated_at = ?
-	       WHERE id = ? AND status = 'provisioning' AND brief_revision = ?`,
+	       WHERE id = ? AND status = 'provisioning' AND brief_revision = ?
+	         AND (root_provisioning_request_json IS NULL OR root_provisioning_request_json = ?)`,
 		)
-		.bind(now, now, roomId, expectedBriefRevision)
+		.bind(now, requestJson, now, roomId, expectedBriefRevision, requestJson)
 		.run();
 	return result.meta.changes === 1;
 }
@@ -1039,6 +1043,17 @@ export async function roomRootProvisioningAttempted(
 		.bind(roomId)
 		.first<{ root_provisioning_attempted_at: number | null }>();
 	return room?.root_provisioning_attempted_at != null;
+}
+
+export async function readRoomRootProvisioningRequest(
+	db: D1Database,
+	roomId: string,
+): Promise<string | null> {
+	const room = await db
+		.prepare("SELECT root_provisioning_request_json FROM rooms WHERE id = ?")
+		.bind(roomId)
+		.first<{ root_provisioning_request_json: string | null }>();
+	return room?.root_provisioning_request_json ?? null;
 }
 
 export async function markRoomCleanup(
