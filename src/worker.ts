@@ -48,6 +48,7 @@ import {
 	claimConductorTurn,
 	claimRoomRuntimeLease,
 	claimStaleProvisioningCleanup,
+	completeRoomProvisioning,
 	createRoom,
 	endRoom,
 	expireInactivePrelaunchRooms,
@@ -420,7 +421,8 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		if (!repoAllowed(snapshot.room.repo, env.ALLOWED_REPOS, env.DEFAULT_REPO)) {
 			throw new HttpError(403, "room repository is no longer enabled");
 		}
-		if (!(await approveRoomPlan(env.DB, roomId, snapshot.room.briefRevision))) {
+		const launchRevision = snapshot.room.briefRevision;
+		if (!(await approveRoomPlan(env.DB, roomId, launchRevision))) {
 			throw new HttpError(409, "room is not ready to launch");
 		}
 		snapshot = await readRoomSnapshot(env.DB, roomId);
@@ -428,11 +430,11 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 		let bindings: Awaited<ReturnType<typeof provisionRoomCrabboxes>> = [];
 		try {
 			await ensureRoomBranches(env, snapshot.room, snapshot.participants, async () => {
-				if (!(await renewProvisioningLease(env.DB, roomId))) {
+				if (!(await renewProvisioningLease(env.DB, roomId, launchRevision))) {
 					throw new HttpError(409, "room launch was cancelled");
 				}
 			});
-			if (!(await markRootProvisioningAttempt(env.DB, roomId))) {
+			if (!(await markRootProvisioningAttempt(env.DB, roomId, launchRevision))) {
 				throw new HttpError(409, "room launch was cancelled");
 			}
 			bindings = await provisionRoomCrabboxes(
@@ -443,7 +445,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 				async ({ participantId, binding }) => {
 					const rootSessionId = binding.session.rootSessionId || binding.session.id;
 					if (
-						!(await recordProvisioningBinding(env.DB, roomId, rootSessionId, {
+						!(await recordProvisioningBinding(env.DB, roomId, launchRevision, rootSessionId, {
 							participantId,
 							sessionId: binding.session.id,
 							browserUrl: binding.browserUrl,
@@ -456,7 +458,8 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 				},
 			);
 			const rootSessionId =
-				bindings[0]?.binding.session.rootSessionId || bindings[0]?.binding.session.id || null;
+				bindings[0]?.binding.session.rootSessionId || bindings[0]?.binding.session.id;
+			if (!rootSessionId) throw new HttpError(502, "room launch did not return a root workspace");
 			if (
 				!(await addMessage(
 					env.DB,
@@ -470,18 +473,19 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 						replyToId: null,
 					},
 					["provisioning"],
+					launchRevision,
 				))
 			) {
 				throw new HttpError(409, "room launch was cancelled");
 			}
-			if (!(await updateRoomRuntime(env.DB, roomId, rootSessionId, "building", ["provisioning"]))) {
+			if (!(await completeRoomProvisioning(env.DB, roomId, launchRevision, rootSessionId))) {
 				throw new HttpError(409, "room launch was cancelled");
 			}
 		} catch (error) {
 			if (error instanceof PartialProvisioningError) bindings = error.bindings;
 			try {
 				if (!(error instanceof AmbiguousRootProvisioningError)) {
-					await cleanupFailedLaunch(env, roomId, bindings);
+					await cleanupFailedLaunch(env, roomId, launchRevision, bindings);
 				}
 			} finally {
 				const failed = await readRoomSnapshot(env.DB, roomId);
@@ -673,6 +677,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 					!(await markRoomCleanup(
 						env.DB,
 						roomId,
+						snapshot.room.briefRevision,
 						root.binding.session.rootSessionId || root.binding.session.id,
 						"cleanup-planning",
 						["cleanup-planning"],
@@ -701,7 +706,14 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 					),
 				);
 			}
-			if (!(await resetRoomProvisioning(env.DB, roomId, ["cleanup-planning"]))) {
+			if (
+				!(await resetRoomProvisioning(
+					env.DB,
+					roomId,
+					["cleanup-planning"],
+					snapshot.room.briefRevision,
+				))
+			) {
 				throw new HttpError(409, "room cleanup state changed before reset");
 			}
 			snapshot = await readRoomSnapshot(env.DB, roomId);
@@ -756,6 +768,7 @@ async function route(request: Request, env: Env, context: ExecutionContext): Pro
 					!(await markRoomCleanup(
 						env.DB,
 						roomId,
+						snapshot.room.briefRevision,
 						root.binding.session.rootSessionId || root.binding.session.id,
 						"cleanup-ending",
 						["cleanup-ending"],
@@ -907,6 +920,7 @@ async function reconcileRuntimeRoom(env: Env, roomId: string): Promise<void> {
 				!(await markRoomCleanup(
 					env.DB,
 					roomId,
+					snapshot.room.briefRevision,
 					root.binding.session.rootSessionId || root.binding.session.id,
 					"cleanup-ending",
 					["cleanup-ending"],
@@ -977,6 +991,7 @@ async function reconcileFailedLaunchCleanup(env: Env, roomId: string): Promise<v
 				!(await markRoomCleanup(
 					env.DB,
 					roomId,
+					snapshot.room.briefRevision,
 					root.binding.session.rootSessionId || root.binding.session.id,
 					"cleanup-planning",
 					["cleanup-planning"],
@@ -1004,7 +1019,14 @@ async function reconcileFailedLaunchCleanup(env: Env, roomId: string): Promise<v
 				),
 			);
 		}
-		if (!(await resetRoomProvisioning(env.DB, roomId, ["cleanup-planning"]))) {
+		if (
+			!(await resetRoomProvisioning(
+				env.DB,
+				roomId,
+				["cleanup-planning"],
+				snapshot.room.briefRevision,
+			))
+		) {
 			throw new HttpError(409, "launch cleanup state changed before reset");
 		}
 	} finally {
@@ -1096,10 +1118,11 @@ async function conductorTurnBestEffort(
 async function cleanupFailedLaunch(
 	env: Env,
 	roomId: string,
+	expectedBriefRevision: number,
 	bindings: Awaited<ReturnType<typeof provisionRoomCrabboxes>>,
 ): Promise<void> {
 	if (!bindings.length) {
-		await resetRoomProvisioning(env.DB, roomId, ["provisioning"]);
+		await resetRoomProvisioning(env.DB, roomId, ["provisioning"], expectedBriefRevision);
 		return;
 	}
 	const rootSessionId =
@@ -1115,12 +1138,20 @@ async function cleanupFailedLaunch(
 	const claimed = await markRoomCleanup(
 		env.DB,
 		roomId,
+		expectedBriefRevision,
 		rootSessionId,
 		"cleanup-planning",
 		["provisioning"],
 		cleanupBindings,
 	);
-	if (!claimed) return;
+	if (!claimed) {
+		await stopRoomCrabboxes(
+			env,
+			rootSessionId,
+			bindings.map(({ binding }) => binding.session.id),
+		);
+		return;
+	}
 	const cleanupLeaseId = await claimRoomRuntimeLease(
 		env.DB,
 		roomId,
@@ -1139,7 +1170,9 @@ async function cleanupFailedLaunch(
 		if (snapshot.room.status === "cleanup-ending") {
 			await endRoom(env.DB, roomId);
 		} else if (snapshot.room.status !== "ended") {
-			if (!(await resetRoomProvisioning(env.DB, roomId, ["cleanup-planning"]))) {
+			if (
+				!(await resetRoomProvisioning(env.DB, roomId, ["cleanup-planning"], expectedBriefRevision))
+			) {
 				throw new HttpError(409, "room cleanup state changed before reset");
 			}
 		}
@@ -1149,6 +1182,7 @@ async function cleanupFailedLaunch(
 			await markRoomCleanup(
 				env.DB,
 				roomId,
+				expectedBriefRevision,
 				rootSessionId,
 				"cleanup-ending",
 				["ended", "cleanup-ending"],

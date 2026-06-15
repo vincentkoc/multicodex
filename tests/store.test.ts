@@ -205,6 +205,8 @@ test("plan approval atomically binds the validated revision and participant cove
 	assert.match(approvalSource, /participant\.kind != 'observer'/);
 	assert.match(approvalSource, /task\.owner_participant_id = participant\.id/);
 	assert.match(approvalSource, /state = 'cut'/);
+	assert.match(approvalSource, /started_at = NULL, ends_at = NULL/);
+	assert.doesNotMatch(approvalSource, /duration_minutes \* 60000/);
 });
 
 test("plan replacement fences every write to its claimed revision", async () => {
@@ -267,7 +269,13 @@ test("runtime leases fence cleanup and stale provisioning can be claimed", async
 	assert.match(lifecycleSource, /expires_at > \?/);
 	assert.match(lifecycleSource, /SELECT \?, \?, 'room_end', \?/);
 	assert.match(lifecycleSource, /lease_id = \?/);
+	assert.match(lifecycleSource, /renewProvisioningLease[\s\S]*brief_revision = \?/);
+	assert.match(lifecycleSource, /markRootProvisioningAttempt[\s\S]*brief_revision = \?/);
+	assert.match(lifecycleSource, /markRoomCleanup[\s\S]*brief_revision = \?/);
 	assert.match(runtimeSource, /NOT EXISTS \(\s*SELECT 1 FROM room_runtime_leases/);
+	assert.match(runtimeSource, /completeRoomProvisioning/);
+	assert.match(runtimeSource, /started_at = \?, ends_at = \? \+ duration_minutes \* 60000/);
+	assert.match(runtimeSource, /status = 'provisioning' AND brief_revision = \?/);
 });
 
 test("failed launch reset rotates the provisioning replay generation", async () => {
@@ -276,7 +284,9 @@ test("failed launch reset rotates the provisioning replay generation", async () 
 	const end = source.indexOf("export async function recordProvisioningBinding", start);
 	const resetSource = source.slice(start, end);
 
-	assert.match(resetSource, /brief_revision = brief_revision \+ 1/);
+	assert.match(resetSource, /const nextBriefRevision = newRevision\(\)/);
+	assert.match(resetSource, /brief_revision = \?/);
+	assert.match(resetSource, /AND brief_revision = \?/);
 	assert.match(resetSource, /root_provisioning_attempted_at = NULL/);
 	assert.match(resetSource, /INSERT OR IGNORE INTO room_runtime_redactions/);
 	assert.match(resetSource, /expectedStatuses/);
@@ -287,6 +297,17 @@ test("failed launch reset rotates the provisioning replay generation", async () 
 	);
 });
 
+test("provisioning bindings are fenced to the approved launch generation", async () => {
+	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
+	const start = source.indexOf("export async function recordProvisioningBinding");
+	const end = source.indexOf("export async function claimStaleProvisioningCleanup", start);
+	const bindingSource = source.slice(start, end);
+
+	assert.match(bindingSource, /expectedBriefRevision/);
+	assert.equal(bindingSource.match(/brief_revision = \?/g)?.length, 2);
+	assert.match(bindingSource, /crabfleet_root_session_id = \?/);
+});
+
 test("root provisioning attempts are durable before external creation", async () => {
 	const source = await readFile(new URL("../src/store.ts", import.meta.url), "utf8");
 	const start = source.indexOf("export async function markRootProvisioningAttempt");
@@ -295,6 +316,7 @@ test("root provisioning attempts are durable before external creation", async ()
 
 	assert.match(attemptSource, /root_provisioning_attempted_at/);
 	assert.match(attemptSource, /status = 'provisioning'/);
+	assert.match(attemptSource, /brief_revision = \?/);
 	assert.match(attemptSource, /roomRootProvisioningAttempted/);
 });
 

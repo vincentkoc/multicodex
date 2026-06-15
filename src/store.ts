@@ -647,7 +647,7 @@ export async function approveRoomPlan(
 	const result = await db
 		.prepare(
 			`UPDATE rooms
-	       SET status = 'provisioning', started_at = ?, ends_at = ? + duration_minutes * 60000,
+	       SET status = 'provisioning', started_at = NULL, ends_at = NULL,
 	           brief_json = json_set(brief_json, '$.planApproved', json('true')), updated_at = ?
 	       WHERE id = ? AND status = 'planning' AND brief_revision = ?
 	         AND (SELECT COUNT(*) FROM tasks WHERE room_id = rooms.id) > 0
@@ -677,7 +677,7 @@ export async function approveRoomPlan(
 	           WHERE task.room_id = rooms.id AND participant.id IS NULL
 	         )`,
 		)
-		.bind(now, now, now, roomId, expectedBriefRevision)
+		.bind(now, roomId, expectedBriefRevision)
 		.run();
 	return result.meta.changes === 1;
 }
@@ -686,53 +686,71 @@ export async function resetRoomProvisioning(
 	db: D1Database,
 	roomId: string,
 	expectedStatuses: RoomStatus[],
+	expectedBriefRevision: number,
 ): Promise<boolean> {
 	if (!expectedStatuses.length) return false;
 	const now = Date.now();
+	const nextBriefRevision = newRevision();
 	const [, , , roomResult] = await db.batch([
 		db
 			.prepare(
 				`INSERT OR IGNORE INTO room_runtime_redactions (room_id, identifier, created_at)
-         SELECT id, crabfleet_root_session_id, ?
-         FROM rooms
-         WHERE id = ? AND crabfleet_root_session_id IS NOT NULL AND crabfleet_root_session_id != ''`,
+	         SELECT id, crabfleet_root_session_id, ?
+	         FROM rooms
+	         WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})
+	           AND brief_revision = ?
+	           AND crabfleet_root_session_id IS NOT NULL AND crabfleet_root_session_id != ''`,
 			)
-			.bind(now, roomId),
+			.bind(now, roomId, ...expectedStatuses, expectedBriefRevision),
 		db
 			.prepare(
 				`INSERT OR IGNORE INTO room_runtime_redactions (room_id, identifier, created_at)
-         SELECT room_id, crabfleet_session_id, ?
-         FROM participants
-         WHERE room_id = ? AND crabfleet_session_id IS NOT NULL AND crabfleet_session_id != ''`,
+	         SELECT room_id, crabfleet_session_id, ?
+	         FROM participants
+	         WHERE room_id = ? AND crabfleet_session_id IS NOT NULL AND crabfleet_session_id != ''
+	           AND EXISTS (
+	             SELECT 1 FROM rooms
+	             WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})
+	               AND brief_revision = ?
+	           )`,
 			)
-			.bind(now, roomId),
+			.bind(now, roomId, roomId, ...expectedStatuses, expectedBriefRevision),
 		db
 			.prepare(
 				`INSERT OR IGNORE INTO room_runtime_redactions (room_id, identifier, created_at)
-         SELECT room_id, browser_url, ?
-         FROM participants
-         WHERE room_id = ? AND browser_url IS NOT NULL AND browser_url != ''`,
+	         SELECT room_id, browser_url, ?
+	         FROM participants
+	         WHERE room_id = ? AND browser_url IS NOT NULL AND browser_url != ''
+	           AND EXISTS (
+	             SELECT 1 FROM rooms
+	             WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})
+	               AND brief_revision = ?
+	           )`,
 			)
-			.bind(now, roomId),
+			.bind(now, roomId, roomId, ...expectedStatuses, expectedBriefRevision),
 		db
 			.prepare(
 				`UPDATE rooms
-         SET status = 'planning', started_at = NULL, ends_at = NULL, crabfleet_root_session_id = NULL,
-             root_provisioning_attempted_at = NULL,
-             brief_json = json_set(brief_json, '$.planApproved', json('false')),
-             brief_revision = brief_revision + 1, updated_at = ?
-         WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})`,
+	         SET status = 'planning', started_at = NULL, ends_at = NULL, crabfleet_root_session_id = NULL,
+	             root_provisioning_attempted_at = NULL,
+	             brief_json = json_set(brief_json, '$.planApproved', json('false')),
+	             brief_revision = ?, updated_at = ?
+	         WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})
+	           AND brief_revision = ?`,
 			)
-			.bind(now, roomId, ...expectedStatuses),
+			.bind(nextBriefRevision, now, roomId, ...expectedStatuses, expectedBriefRevision),
 		db
 			.prepare(
 				`UPDATE participants
-         SET crabfleet_session_id = NULL, browser_url = NULL, runtime_summary = '', state = 'joined',
-             updated_at = ?
-         WHERE room_id = ?
-           AND EXISTS (SELECT 1 FROM rooms WHERE id = ? AND status = 'planning')`,
+	         SET crabfleet_session_id = NULL, browser_url = NULL, runtime_summary = '', state = 'joined',
+	             updated_at = ?
+	         WHERE room_id = ?
+	           AND EXISTS (
+	             SELECT 1 FROM rooms
+	             WHERE id = ? AND status = 'planning' AND brief_revision = ?
+	           )`,
 			)
-			.bind(now, roomId, roomId),
+			.bind(now, roomId, roomId, nextBriefRevision),
 	]);
 	return roomResult?.meta.changes === 1;
 }
@@ -740,6 +758,7 @@ export async function resetRoomProvisioning(
 export async function recordProvisioningBinding(
 	db: D1Database,
 	roomId: string,
+	expectedBriefRevision: number,
 	rootSessionId: string,
 	binding: {
 		participantId: string;
@@ -754,20 +773,21 @@ export async function recordProvisioningBinding(
 		db
 			.prepare(
 				`UPDATE rooms
-         SET crabfleet_root_session_id = COALESCE(crabfleet_root_session_id, ?), updated_at = ?
-         WHERE id = ? AND status = 'provisioning'
-           AND (crabfleet_root_session_id IS NULL OR crabfleet_root_session_id = ?)`,
+	         SET crabfleet_root_session_id = COALESCE(crabfleet_root_session_id, ?), updated_at = ?
+	         WHERE id = ? AND status = 'provisioning' AND brief_revision = ?
+	           AND (crabfleet_root_session_id IS NULL OR crabfleet_root_session_id = ?)`,
 			)
-			.bind(rootSessionId, now, roomId, rootSessionId),
+			.bind(rootSessionId, now, roomId, expectedBriefRevision, rootSessionId),
 		db
 			.prepare(
 				`UPDATE participants
          SET crabfleet_session_id = ?, browser_url = ?, runtime_summary = ?, state = ?, updated_at = ?
          WHERE id = ? AND room_id = ?
            AND EXISTS (
-             SELECT 1 FROM rooms
-             WHERE id = ? AND status = 'provisioning' AND crabfleet_root_session_id = ?
-           )`,
+	             SELECT 1 FROM rooms
+	             WHERE id = ? AND status = 'provisioning' AND brief_revision = ?
+	               AND crabfleet_root_session_id = ?
+	           )`,
 			)
 			.bind(
 				binding.sessionId,
@@ -778,6 +798,7 @@ export async function recordProvisioningBinding(
 				binding.participantId,
 				roomId,
 				roomId,
+				expectedBriefRevision,
 				rootSessionId,
 			),
 	]);
@@ -799,10 +820,16 @@ export async function claimStaleProvisioningCleanup(
 	return result.meta.changes === 1;
 }
 
-export async function renewProvisioningLease(db: D1Database, roomId: string): Promise<boolean> {
+export async function renewProvisioningLease(
+	db: D1Database,
+	roomId: string,
+	expectedBriefRevision: number,
+): Promise<boolean> {
 	const result = await db
-		.prepare("UPDATE rooms SET updated_at = ? WHERE id = ? AND status = 'provisioning'")
-		.bind(Date.now(), roomId)
+		.prepare(
+			"UPDATE rooms SET updated_at = ? WHERE id = ? AND status = 'provisioning' AND brief_revision = ?",
+		)
+		.bind(Date.now(), roomId, expectedBriefRevision)
 		.run();
 	return result.meta.changes === 1;
 }
@@ -810,6 +837,7 @@ export async function renewProvisioningLease(db: D1Database, roomId: string): Pr
 export async function markRootProvisioningAttempt(
 	db: D1Database,
 	roomId: string,
+	expectedBriefRevision: number,
 ): Promise<boolean> {
 	const now = Date.now();
 	const result = await db
@@ -817,9 +845,9 @@ export async function markRootProvisioningAttempt(
 			`UPDATE rooms
        SET root_provisioning_attempted_at = COALESCE(root_provisioning_attempted_at, ?),
            updated_at = ?
-       WHERE id = ? AND status = 'provisioning'`,
+	       WHERE id = ? AND status = 'provisioning' AND brief_revision = ?`,
 		)
-		.bind(now, now, roomId)
+		.bind(now, now, roomId, expectedBriefRevision)
 		.run();
 	return result.meta.changes === 1;
 }
@@ -838,6 +866,7 @@ export async function roomRootProvisioningAttempted(
 export async function markRoomCleanup(
 	db: D1Database,
 	roomId: string,
+	expectedBriefRevision: number,
 	rootSessionId: string,
 	status: "cleanup-planning" | "cleanup-ending",
 	expectedStatuses: RoomStatus[],
@@ -855,9 +884,10 @@ export async function markRoomCleanup(
 		db
 			.prepare(
 				`UPDATE rooms SET crabfleet_root_session_id = ?, status = ?, updated_at = ?
-         WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})`,
+	         WHERE id = ? AND status IN (${expectedStatuses.map(() => "?").join(", ")})
+	           AND brief_revision = ?`,
 			)
-			.bind(rootSessionId, status, now, roomId, ...expectedStatuses),
+			.bind(rootSessionId, status, now, roomId, ...expectedStatuses, expectedBriefRevision),
 	];
 	for (const binding of bindings) {
 		statements.push(
@@ -866,7 +896,9 @@ export async function markRoomCleanup(
 					`UPDATE participants
            SET crabfleet_session_id = ?, browser_url = ?, runtime_summary = ?, state = ?, updated_at = ?
            WHERE id = ? AND room_id = ?
-             AND EXISTS (SELECT 1 FROM rooms WHERE id = ? AND status = ?)`,
+	             AND EXISTS (
+	               SELECT 1 FROM rooms WHERE id = ? AND status = ? AND brief_revision = ?
+	             )`,
 				)
 				.bind(
 					binding.sessionId,
@@ -878,6 +910,7 @@ export async function markRoomCleanup(
 					roomId,
 					roomId,
 					status,
+					expectedBriefRevision,
 				),
 		);
 	}
@@ -904,6 +937,29 @@ export async function updateRoomRuntime(
          )`,
 		)
 		.bind(rootSessionId, status, now, roomId, ...expectedStatuses, now)
+		.run();
+	return result.meta.changes === 1;
+}
+
+export async function completeRoomProvisioning(
+	db: D1Database,
+	roomId: string,
+	expectedBriefRevision: number,
+	rootSessionId: string,
+): Promise<boolean> {
+	const now = Date.now();
+	const result = await db
+		.prepare(
+			`UPDATE rooms
+       SET crabfleet_root_session_id = ?, status = 'building',
+           started_at = ?, ends_at = ? + duration_minutes * 60000, updated_at = ?
+       WHERE id = ? AND status = 'provisioning' AND brief_revision = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM room_runtime_leases
+           WHERE room_id = rooms.id AND expires_at > ?
+         )`,
+		)
+		.bind(rootSessionId, now, now, now, roomId, expectedBriefRevision, now)
 		.run();
 	return result.meta.changes === 1;
 }

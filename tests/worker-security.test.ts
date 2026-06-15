@@ -245,25 +245,30 @@ test("plan approval revalidates the current repository allowlist", async () => {
 	assert.doesNotMatch(approvalSource, /await broadcastSnapshot\(env, snapshot\)/);
 	assert.match(approvalSource, /room repository is no longer enabled/);
 	assert.match(approvalSource, /recordProvisioningBinding/);
+	assert.match(approvalSource, /const launchRevision = snapshot\.room\.briefRevision/);
+	assert.match(approvalSource, /completeRoomProvisioning\(env\.DB, roomId, launchRevision/);
+	assert.match(approvalSource, /cleanupFailedLaunch\(env, roomId, launchRevision, bindings\)/);
 });
 
-test("failed launch cleanup must claim lifecycle ownership before stopping workspaces", async () => {
+test("failed launch cleanup isolates stale generations and claims current lifecycle ownership", async () => {
 	const source = await readFile(new URL("../src/worker.ts", import.meta.url), "utf8");
 	const start = source.indexOf("async function cleanupFailedLaunch");
 	const end = source.indexOf("async function nudgeParticipant", start);
 	const cleanupSource = source.slice(start, end);
 
-	assert.match(cleanupSource, /resetRoomProvisioning\(env\.DB, roomId, \["provisioning"\]\)/);
+	assert.match(cleanupSource, /expectedBriefRevision/);
+	assert.match(
+		cleanupSource,
+		/resetRoomProvisioning\(env\.DB, roomId, \["provisioning"\], expectedBriefRevision\)/,
+	);
 	assert.match(cleanupSource, /const claimed = await markRoomCleanup/);
 	assert.match(cleanupSource, /"cleanup-planning",\s*\["provisioning"\]/);
-	assert.match(cleanupSource, /if \(!claimed\) return/);
-	assert.ok(
-		cleanupSource.indexOf("if (!claimed) return") < cleanupSource.indexOf("stopRoomCrabboxes"),
-	);
+	assert.match(cleanupSource, /if \(!claimed\) \{[\s\S]*await stopRoomCrabboxes/);
+	assert.ok(cleanupSource.indexOf("if (!claimed)") < cleanupSource.indexOf("const cleanupLeaseId"));
 	assert.match(cleanupSource, /const cleanupLeaseId = await claimRoomRuntimeLease/);
-	assert.ok(
-		cleanupSource.indexOf("claimRoomRuntimeLease") < cleanupSource.indexOf("stopRoomCrabboxes"),
-	);
+	const cleanupLeaseIndex = cleanupSource.indexOf("const cleanupLeaseId");
+	const protectedStopIndex = cleanupSource.indexOf("stopRoomCrabboxes", cleanupLeaseIndex);
+	assert.ok(cleanupSource.indexOf("claimRoomRuntimeLease") < protectedStopIndex);
 	assert.match(cleanupSource, /finally \{\s*await releaseRoomRuntimeLease/);
 	assert.doesNotMatch(cleanupSource, /\["provisioning", "building"/);
 });
@@ -353,7 +358,14 @@ test("launch preparation renews provisioning while GitHub branches are created",
 		launchSource,
 		/ensureRoomBranches\(env, snapshot\.room, snapshot\.participants, async \(\) =>/,
 	);
-	assert.match(launchSource, /renewProvisioningLease\(env\.DB, roomId\)/);
+	assert.match(launchSource, /renewProvisioningLease\(env\.DB, roomId, launchRevision\)/);
+	assert.match(launchSource, /markRootProvisioningAttempt\(env\.DB, roomId, launchRevision\)/);
+	assert.match(
+		launchSource,
+		/recordProvisioningBinding\(env\.DB, roomId, launchRevision, rootSessionId/,
+	);
+	assert.match(launchSource, /\["provisioning"\],\s*launchRevision/);
+	assert.match(launchSource, /completeRoomProvisioning\(env\.DB, roomId, launchRevision/);
 	assert.match(launchSource, /context\.waitUntil\(broadcastSnapshot\(env, snapshot\)\)/);
 	assert.ok(
 		launchSource.indexOf("markRootProvisioningAttempt") <
