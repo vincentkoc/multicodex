@@ -28,6 +28,15 @@ type RequestOptions = {
 	participantToken?: string | null;
 };
 
+export class ApiError extends Error {
+	readonly status: number;
+
+	constructor(status: number, message: string) {
+		super(message);
+		this.status = status;
+	}
+}
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
 	const response = await fetch(path, {
 		method: options.method ?? "GET",
@@ -39,7 +48,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 		body: options.body ? JSON.stringify(options.body) : undefined,
 	});
 	const payload = (await response.json().catch(() => ({}))) as { error?: string };
-	if (!response.ok) throw new Error(payload.error || `request failed (${response.status})`);
+	if (!response.ok) {
+		throw new ApiError(response.status, payload.error || `request failed (${response.status})`);
+	}
 	return payload as T;
 }
 
@@ -92,6 +103,19 @@ export function issueRoomSocketTicket(roomId: string, participantToken: string):
 		method: "POST",
 		participantToken,
 	}).then((result) => result.ticket);
+}
+
+export function issuePublicRoomSocketTicket(
+	roomId: string,
+	browserSourceId: string,
+): Promise<string> {
+	return request<{ ticket: string }>(
+		`/api/rooms/${encodeURIComponent(roomId)}/public-socket-ticket`,
+		{
+			method: "POST",
+			body: { browserSourceId },
+		},
+	).then((result) => result.ticket);
 }
 
 export function catalog(): Promise<Catalog> {

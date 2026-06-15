@@ -65,19 +65,31 @@ test("each room has a conservative websocket admission cap", () => {
 	assert.equal(publicRoomWebSocketSourceTag("spoofed"), null);
 });
 
-test("edge source identifiers are stable hashes rather than raw addresses", async () => {
+test("public socket source identifiers separate browsers behind one edge address", async () => {
+	const firstBrowserId = "11111111-1111-4111-8111-111111111111";
+	const secondBrowserId = "22222222-2222-4222-8222-222222222222";
 	const first = await requestSourceKey(
 		new Request("https://multicodex.example", {
 			headers: { "cf-connecting-ip": "203.0.113.10" },
 		}),
+		firstBrowserId,
 	);
 	const second = await requestSourceKey(
 		new Request("https://multicodex.example", {
 			headers: { "cf-connecting-ip": "203.0.113.10" },
 		}),
+		firstBrowserId,
+	);
+	const otherBrowser = await requestSourceKey(
+		new Request("https://multicodex.example", {
+			headers: { "cf-connecting-ip": "203.0.113.10" },
+		}),
+		secondBrowserId,
 	);
 
 	assert.equal(first, second);
+	assert.notEqual(first, otherBrowser);
 	assert.match(first, /^[a-f0-9]{64}$/);
 	assert.doesNotMatch(first, /203\.0\.113\.10/);
+	assert.doesNotMatch(first, /11111111/);
 });

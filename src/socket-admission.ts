@@ -6,7 +6,6 @@ export const maxParticipantWebSockets = 4;
 export const publicRoomWebSocketTag = "public";
 export const observerRoomWebSocketTag = "observer";
 export const builderRoomWebSocketTag = "builder";
-export const roomWebSocketSourceHeader = "x-multicodex-socket-source";
 export const roomWebSocketTicketHeader = "x-multicodex-socket-ticket";
 
 const socketMessageWindowMilliseconds = 10_000;

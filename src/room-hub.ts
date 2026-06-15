@@ -12,7 +12,6 @@ import {
 	publicRoomWebSocketTag,
 	publicRoomWebSocketSourceTag,
 	recordSocketMessage,
-	roomWebSocketSourceHeader,
 	roomWebSocketTicketHeader,
 	sameOriginWebSocketRequest,
 	type SocketRateState,
@@ -34,6 +33,14 @@ export class RoomHub extends DurableObject<Env> {
 	}
 
 	async issueParticipantTicket(participantId: string, participantKind: string): Promise<string> {
+		return this.issueSocketTicket(participantId, participantKind);
+	}
+
+	async issuePublicTicket(sourceKey: string): Promise<string> {
+		return this.issueSocketTicket(sourceKey, "public");
+	}
+
+	private issueSocketTicket(participantId: string, participantKind: string): string {
 		const now = Date.now();
 		const ticket = crypto.randomUUID();
 		this.ctx.storage.sql.exec(
@@ -60,13 +67,13 @@ export class RoomHub extends DurableObject<Env> {
 			return new Response("same-origin websocket required", { status: 403 });
 		}
 		const suppliedTicket = request.headers.get(roomWebSocketTicketHeader);
-		const participant = suppliedTicket ? this.consumeParticipantTicket(suppliedTicket) : null;
-		if (suppliedTicket && !participant) {
+		const admission = suppliedTicket ? this.consumeSocketTicket(suppliedTicket) : null;
+		if (!admission) {
 			return new Response("valid websocket ticket required", { status: 401 });
 		}
-		const publicSourceTag = participant
-			? null
-			: publicRoomWebSocketSourceTag(request.headers.get(roomWebSocketSourceHeader));
+		const participant = admission.kind === "public" ? null : admission;
+		const publicSourceTag =
+			admission.kind === "public" ? publicRoomWebSocketSourceTag(admission.id) : null;
 		if (!participant && !publicSourceTag) {
 			return new Response("public websocket admission required", { status: 403 });
 		}
@@ -143,7 +150,7 @@ export class RoomHub extends DurableObject<Env> {
 		socket.close(1003, "unsupported message");
 	}
 
-	private consumeParticipantTicket(ticket: string): { id: string; kind: string } | null {
+	private consumeSocketTicket(ticket: string): { id: string; kind: string } | null {
 		const row = this.ctx.storage.sql
 			.exec<{ participant_id: string; participant_kind: string; expires_at: number }>(
 				`SELECT participant_id, participant_kind, expires_at
