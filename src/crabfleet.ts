@@ -42,7 +42,11 @@ export type ProvisioningBindingObserver = (
 	stage: "created" | "ready",
 ) => Promise<void>;
 
-export const readinessPollDelays = [1_000, 2_000, 4_000, 8_000, 12_000] as const;
+export const readinessDeadlineMilliseconds = 165_000;
+// A five-seat room can need two one-minute Crabfleet adapter reconciliation ticks.
+export const readinessPollDelays = [
+	1_000, 2_000, 4_000, 8_000, 12_000, 16_000, 20_000, 24_000, 28_000, 32_000,
+] as const;
 
 export class PartialProvisioningError extends Error {
 	readonly bindings: ParticipantCrabboxBinding[];
@@ -336,7 +340,7 @@ async function waitForUsableRoomCrabboxes(
 	env: Env,
 	initial: ParticipantCrabboxBinding[],
 ): Promise<ParticipantCrabboxBinding[]> {
-	const deadline = Date.now() + 30_000;
+	const deadline = Date.now() + readinessDeadlineMilliseconds;
 	let bindings = initial;
 	for (const pollDelay of readinessPollDelays) {
 		const ready = usableRoomCrabboxes(bindings);
