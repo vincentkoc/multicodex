@@ -52,6 +52,7 @@ export class BuilderBridge {
 	private pendingTuiThreadId: string | null = null;
 	private attachingTuiThread = false;
 	private persistenceError: Error | null = null;
+	private readonly activity = new ActivityDeltaBuffer();
 
 	constructor(input: BuilderBridge["input"]) {
 		this.input = {
@@ -109,6 +110,7 @@ export class BuilderBridge {
 			else await this.runTui(appServer.endpoint);
 		} finally {
 			clearInterval(poll);
+			this.flushActivity();
 			this.emit("lane.disconnected", "local Codex TUI disconnected");
 			await this.flush().catch(() => undefined);
 			this.stop();
@@ -289,12 +291,14 @@ export class BuilderBridge {
 				break;
 			}
 			case "turn/started": {
+				this.flushActivity();
 				const turn = object(params.turn);
 				this.activeTurnId = text(turn.id);
 				this.emit("turn.started", "Codex turn started", { turnId: this.activeTurnId });
 				break;
 			}
 			case "turn/completed": {
+				this.flushActivity();
 				const turn = object(params.turn);
 				const turnId = text(turn.id);
 				this.emit("turn.completed", `Codex turn ${JSON.stringify(turn.status)}`, { turnId });
@@ -302,21 +306,29 @@ export class BuilderBridge {
 				break;
 			}
 			case "item/agentMessage/delta":
-				this.emit("agent.message", text(params.delta) || "Codex response");
+				this.activity.append("agent.message", params.delta);
 				break;
 			case "item/plan/delta":
-				this.emit("agent.plan", text(params.delta) || "Codex plan updated");
+				this.activity.append("agent.plan", params.delta);
 				break;
 			case "item/started":
+				this.flushActivity();
 				this.itemEvent("started", object(params.item));
 				break;
 			case "item/completed":
+				this.flushActivity();
 				this.itemEvent("completed", object(params.item));
 				break;
 			default:
 				if (notification.method.includes("requestApproval")) {
 					this.emit("approval.requested", "local Codex approval requested");
 				}
+		}
+	}
+
+	private flushActivity(): void {
+		for (const activity of this.activity.drain()) {
+			this.emit(activity.kind, activity.summary);
 		}
 	}
 
@@ -421,6 +433,33 @@ export class BuilderBridge {
 			threadId: this.threadId,
 			spool: this.spool,
 		});
+	}
+}
+
+type ActivityEvent = {
+	kind: "agent.message" | "agent.plan";
+	summary: string;
+};
+
+export class ActivityDeltaBuffer {
+	private readonly chunks = new Map<ActivityEvent["kind"], string[]>();
+
+	append(kind: ActivityEvent["kind"], delta: unknown): void {
+		const chunk = text(delta);
+		if (!chunk) return;
+		const chunks = this.chunks.get(kind) ?? [];
+		chunks.push(chunk);
+		this.chunks.set(kind, chunks);
+	}
+
+	drain(): ActivityEvent[] {
+		const events: ActivityEvent[] = [];
+		for (const [kind, chunks] of this.chunks) {
+			const summary = chunks.join("").trim();
+			if (summary) events.push({ kind, summary });
+		}
+		this.chunks.clear();
+		return events;
 	}
 }
 

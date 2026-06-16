@@ -10,7 +10,9 @@ import {
 	requiredPolicyForCommand,
 } from "../packages/protocol/src/index.ts";
 import { BuilderStateStore } from "../packages/cli/src/builder-state.ts";
+import { ActivityDeltaBuffer } from "../packages/cli/src/builder.ts";
 import { LocalRoomStore } from "../packages/cli/src/local-room.ts";
+import { localRoomHtml } from "../packages/cli/src/ui.ts";
 
 test("lane policies keep live steering explicit", () => {
 	assert.equal(policyAllows("observe", "suggest"), false);
@@ -18,6 +20,26 @@ test("lane policies keep live steering explicit", () => {
 	assert.equal(policyAllows("suggest", "steer_active_turn"), false);
 	assert.equal(policyAllows("steer", "steer_active_turn"), true);
 	assert.equal(requiredPolicyForCommand("request_interrupt"), "steer");
+});
+
+test("builder activity buffers stream deltas into readable events", () => {
+	const activity = new ActivityDeltaBuffer();
+	activity.append("agent.plan", "Inspect");
+	activity.append("agent.plan", " the repo");
+	activity.append("agent.message", "Done");
+	activity.append("agent.message", ".");
+	activity.append("agent.message", "   ");
+	assert.deepEqual(activity.drain(), [
+		{ kind: "agent.plan", summary: "Inspect the repo" },
+		{ kind: "agent.message", summary: "Done." },
+	]);
+	assert.deepEqual(activity.drain(), []);
+});
+
+test("local room binds live status explicitly", () => {
+	const html = localRoomHtml();
+	assert.match(html, /status:document\.querySelector\('#status'\)/);
+	assert.match(html, /ui\.status\.textContent='live · '/);
 });
 
 test("local room acknowledges replayed events once and rejects gaps", async () => {
