@@ -16,5 +16,5 @@
 		"target": "ES2024",
 		"types": ["node"]
 	},
-	"include": ["src", "tests", "vite.config.ts", "worker-configuration.d.ts"]
+	"include": ["src", "packages", "tests", "vite.config.ts", "worker-configuration.d.ts"]
 }

@@ -1,0 +1,368 @@
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import {
+	createLaneEvent,
+	policyAllows,
+	requiredPolicyForCommand,
+} from "../packages/protocol/src/index.ts";
+import { BuilderStateStore, parseRoomEndpoint } from "../packages/cli/src/builder-state.ts";
+import { ActivityDeltaBuffer } from "../packages/cli/src/builder.ts";
+import { resolveUserCodexPath } from "../packages/cli/src/codex-path.ts";
+import { LocalRoomStore, startLocalRoomServer } from "../packages/cli/src/local-room.ts";
+import { localRoomHtml } from "../packages/cli/src/ui.ts";
+
+test("lane policies keep live steering explicit", () => {
+	assert.equal(policyAllows("observe", "suggest"), false);
+	assert.equal(policyAllows("suggest", "suggest"), true);
+	assert.equal(policyAllows("suggest", "steer_active_turn"), false);
+	assert.equal(policyAllows("steer", "steer_active_turn"), true);
+	assert.equal(requiredPolicyForCommand("request_interrupt"), "steer");
+});
+
+test("builder activity buffers stream deltas into readable events", () => {
+	const activity = new ActivityDeltaBuffer();
+	activity.append("agent.plan", "Inspect");
+	activity.append("agent.plan", " the repo");
+	activity.append("agent.message", "Done");
+	activity.append("agent.message", ".");
+	activity.append("agent.message", "   ");
+	assert.deepEqual(activity.drain(), [
+		{ kind: "agent.plan", summary: "Inspect the repo" },
+		{ kind: "agent.message", summary: "Done." },
+	]);
+	assert.deepEqual(activity.drain(), []);
+});
+
+test("local room renders the live lane and host control surfaces", () => {
+	const html = localRoomHtml();
+	assert.match(html, /id="terminal-stream"/);
+	assert.match(html, /id="add-person"/);
+	assert.match(html, /id="command-form"/);
+	assert.match(html, /sessionStorage\.getItem\('multicodex-host-token'\)/);
+	assert.match(html, /sessionStorage\.getItem\('multicodex-lane-token'\)/);
+	assert.match(html, /\/api\/conductor\/command/);
+	assert.match(html, /\/message'/);
+	const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
+	assert.ok(script);
+	assert.doesNotThrow(() => new Function(script));
+});
+
+test("invite fragments are separated from the room server URL", () => {
+	assert.deepEqual(parseRoomEndpoint("http://127.0.0.1:7331/#invite=join-capability"), {
+		server: "http://127.0.0.1:7331",
+		inviteToken: "join-capability",
+	});
+});
+
+test("Codex resolution ignores package-local adapter binaries", async () => {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-codex-path-"));
+	const packageBin = path.join(root, "node_modules", ".bin");
+	const userBin = path.join(root, "user-bin");
+	await fs.mkdir(packageBin, { recursive: true });
+	await fs.mkdir(userBin);
+	await fs.writeFile(path.join(packageBin, "codex"), "#!/bin/sh\n", { mode: 0o755 });
+	await fs.writeFile(path.join(userBin, "codex"), "#!/bin/sh\n", { mode: 0o755 });
+
+	assert.equal(
+		await resolveUserCodexPath({ pathValue: [packageBin, userBin].join(path.delimiter) }),
+		path.join(userBin, "codex"),
+	);
+});
+
+test("local room acknowledges replayed events once and rejects gaps", async () => {
+	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-alpha-"));
+	const store = await LocalRoomStore.create({ stateDir, title: "alpha", repo: "repo" });
+	const { lane, token } = await store.join({
+		displayName: "Builder",
+		repo: "repo",
+		policy: "steer",
+	});
+	const event = createLaneEvent({
+		roomId: store.snapshot().id,
+		laneId: lane.id,
+		sequence: 1,
+		kind: "lane.connected",
+		summary: "connected",
+	});
+	assert.equal(await store.appendEvents(lane.id, token, [event]), 1);
+	assert.equal(await store.appendEvents(lane.id, token, [event]), 1);
+	assert.equal(store.snapshot().events.length, 1);
+	await assert.rejects(
+		() =>
+			store.appendEvents(lane.id, token, [
+				createLaneEvent({
+					roomId: store.snapshot().id,
+					laneId: lane.id,
+					sequence: 3,
+					kind: "lane.status",
+					summary: "gap",
+				}),
+			]),
+		/event gap/,
+	);
+});
+
+test("conductor commands are ordered per local lane", async () => {
+	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-alpha-"));
+	const store = await LocalRoomStore.create({ stateDir, title: "alpha", repo: "repo" });
+	const { lane, token } = await store.join({
+		displayName: "Builder",
+		repo: "repo",
+		policy: "steer",
+	});
+	await store.queueCommand(lane.id, "suggest", "share status");
+	await store.queueCommand(lane.id, "steer_active_turn", "keep the demo small");
+	const commands = store.commandsAfter(lane.id, token, 0);
+	assert.deepEqual(
+		commands.map((command) => command.sequence),
+		[1, 2],
+	);
+	assert.equal(commands[1]?.requiredPolicy, "steer");
+});
+
+test("lane capability resumes the same lane and event sequence", async () => {
+	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-alpha-"));
+	const store = await LocalRoomStore.create({ stateDir, title: "alpha", repo: "repo" });
+	const { lane, token } = await store.join({
+		displayName: "Builder",
+		repo: "repo",
+		policy: "suggest",
+	});
+	await store.appendEvents(lane.id, token, [
+		createLaneEvent({
+			roomId: store.snapshot().id,
+			laneId: lane.id,
+			sequence: 1,
+			kind: "lane.connected",
+			summary: "connected",
+		}),
+	]);
+
+	const resumed = await store.resumeLane(lane.id, token, {
+		displayName: "Builder",
+		repo: "repo",
+		policy: "steer",
+	});
+	assert.equal(resumed.lane.id, lane.id);
+	assert.equal(resumed.lane.lastEventSequence, 1);
+	assert.equal(resumed.lane.policy, "steer");
+	await store.appendEvents(lane.id, token, [
+		createLaneEvent({
+			roomId: store.snapshot().id,
+			laneId: lane.id,
+			sequence: 2,
+			kind: "lane.connected",
+			summary: "reconnected",
+		}),
+	]);
+	assert.deepEqual(
+		store.snapshot().events.map((event) => event.sequence),
+		[1, 2],
+	);
+});
+
+test("room rejects conductor commands above the lane policy", async () => {
+	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-alpha-"));
+	const store = await LocalRoomStore.create({ stateDir, title: "alpha", repo: "repo" });
+	const { lane } = await store.join({
+		displayName: "Builder",
+		repo: "repo",
+		policy: "suggest",
+	});
+	await assert.rejects(
+		() => store.queueCommand(lane.id, "steer_active_turn", "change direction"),
+		/requires steer policy/,
+	);
+});
+
+test("host removal revokes lane events, commands, and resume", async () => {
+	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-alpha-"));
+	const store = await LocalRoomStore.create({ stateDir, title: "alpha", repo: "repo" });
+	const { lane, token } = await store.join({
+		displayName: "Builder",
+		repo: "repo",
+		policy: "steer",
+	});
+	await store.removeLane(lane.id);
+	assert.equal(store.snapshot().lanes[0]?.removedAt !== null, true);
+	await assert.rejects(() => store.resumeLane(lane.id, token, lane), /lane removed by host/);
+	await assert.rejects(() => store.appendEvents(lane.id, token, []), /lane removed by host/);
+	assert.throws(() => store.commandsAfter(lane.id, token, 0), /lane removed by host/);
+	await assert.rejects(
+		() => store.queueCommand(lane.id, "suggest", "hello"),
+		/lane removed by host/,
+	);
+});
+
+test("duplicate participant messages remain distinct across lanes", async () => {
+	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-alpha-"));
+	const store = await LocalRoomStore.create({ stateDir, title: "alpha", repo: "repo" });
+	const first = await store.join({ displayName: "Builder", repo: "repo", policy: "suggest" });
+	const second = await store.join({ displayName: "Builder", repo: "repo", policy: "suggest" });
+
+	await store.addParticipantMessage(first.lane.id, first.token, "same update");
+	await store.addParticipantMessage(second.lane.id, second.token, "same update");
+	await store.addParticipantMessage(second.lane.id, second.token, "same update");
+
+	assert.deepEqual(
+		store.snapshot().conductorMessages.map((message) => message.laneId),
+		[first.lane.id, second.lane.id],
+	);
+});
+
+test("local room server separates invite, host, and lane capabilities", async () => {
+	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-alpha-"));
+	const store = await LocalRoomStore.create({ stateDir, title: "alpha", repo: "repo" });
+	const server = await startLocalRoomServer({
+		store,
+		port: 0,
+		handlers: {
+			onConductorMessage: async () => undefined,
+			onConductorCommand: async () => undefined,
+		},
+	});
+	try {
+		const rejected = await fetch(new URL("/api/join", server.url), {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ displayName: "Builder", repo: "repo", policy: "suggest" }),
+		});
+		assert.equal(rejected.status, 401);
+
+		const invite = parseRoomEndpoint(server.inviteUrl).inviteToken!;
+		const joined = await fetch(new URL("/api/join", server.url), {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				authorization: `Bearer ${invite}`,
+			},
+			body: JSON.stringify({ displayName: "Builder", repo: "repo", policy: "suggest" }),
+		});
+		assert.equal(joined.status, 201);
+		const payload = (await joined.json()) as { lane: { id: string }; token: string };
+		const participantMessage = await fetch(
+			new URL(`/api/lanes/${payload.lane.id}/message`, server.url),
+			{
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					authorization: `Bearer ${payload.token}`,
+				},
+				body: JSON.stringify({ text: "hello room" }),
+			},
+		);
+		assert.equal(participantMessage.status, 202);
+		assert.deepEqual(store.snapshot().conductorMessages.at(-1), {
+			id: store.snapshot().conductorMessages.at(-1)?.id,
+			author: "participant",
+			authorName: "Builder",
+			laneId: payload.lane.id,
+			body: "hello room",
+			at: store.snapshot().conductorMessages.at(-1)?.at,
+		});
+
+		const hostToken = new URL(server.hostUrl).hash.replace(/^#host=/, "");
+		const hostConfig = await fetch(new URL("/api/host/config", server.url), {
+			headers: { authorization: `Bearer ${hostToken}` },
+		});
+		assert.equal(hostConfig.status, 200);
+		assert.equal(JSON.stringify(await hostConfig.json()).includes("invite="), true);
+
+		const removed = await fetch(new URL(`/api/lanes/${payload.lane.id}`, server.url), {
+			method: "DELETE",
+			headers: { authorization: `Bearer ${hostToken}` },
+		});
+		assert.equal(removed.status, 200);
+		const commands = await fetch(new URL(`/api/lanes/${payload.lane.id}/commands`, server.url), {
+			headers: { authorization: `Bearer ${payload.token}` },
+		});
+		assert.equal(commands.status, 410);
+	} finally {
+		await server.close();
+	}
+});
+
+test("public binding requires an explicit participant-facing URL", async () => {
+	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-alpha-"));
+	const store = await LocalRoomStore.create({ stateDir, title: "alpha", repo: "repo" });
+	await assert.rejects(
+		() =>
+			startLocalRoomServer({
+				store,
+				port: 0,
+				host: "0.0.0.0",
+				handlers: {
+					onConductorMessage: async () => undefined,
+					onConductorCommand: async () => undefined,
+				},
+			}),
+		/--public-url is required/,
+	);
+});
+
+test("builder state persists lane capability, cursors, and replay spool", async () => {
+	const repo = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-builder-"));
+	const statePath = path.join(repo, "lane.json");
+	const state = new BuilderStateStore({
+		repo,
+		server: "http://127.0.0.1:7331/",
+		displayName: "Builder",
+		statePath,
+	});
+	const event = createLaneEvent({
+		roomId: "room_1",
+		laneId: "lane_1",
+		sequence: 3,
+		kind: "lane.status",
+		summary: "buffered",
+	});
+	await state.save({
+		version: 1,
+		server: "http://127.0.0.1:7331",
+		roomId: "room_1",
+		laneId: "lane_1",
+		token: "capability",
+		displayName: "Builder",
+		repo,
+		policy: "steer",
+		sequence: 3,
+		commandSequence: 2,
+		threadId: "thread_1",
+		spool: [event],
+	});
+	assert.deepEqual(await state.load(), {
+		version: 1,
+		server: "http://127.0.0.1:7331",
+		roomId: "room_1",
+		laneId: "lane_1",
+		token: "capability",
+		displayName: "Builder",
+		repo,
+		policy: "steer",
+		sequence: 3,
+		commandSequence: 2,
+		threadId: "thread_1",
+		spool: [event],
+	});
+});
+
+test("public local room snapshots do not expose absolute repository paths", async () => {
+	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-alpha-"));
+	const repo = path.join(os.tmpdir(), "private-home", "demo-repo");
+	const store = await LocalRoomStore.create({ stateDir, title: "alpha", repo });
+	await store.join({
+		displayName: "Builder",
+		repo,
+		policy: "suggest",
+	});
+	const snapshot = store.snapshot();
+	assert.equal(snapshot.repo, "demo-repo");
+	assert.equal(snapshot.lanes[0]?.repo, "demo-repo");
+	assert.equal(JSON.stringify(snapshot).includes("private-home"), false);
+	assert.equal(JSON.stringify(snapshot).includes("hostToken"), false);
+	assert.equal(JSON.stringify(snapshot).includes("inviteToken"), false);
+});

@@ -1,99 +1,153 @@
 # MultiCodex
 
-MultiCodex is a collaborative hackathon room for people working with Codex.
-Every participant gets a Crabfleet-backed Codex workspace while a shared
-conductor helps the room plan, communicate, catch dependency conflicts, and
-integrate the result.
+MultiCodex is a self-contained multiplayer control room for normal local Codex
+sessions. One person hosts the room and conductor. Everyone else joins with
+their own Codex installation, authentication, repository, tools, and local
+terminal.
 
-## Product boundary
+The browser shows a live structured view of each lane and gives the host
+visible, policy-controlled coordination actions. It does not proxy a raw
+terminal or answer local Codex approvals.
 
-- MultiCodex owns rooms, chat, plans, roles, tasks, conductor decisions, and
-  GitHub coordination.
-- Crabfleet owns Crabbox provisioning, Codex terminal transport, transcripts,
-  summaries, and cleanup.
+## Quickstart
 
-## Local development
+Requirements:
+
+- Node.js 22.13 or newer
+- a working `codex` CLI
+- the same repository available on each participant machine
+
+Start a room from the repository:
+
+```bash
+npx --yes @vincentkoc/multicodex@latest doctor
+npx --yes @vincentkoc/multicodex@latest host --repo . --title "OpenAI event build"
+```
+
+Open the printed control URL. Use **add a person** to copy a named invite
+command:
+
+```bash
+npx --yes @vincentkoc/multicodex@latest join '<invite-url>' \
+  --repo . \
+  --name Queenie \
+  --policy suggest
+```
+
+The join command launches a normal local Codex TUI. Running the same command
+again resumes the same MultiCodex lane and Codex thread. Add `--fresh` only to
+create a new lane intentionally.
+
+## Multi-Machine Rooms
+
+The host binds to loopback by default. For a trusted LAN, Tailscale network, or
+tunnel, bind a reachable interface and advertise the participant-facing URL:
+
+```bash
+npx --yes @vincentkoc/multicodex@latest host \
+  --repo . \
+  --bind 0.0.0.0 \
+  --public-url https://multicodex.example
+```
+
+`--public-url` can point at a LAN/Tailscale address or a temporary tunnel. The
+room server and conductor still run on the host machine.
+
+## What The Host Can Do
+
+The control room keeps the team rail, selected lane activity, and conductor
+conversation visible together.
+
+- add people with named copyable invite commands;
+- remove a lane and revoke its capability;
+- inspect coalesced messages, plans, commands, file changes, approvals, and
+  turn state;
+- ask the host-local conductor a room question;
+- send a visible suggestion;
+- request status;
+- start a follow-up Codex turn;
+- steer an active turn;
+- interrupt an active turn.
+
+Every action is checked against the participant's local policy:
+
+| Policy    | Suggest | Status | Follow-up | Steer | Interrupt |
+| --------- | ------- | ------ | --------- | ----- | --------- |
+| `observe` | no      | no     | no        | no    | no        |
+| `suggest` | yes     | yes    | no        | no    | no        |
+| `steer`   | yes     | yes    | yes       | yes   | yes       |
+
+The host cannot answer local command, file, network, or permission approvals.
+
+## Security Model
+
+MultiCodex creates separate random capabilities for the host browser, room
+invite, and each lane.
+
+- The host capability protects conductor controls and participant removal.
+- The invite capability creates new lanes.
+- A lane capability resumes one lane, publishes its events, and receives its
+  permitted commands.
+- Removing a lane revokes its capability and disconnects its managed bridge.
+- Capabilities do not appear in public room snapshots.
+- The participant's Codex app-server always binds to loopback.
+- Repository contents, credentials, hidden reasoning, and complete terminal
+  streams are not published.
+
+Room and lane state is written under `.multicodex/` with owner-only
+permissions.
+
+## Repository Development
+
+Run the CLI directly from this repository:
 
 ```bash
 pnpm install
-pnpm db:local
-pnpm dev
+pnpm multicodex doctor
+pnpm multicodex host --repo .
 ```
 
-Open <http://localhost:8787>.
+Use the printed `dev join` command for a second terminal. The production-style
+join command uses `npx --yes @vincentkoc/multicodex@latest`.
 
-Without `OPENAI_API_KEY` or Crabfleet service credentials, the local app uses a
-deterministic conductor and simulated workspaces so the complete room flow is
-still testable. `pnpm dev` enables simulation only for the local Wrangler
-process and uses `DEFAULT_BASE_BRANCH` without calling GitHub. Loaded GitHub
-and Crabfleet credentials remain unused while simulation is
-enabled. Production keeps simulation explicitly disabled.
-
-## Room security
-
-- A random per-seat capability authenticates room mutations. Public participant
-  IDs are never accepted as credentials.
-- Room creation is open, source-rate-limited, and bounded by the deployment's
-  active-room limit.
-- Public room snapshots contain the visible collaboration timeline, but never
-  GitHub handles, Crabfleet root IDs, child session IDs, workspace URLs, or
-  runtime summaries.
-- An authenticated participant only receives the URL for their own workspace.
-- Only the host capability can approve a plan, provision workspaces, nudge a
-  session, present, or end a room.
-- Room WebSockets require the app's origin and close clients that exceed the
-  message-rate budget. One-time participant tickets reserve builder capacity
-  separately from a bounded, per-source public-view pool.
-- Builder and AI seats require the room-specific invite link copied by the host;
-  public room links can still admit read-only observers.
-- Active builder seats are capped at five. The Worker is the only component that
-  holds OpenAI, GitHub, and Crabfleet service credentials.
-- Room repositories must appear in the deployment's `ALLOWED_REPOS` list.
-  This fences both GitHub branch creation and Crabfleet provisioning.
-- Production launch fails closed without GitHub credentials. Only explicit
-  local simulation skips branch creation and ownership checks.
-- A scheduled cleanup pass stops expired room workspaces and preserves their
-  public read-only recaps.
-
-## Checks
+Checks:
 
 ```bash
 pnpm check
+pnpm build
+npm pack --dry-run
 ```
-
-## Deploy
-
-Configure secrets before the first production deploy:
-
-```bash
-pnpm exec wrangler secret put OPENAI_API_KEY
-pnpm exec wrangler secret put CRABFLEET_SERVICE_TOKEN
-pnpm exec wrangler secret put GITHUB_TOKEN
-pnpm run deploy
-```
-
-`CRABFLEET_SERVICE_TOKEN` must match one of Crabfleet's service tokens. Prefer
-the dedicated `CRABBOX_MULTICODEX_TOKEN`; use `CRABBOX_OPENCLAW_TOKEN` only
-when a shared service capability is intentional. Use a GitHub token that can
-create branches only in the intended event repo.
-
-`CRABFLEET_RUNTIME` selects `container` or `crabbox`. The event deployment uses
-Crabfleet's built-in `container` runtime because it prepares, authenticates, and
-autostarts foreground Codex before exposing the terminal. Use `crabbox` only
-with a provider profile that independently guarantees the same Codex-ready
-contract.
-`CRABFLEET_OWNER` is the trusted service-owned Crabfleet identity applied to
-every room session; participant-supplied names and GitHub logins are never used
-as Crabfleet owners.
-
-`ALLOWED_REPOS` is a comma-separated deployment allowlist. Keep it narrower
-than the GitHub token's repository access.
 
 ## Architecture
 
 ```text
-Browsers -> MultiCodex Worker -> D1 + RoomHub Durable Object
-                               -> OpenAI Responses API
-                               -> Crabfleet service API -> Crabboxes
-                               -> GitHub API
+Host browser -> host capability -> multicodex host
+                                  |- local HTTP room server + durable state
+                                  |- ACPx persistent conductor
+                                  `- visible lane command router
+
+multicodex join -> lane capability -> room server
+      |
+      |- local event spool and policy enforcement
+      |- loopback Codex app-server
+      `- normal local Codex TUI
 ```
+
+Crabfleet, Crabbox, server OpenAI keys, server GitHub tokens, and hosted
+terminals are not required by the self-contained product.
+
+The repository still contains the earlier Cloudflare/Crabfleet event-room
+implementation while the local-first replacement lands. It is not the default
+MultiCodex runtime.
+
+## Legacy Worker Development
+
+The earlier Worker product remains testable during replacement:
+
+```bash
+pnpm db:local
+pnpm dev
+```
+
+`pnpm dev` enables simulation only for the local Wrangler process. Production
+keeps simulation explicitly disabled.
