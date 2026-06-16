@@ -13,6 +13,7 @@ import { BuilderStateStore, parseRoomEndpoint } from "../packages/cli/src/builde
 import { ActivityDeltaBuffer } from "../packages/cli/src/builder.ts";
 import { resolveUserCodexPath } from "../packages/cli/src/codex-path.ts";
 import { LocalRoomStore, startLocalRoomServer } from "../packages/cli/src/local-room.ts";
+import { startMirroredTui } from "../packages/cli/src/pty-tui.ts";
 import { localRoomHtml } from "../packages/cli/src/ui.ts";
 
 test("lane policies keep live steering explicit", () => {
@@ -40,6 +41,9 @@ test("builder activity buffers stream deltas into readable events", () => {
 test("local room renders the live lane and host control surfaces", () => {
 	const html = localRoomHtml();
 	assert.match(html, /id="terminal-stream"/);
+	assert.match(html, /id="ghostty-terminal"/);
+	assert.match(html, /\/api\/lanes\/.*\/terminal/);
+	assert.match(html, /\/vendor\/ghostty-web\.js/);
 	assert.match(html, /id="add-person"/);
 	assert.match(html, /id="command-form"/);
 	assert.match(html, /sessionStorage\.getItem\('multicodex-host-token'\)/);
@@ -71,6 +75,25 @@ test("Codex resolution ignores package-local adapter binaries", async () => {
 		await resolveUserCodexPath({ pathValue: [packageBin, userBin].join(path.delimiter) }),
 		path.join(userBin, "codex"),
 	);
+});
+
+test("terminal mirror launches a real local PTY", async () => {
+	let output = "";
+	let size: [number, number] | null = null;
+	const tui = await startMirroredTui({
+		command: process.execPath,
+		args: ["-e", "process.stdout.write('pty-proof')"],
+		cwd: process.cwd(),
+		onOutput: (data) => {
+			output += data;
+		},
+		onResize: (columns, rows) => {
+			size = [columns, rows];
+		},
+	});
+	await tui.done;
+	assert.match(output, /pty-proof/);
+	assert.deepEqual(size, [120, 34]);
 });
 
 test("local room acknowledges replayed events once and rejects gaps", async () => {
@@ -281,6 +304,107 @@ test("local room server separates invite, host, and lane capabilities", async ()
 			headers: { authorization: `Bearer ${payload.token}` },
 		});
 		assert.equal(commands.status, 410);
+	} finally {
+		await server.close();
+	}
+});
+
+test("terminal mirror is opt-in, ephemeral, and capability scoped", async () => {
+	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-terminal-"));
+	const store = await LocalRoomStore.create({ stateDir, title: "terminal", repo: "repo" });
+	const lane = await store.join({
+		displayName: "Builder",
+		repo: "repo",
+		policy: "suggest",
+		terminalMirror: true,
+	});
+	const otherLane = await store.join({
+		displayName: "Other",
+		repo: "repo",
+		policy: "suggest",
+		terminalMirror: true,
+	});
+	const server = await startLocalRoomServer({
+		store,
+		port: 0,
+		handlers: {
+			onConductorMessage: async () => undefined,
+			onConductorCommand: async () => undefined,
+		},
+	});
+	try {
+		const ghosttyAsset = await fetch(new URL("/vendor/ghostty-web.js", server.url));
+		assert.equal(ghosttyAsset.status, 200);
+		assert.match(ghosttyAsset.headers.get("content-type") ?? "", /javascript/);
+		const ghosttyWasm = await fetch(new URL("/vendor/ghostty-vt.wasm", server.url));
+		assert.equal(ghosttyWasm.status, 200);
+		assert.equal(ghosttyWasm.headers.get("content-type"), "application/wasm");
+
+		const terminalUrl = new URL(`/api/lanes/${lane.lane.id}/terminal`, server.url);
+		const rejected = await fetch(terminalUrl);
+		assert.equal(rejected.status, 403);
+		const crossLaneRejected = await fetch(terminalUrl, {
+			headers: { authorization: `Bearer ${otherLane.token}` },
+		});
+		assert.equal(crossLaneRejected.status, 403);
+		const resized = await fetch(new URL(`/api/lanes/${lane.lane.id}/terminal-size`, server.url), {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${lane.token}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ columns: 143, rows: 47 }),
+		});
+		assert.equal(resized.status, 202);
+		assert.equal(store.snapshot().lanes[0]?.terminalColumns, 143);
+		assert.equal(store.snapshot().lanes[0]?.terminalRows, 47);
+
+		const output = "\u001b[31mlive terminal\u001b[0m\r\n";
+		const published = await fetch(terminalUrl, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${lane.token}`,
+				"content-type": "application/octet-stream",
+			},
+			body: output,
+		});
+		assert.equal(published.status, 202);
+
+		const hostToken = new URL(server.hostUrl).hash.replace(/^#host=/, "");
+		const stream = await fetch(terminalUrl, {
+			headers: { authorization: `Bearer ${hostToken}` },
+		});
+		assert.equal(stream.status, 200);
+		const reader = stream.body!.getReader();
+		const replay = await reader.read();
+		assert.equal(new TextDecoder().decode(replay.value), output);
+
+		assert.equal(JSON.stringify(store.snapshot()).includes("live terminal"), false);
+		assert.equal(
+			(await fs.readFile(path.join(stateDir, "room.json"), "utf8")).includes("live terminal"),
+			false,
+		);
+		assert.equal(store.snapshot().lanes[0]?.terminalMirror, true);
+
+		const optedOut = await fetch(new URL(`/api/lanes/${lane.lane.id}/resume`, server.url), {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${lane.token}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({
+				displayName: "Builder",
+				repo: "repo",
+				policy: "suggest",
+				terminalMirror: false,
+			}),
+		});
+		assert.equal(optedOut.status, 200);
+		assert.equal((await reader.read()).done, true);
+		const revoked = await fetch(terminalUrl, {
+			headers: { authorization: `Bearer ${hostToken}` },
+		});
+		assert.equal(revoked.status, 403);
 	} finally {
 		await server.close();
 	}

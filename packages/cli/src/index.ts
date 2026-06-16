@@ -70,8 +70,8 @@ async function host(args: string[]): Promise<void> {
 			"",
 			"MultiCodex room ready",
 			`control: ${server.hostUrl}`,
-			`invite: npx --yes @vincentkoc/multicodex@latest join ${shellQuote(server.inviteUrl)} --repo . --name Builder --policy suggest`,
-			`dev join: pnpm multicodex join ${shellQuote(server.inviteUrl)} --repo . --name Builder --policy suggest`,
+			`invite: npx --yes @vincentkoc/multicodex@latest join ${shellQuote(server.inviteUrl)} --repo . --name Builder --policy suggest --terminal-mirror`,
+			`dev join: pnpm multicodex join ${shellQuote(server.inviteUrl)} --repo . --name Builder --policy suggest --terminal-mirror`,
 			"conductor: local ACPx / Codex",
 			"runtime: no Crabfleet, Crabbox, server OpenAI key, or GitHub token",
 			"",
@@ -88,6 +88,9 @@ async function join(args: string[]): Promise<void> {
 	if (!["observe", "suggest", "steer"].includes(policy)) {
 		throw new Error("policy must be observe, suggest, or steer");
 	}
+	const noTui = Boolean(options["no-tui"]);
+	const terminalMirror = Boolean(options["terminal-mirror"]);
+	if (noTui && terminalMirror) throw new Error("--terminal-mirror requires the normal Codex TUI");
 	const codexPath = await resolveUserCodexPath({ explicit: options.codex });
 	if (!codexPath) {
 		throw new Error(
@@ -100,7 +103,8 @@ async function join(args: string[]): Promise<void> {
 		displayName: options.name ?? process.env.USER ?? "Builder",
 		policy,
 		codexPath,
-		noTui: Boolean(options["no-tui"]),
+		noTui,
+		terminalMirror,
 		prompt: options.prompt,
 		fresh: Boolean(options.fresh),
 		statePath: options.state ? path.resolve(options.state) : undefined,
@@ -169,6 +173,7 @@ Usage:
 
 Options:
   --no-tui           connect the bridge without launching the normal Codex TUI
+  --terminal-mirror  share an ephemeral read-only TUI mirror with the room
   --prompt <text>    start a builder turn after connecting
   --fresh            create a new lane instead of resuming local lane state
   --state <path>     override the builder lane state file

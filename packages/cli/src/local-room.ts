@@ -14,6 +14,8 @@ import {
 	protocolVersion,
 	requiredPolicyForCommand,
 } from "../../protocol/src/index.ts";
+import { readTerminalAsset } from "./terminal-assets.ts";
+import { TerminalMirrorHub } from "./terminal-mirror.ts";
 import { localRoomHtml } from "./ui.ts";
 
 type StoredLane = AlphaLane & { token: string };
@@ -67,7 +69,12 @@ export class LocalRoomStore {
 		const state = JSON.parse(await fs.readFile(statePath, "utf8")) as StoredRoom;
 		state.hostToken ||= crypto.randomUUID();
 		state.inviteToken ||= crypto.randomUUID();
-		for (const lane of state.lanes) lane.removedAt ??= null;
+		for (const lane of state.lanes) {
+			lane.removedAt ??= null;
+			lane.terminalMirror ??= false;
+			lane.terminalColumns ??= null;
+			lane.terminalRows ??= null;
+		}
 		const store = new LocalRoomStore(statePath, state);
 		await store.save();
 		return store;
@@ -97,7 +104,7 @@ export class LocalRoomStore {
 		const inviteUrl = capabilityUrl(publicUrl, "invite", this.state.inviteToken);
 		return {
 			inviteUrl,
-			joinCommand: `npx --yes @vincentkoc/multicodex@latest join ${shellQuote(inviteUrl)} --repo .`,
+			joinCommand: `npx --yes @vincentkoc/multicodex@latest join ${shellQuote(inviteUrl)} --repo . --terminal-mirror`,
 			activeLanes: this.state.lanes.filter((lane) => !lane.removedAt).length,
 		};
 	}
@@ -122,6 +129,7 @@ export class LocalRoomStore {
 		displayName: string;
 		repo: string;
 		policy: LanePolicy;
+		terminalMirror?: boolean;
 	}): Promise<{ lane: AlphaLane; token: string }> {
 		const now = Date.now();
 		const lane: StoredLane = {
@@ -130,6 +138,9 @@ export class LocalRoomStore {
 			displayName: input.displayName,
 			repo: input.repo,
 			policy: input.policy,
+			terminalMirror: Boolean(input.terminalMirror),
+			terminalColumns: null,
+			terminalRows: null,
 			connected: false,
 			threadId: null,
 			currentTurnId: null,
@@ -153,6 +164,7 @@ export class LocalRoomStore {
 			displayName: string;
 			repo: string;
 			policy: LanePolicy;
+			terminalMirror?: boolean;
 		},
 	): Promise<{ lane: AlphaLane }> {
 		const lane = this.state.lanes.find(
@@ -163,6 +175,7 @@ export class LocalRoomStore {
 		lane.displayName = input.displayName;
 		lane.repo = input.repo;
 		lane.policy = input.policy;
+		lane.terminalMirror = Boolean(input.terminalMirror);
 		lane.updatedAt = Date.now();
 		lane.status = "reconnecting";
 		await this.save();
@@ -176,6 +189,31 @@ export class LocalRoomStore {
 				(lane) => lane.id === laneId && lane.token === token && !lane.removedAt,
 			) ?? null
 		);
+	}
+
+	authorizeTerminalViewer(laneId: string, token: string): boolean {
+		const lane = this.state.lanes.find((candidate) => candidate.id === laneId);
+		if (!lane || lane.removedAt || !lane.terminalMirror) return false;
+		return token === this.state.hostToken || token === lane.token;
+	}
+
+	authorizeTerminalPublisher(laneId: string, token: string): boolean {
+		const lane = this.authorizeLane(laneId, token);
+		return Boolean(lane?.terminalMirror);
+	}
+
+	async updateTerminalSize(
+		laneId: string,
+		token: string,
+		columns: number,
+		rows: number,
+	): Promise<void> {
+		const lane = this.requireLane(laneId, token);
+		if (!lane.terminalMirror) throw new RoomError(403, "terminal mirror unavailable");
+		lane.terminalColumns = terminalDimension(columns, 20, 400);
+		lane.terminalRows = terminalDimension(rows, 10, 200);
+		lane.updatedAt = Date.now();
+		await this.save();
 	}
 
 	async appendEvents(laneId: string, token: string, events: LaneEvent[]): Promise<number> {
@@ -328,10 +366,19 @@ export async function startLocalRoomServer(input: {
 	}
 	if (input.publicUrl) new URL(input.publicUrl);
 	let publicUrl = "";
+	const terminalHub = new TerminalMirrorHub();
 	const server = http.createServer((request, response) => {
-		void handleRequest(input.store, input.handlers, publicUrl, request, response).catch((cause) => {
+		void handleRequest(
+			input.store,
+			input.handlers,
+			terminalHub,
+			publicUrl,
+			request,
+			response,
+		).catch((cause) => {
 			const error = cause instanceof RoomError ? cause : new RoomError(500, errorMessage(cause));
-			sendJson(response, error.status, { error: error.message });
+			if (!response.headersSent) sendJson(response, error.status, { error: error.message });
+			else response.destroy();
 		});
 	});
 	await new Promise<void>((resolve, reject) => {
@@ -346,6 +393,7 @@ export async function startLocalRoomServer(input: {
 		hostUrl: input.store.hostUrl(publicUrl),
 		inviteUrl: input.store.inviteUrl(publicUrl),
 		close: async () => {
+			terminalHub.closeAll();
 			await new Promise<void>((resolve, reject) =>
 				server.close((cause) => (cause ? reject(cause) : resolve())),
 			);
@@ -356,6 +404,7 @@ export async function startLocalRoomServer(input: {
 async function handleRequest(
 	store: LocalRoomStore,
 	handlers: LocalRoomHandlers,
+	terminalHub: TerminalMirrorHub,
 	publicUrl: string,
 	request: IncomingMessage,
 	response: ServerResponse,
@@ -364,6 +413,13 @@ async function handleRequest(
 	if (request.method === "GET" && url.pathname === "/") {
 		sendText(response, 200, localRoomHtml(), "text/html; charset=utf-8");
 		return;
+	}
+	if (request.method === "GET") {
+		const asset = await readTerminalAsset(url.pathname);
+		if (asset) {
+			sendBinary(response, 200, asset.body, asset.contentType);
+			return;
+		}
 	}
 	if (request.method === "GET" && url.pathname === "/api/snapshot") {
 		sendJson(response, 200, store.snapshot());
@@ -387,6 +443,7 @@ async function handleRequest(
 			displayName: requiredString(body.displayName, "displayName"),
 			repo: requiredString(body.repo, "repo"),
 			policy: policy as LanePolicy,
+			terminalMirror: body.terminalMirror === true,
 		});
 		sendJson(response, 201, { room: store.snapshot(), ...joined });
 		return;
@@ -398,11 +455,15 @@ async function handleRequest(
 		if (!["observe", "suggest", "steer"].includes(String(policy))) {
 			throw new RoomError(400, "policy must be observe, suggest, or steer");
 		}
-		const resumed = await store.resumeLane(decodeURIComponent(resumeMatch[1]!), bearer(request), {
+		const laneId = decodeURIComponent(resumeMatch[1]!);
+		const terminalMirror = body.terminalMirror === true;
+		const resumed = await store.resumeLane(laneId, bearer(request), {
 			displayName: requiredString(body.displayName, "displayName"),
 			repo: requiredString(body.repo, "repo"),
 			policy: policy as LanePolicy,
+			terminalMirror,
 		});
+		if (!terminalMirror) terminalHub.closeLane(laneId);
 		sendJson(response, 200, { room: store.snapshot(), ...resumed });
 		return;
 	}
@@ -420,6 +481,38 @@ async function handleRequest(
 		const laneId = decodeURIComponent(commandMatch[1]!);
 		const after = Number(url.searchParams.get("after") ?? "0");
 		sendJson(response, 200, { commands: store.commandsAfter(laneId, bearer(request), after) });
+		return;
+	}
+	const terminalMatch = url.pathname.match(/^\/api\/lanes\/([^/]+)\/terminal$/);
+	if (terminalMatch) {
+		const laneId = decodeURIComponent(terminalMatch[1]!);
+		const token = optionalBearer(request);
+		if (request.method === "GET") {
+			if (!store.authorizeTerminalViewer(laneId, token)) {
+				throw new RoomError(403, "terminal mirror unavailable");
+			}
+			terminalHub.subscribe(laneId, response);
+			return;
+		}
+		if (request.method === "POST") {
+			if (!store.authorizeTerminalPublisher(laneId, token)) {
+				throw new RoomError(403, "terminal mirror unavailable");
+			}
+			for await (const chunk of request) terminalHub.publish(laneId, Buffer.from(chunk));
+			sendJson(response, 202, { accepted: true });
+			return;
+		}
+	}
+	const terminalSizeMatch = url.pathname.match(/^\/api\/lanes\/([^/]+)\/terminal-size$/);
+	if (request.method === "POST" && terminalSizeMatch) {
+		const body = await readJson(request);
+		await store.updateTerminalSize(
+			decodeURIComponent(terminalSizeMatch[1]!),
+			bearer(request),
+			Number(body.columns),
+			Number(body.rows),
+		);
+		sendJson(response, 202, { accepted: true });
 		return;
 	}
 	const laneMessageMatch = url.pathname.match(/^\/api\/lanes\/([^/]+)\/message$/);
@@ -452,7 +545,9 @@ async function handleRequest(
 	const removeMatch = url.pathname.match(/^\/api\/lanes\/([^/]+)$/);
 	if (request.method === "DELETE" && removeMatch) {
 		requireHost(store, request);
-		await store.removeLane(decodeURIComponent(removeMatch[1]!));
+		const laneId = decodeURIComponent(removeMatch[1]!);
+		await store.removeLane(laneId);
+		terminalHub.closeLane(laneId);
 		sendJson(response, 200, { removed: true });
 		return;
 	}
@@ -541,6 +636,11 @@ function bearer(request: IncomingMessage): string {
 	return value.slice("Bearer ".length);
 }
 
+function optionalBearer(request: IncomingMessage): string {
+	const value = request.headers.authorization;
+	return value?.startsWith("Bearer ") ? value.slice("Bearer ".length) : "";
+}
+
 function requireHost(store: LocalRoomStore, request: IncomingMessage): void {
 	if (!store.authorizeHost(bearer(request))) throw new RoomError(401, "host capability required");
 }
@@ -558,6 +658,11 @@ function requiredCommandKind(value: unknown): LaneCommandKind {
 		throw new RoomError(400, "valid command kind required");
 	}
 	return value as LaneCommandKind;
+}
+
+function terminalDimension(value: number, minimum: number, maximum: number): number {
+	if (!Number.isFinite(value)) throw new RoomError(400, "valid terminal dimensions required");
+	return Math.min(maximum, Math.max(minimum, Math.trunc(value)));
 }
 
 function advertisedUrl(host: string, port: number, configured?: string): string {
@@ -581,6 +686,21 @@ function shellQuote(value: string): string {
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
 	sendText(response, status, JSON.stringify(body), "application/json; charset=utf-8");
+}
+
+function sendBinary(
+	response: ServerResponse,
+	status: number,
+	body: Buffer,
+	contentType: string,
+): void {
+	response.writeHead(status, {
+		"content-type": contentType,
+		"content-length": String(body.byteLength),
+		"cache-control": "public, max-age=31536000, immutable",
+		"x-content-type-options": "nosniff",
+	});
+	response.end(body);
 }
 
 function sendText(
