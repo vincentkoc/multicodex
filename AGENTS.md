@@ -7,8 +7,8 @@ sessions. Keep the default runtime host-local: the host process owns the room
 server and ACPx conductor, while each participant bridge owns its loopback
 Codex app-server, policy, normal TUI, and local credentials.
 
-Crabfleet and the earlier Cloudflare Worker remain legacy compatibility
-surfaces. Do not make them required by the CLI-first product.
+Do not add hosted terminal or remote workspace infrastructure to the
+self-contained product.
 
 ## Commands
 

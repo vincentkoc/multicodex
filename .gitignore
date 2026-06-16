@@ -2,8 +2,5 @@ node_modules/
 .multicodex-alpha/
 .multicodex/
 dist/
-.wrangler/
-.dev.vars
-worker-configuration.d.ts
 *.log
 .DS_Store
