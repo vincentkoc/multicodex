@@ -67,6 +67,9 @@ export type AlphaLane = {
 	displayName: string;
 	repo: string;
 	policy: LanePolicy;
+	terminalMirror: boolean;
+	terminalColumns: number | null;
+	terminalRows: number | null;
 	connected: boolean;
 	threadId: string | null;
 	currentTurnId: string | null;

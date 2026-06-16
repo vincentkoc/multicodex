@@ -6,8 +6,9 @@ their own Codex installation, authentication, repository, tools, and local
 terminal.
 
 The browser shows a live structured view of each lane and gives the host
-visible, policy-controlled coordination actions. It does not proxy a raw
-terminal or answer local Codex approvals.
+visible, policy-controlled coordination actions. Participants can additionally
+opt into an ephemeral, read-only Ghostty terminal mirror. Browser viewers
+cannot type into the terminal or answer local Codex approvals.
 
 ## Quickstart
 
@@ -31,12 +32,14 @@ command:
 npx --yes @vincentkoc/multicodex@latest join '<invite-url>' \
   --repo . \
   --name Queenie \
-  --policy suggest
+  --policy suggest \
+  --terminal-mirror
 ```
 
 The join command launches a normal local Codex TUI. Running the same command
 again resumes the same MultiCodex lane and Codex thread. Add `--fresh` only to
-create a new lane intentionally.
+create a new lane intentionally. Remove `--terminal-mirror` to publish only
+structured activity.
 
 ## Multi-Machine Rooms
 
@@ -88,11 +91,18 @@ invite, and each lane.
 - The invite capability creates new lanes.
 - A lane capability resumes one lane, publishes its events, and receives its
   permitted commands.
+- `--terminal-mirror` explicitly shares that lane's rendered terminal output
+  with the host and that participant only.
+- Terminal bytes are held in a bounded in-memory replay buffer and are never
+  written into room state or persisted to disk.
+- Terminal mirrors are read-only. Conductor steering still uses visible,
+  policy-checked Codex app-server commands.
 - Removing a lane revokes its capability and disconnects its managed bridge.
 - Capabilities do not appear in public room snapshots.
 - The participant's Codex app-server always binds to loopback.
-- Repository contents, credentials, hidden reasoning, and complete terminal
-  streams are not published.
+- Repository contents, credentials, and hidden reasoning are not published.
+  Terminal output can contain sensitive text, so participants should only use
+  `--terminal-mirror` in rooms they trust.
 
 Room and lane state is written under `.multicodex/` with owner-only
 permissions.
@@ -130,7 +140,8 @@ multicodex join -> lane capability -> room server
       |
       |- local event spool and policy enforcement
       |- loopback Codex app-server
-      `- normal local Codex TUI
+      |- normal local Codex TUI
+      `- optional ephemeral read-only PTY mirror
 ```
 
 Crabfleet, Crabbox, server OpenAI keys, server GitHub tokens, and hosted

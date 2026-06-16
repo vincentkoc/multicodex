@@ -37,7 +37,9 @@
 	},
 	"dependencies": {
 		"@agentclientprotocol/codex-acp": "0.0.46",
-		"acpx": "0.10.0"
+		"acpx": "0.10.0",
+		"ghostty-web": "0.4.0",
+		"node-pty": "1.1.0"
 	},
 	"devDependencies": {
 		"@types/node": "^24.0.0",
