@@ -16,7 +16,12 @@ import {
 	CodexAppServerClient,
 	startCodexAppServer,
 } from "./app-server.ts";
-import { BuilderStateStore, normalizeServer, type PersistedBuilderState } from "./builder-state.ts";
+import {
+	BuilderStateStore,
+	normalizeServer,
+	parseRoomEndpoint,
+	type PersistedBuilderState,
+} from "./builder-state.ts";
 
 type JoinResponse = {
 	room: { id: string };
@@ -37,6 +42,7 @@ export class BuilderBridge {
 		statePath?: string;
 	};
 	private readonly stateStore: BuilderStateStore;
+	private readonly inviteToken?: string;
 	private roomId = "";
 	private laneId = "";
 	private token = "";
@@ -47,19 +53,27 @@ export class BuilderBridge {
 	private spool: LaneEvent[] = [];
 	private client: CodexAppServerClient | null = null;
 	private appServerStop: (() => void) | null = null;
+	private tuiChild: ChildProcess | null = null;
 	private stopping = false;
 	private waitingForTuiThread = false;
 	private pendingTuiThreadId: string | null = null;
 	private attachingTuiThread = false;
 	private persistenceError: Error | null = null;
 	private readonly activity = new ActivityDeltaBuffer();
+	private readonly stopped: Promise<void>;
+	private resolveStopped: (() => void) | null = null;
 
 	constructor(input: BuilderBridge["input"]) {
+		const endpoint = parseRoomEndpoint(input.server);
 		this.input = {
 			...input,
-			server: normalizeServer(input.server),
+			server: endpoint.server,
 			repo: path.resolve(input.repo),
 		};
+		this.inviteToken = endpoint.inviteToken;
+		this.stopped = new Promise<void>((resolve) => {
+			this.resolveStopped = resolve;
+		});
 		this.stateStore = new BuilderStateStore({
 			repo: this.input.repo,
 			server: this.input.server,
@@ -106,7 +120,7 @@ export class BuilderBridge {
 			if (this.input.noTui && this.input.prompt) {
 				await this.client.startTurn(this.threadId, this.input.prompt);
 			}
-			if (this.input.noTui) await waitForSignal();
+			if (this.input.noTui) await this.stopped;
 			else await this.runTui(appServer.endpoint);
 		} finally {
 			clearInterval(poll);
@@ -120,8 +134,11 @@ export class BuilderBridge {
 	stop(): void {
 		if (this.stopping) return;
 		this.stopping = true;
+		this.resolveStopped?.();
+		this.resolveStopped = null;
 		this.client?.close();
 		this.appServerStop?.();
+		if (this.tuiChild && !this.tuiChild.killed) this.tuiChild.kill("SIGTERM");
 	}
 
 	private async joinOrResume(): Promise<void> {
@@ -157,7 +174,7 @@ export class BuilderBridge {
 				await this.persistState();
 				return;
 			}
-			if (![401, 404].includes(response.status)) {
+			if (![401, 404, 410].includes(response.status)) {
 				throw new Error(payload.error ?? `lane resume failed (${response.status})`);
 			}
 			await this.stateStore.clear();
@@ -166,7 +183,10 @@ export class BuilderBridge {
 
 		const response = await fetch(new URL("/api/join", this.input.server), {
 			method: "POST",
-			headers: { "content-type": "application/json" },
+			headers: {
+				"content-type": "application/json",
+				...(this.inviteToken ? { authorization: `Bearer ${this.inviteToken}` } : {}),
+			},
 			body: JSON.stringify({
 				displayName: this.input.displayName,
 				repo: this.input.repo,
@@ -219,6 +239,7 @@ export class BuilderBridge {
 			},
 		);
 		const payload = (await response.json()) as { ackSequence?: number; error?: string };
+		this.stopIfRevoked(response, payload.error);
 		if (!response.ok) throw new Error(payload.error ?? `event flush failed (${response.status})`);
 		this.spool = this.spool.filter((event) => event.sequence > (payload.ackSequence ?? 0));
 		await this.persistState();
@@ -232,6 +253,7 @@ export class BuilderBridge {
 		url.searchParams.set("after", String(this.commandSequence));
 		const response = await fetch(url, { headers: { authorization: `Bearer ${this.token}` } });
 		const payload = (await response.json()) as { commands?: LaneCommand[]; error?: string };
+		this.stopIfRevoked(response, payload.error);
 		if (!response.ok) throw new Error(payload.error ?? `command poll failed (${response.status})`);
 		for (const command of payload.commands ?? []) {
 			this.commandSequence = Math.max(this.commandSequence, command.sequence);
@@ -281,6 +303,12 @@ export class BuilderBridge {
 			result,
 		});
 		await this.flush();
+	}
+
+	private stopIfRevoked(response: Response, detail?: string): void {
+		if (response.status !== 410 || this.stopping) return;
+		process.stderr.write(`\n[multicodex] ${detail || "lane removed by host"}\n`);
+		this.stop();
 	}
 
 	private receiveNotification(notification: AppServerNotification): void {
@@ -342,7 +370,7 @@ export class BuilderBridge {
 
 	private async runTui(endpoint: string): Promise<void> {
 		process.stdout.write(
-			`\nMultiCodex lane ready\nroom: ${this.input.server}\nthread: attaching from normal TUI\npolicy: ${this.input.policy}\n\n`,
+			`\nMultiCodex lane ready\nroom: ${this.input.server}\nroom view: ${this.participantViewUrl()}\nthread: attaching from normal TUI\npolicy: ${this.input.policy}\n\n`,
 		);
 		const args = this.threadId
 			? ["resume", "--remote", endpoint, "-C", this.input.repo, this.threadId]
@@ -351,7 +379,18 @@ export class BuilderBridge {
 		const child = spawn(this.input.codexPath, args, {
 			stdio: "inherit",
 		});
-		await waitForChild(child);
+		this.tuiChild = child;
+		try {
+			await waitForChild(child);
+		} finally {
+			this.tuiChild = null;
+		}
+	}
+
+	private participantViewUrl(): string {
+		const url = new URL(this.input.server);
+		url.hash = new URLSearchParams({ lane: this.laneId, token: this.token }).toString();
+		return url.toString();
 	}
 
 	private captureTuiThread(thread: Record<string, unknown>): void {
@@ -486,12 +525,5 @@ async function waitForChild(child: ChildProcess): Promise<void> {
 			else reject(new Error(`Codex TUI exited with ${code}`));
 		});
 		child.once("error", reject);
-	});
-}
-
-async function waitForSignal(): Promise<void> {
-	await new Promise<void>((resolve) => {
-		process.once("SIGINT", resolve);
-		process.once("SIGTERM", resolve);
 	});
 }

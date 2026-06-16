@@ -7,9 +7,11 @@ export type LaneEventKind =
 	| "lane.disconnected"
 	| "lane.thread_attached"
 	| "lane.status"
+	| "lane.removed"
 	| "turn.started"
 	| "turn.completed"
 	| "turn.failed"
+	| "user.message"
 	| "agent.message"
 	| "agent.plan"
 	| "command.started"
@@ -73,11 +75,14 @@ export type AlphaLane = {
 	status: string;
 	joinedAt: number;
 	updatedAt: number;
+	removedAt: number | null;
 };
 
 export type ConductorMessage = {
 	id: string;
-	author: "host" | "conductor" | "system";
+	author: "host" | "conductor" | "system" | "participant";
+	authorName?: string;
+	laneId?: string;
 	body: string;
 	at: number;
 };

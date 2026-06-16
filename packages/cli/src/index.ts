@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 
 import type { LanePolicy } from "../../protocol/src/index.ts";
 import { BuilderBridge } from "./builder.ts";
+import { resolveUserCodexPath } from "./codex-path.ts";
 import { LocalConductor } from "./conductor.ts";
 import { LocalRoomStore, startLocalRoomServer } from "./local-room.ts";
 
@@ -38,7 +39,8 @@ async function host(args: string[]): Promise<void> {
 	const options = parseArgs(args);
 	const repo = path.resolve(options.repo ?? ".");
 	const port = Number(options.port ?? "7331");
-	const stateDir = path.resolve(options.state ?? path.join(repo, ".multicodex-alpha", "host"));
+	const bind = options.bind ?? "127.0.0.1";
+	const stateDir = path.resolve(options.state ?? path.join(repo, ".multicodex", "host"));
 	const store = options.resume
 		? await LocalRoomStore.load(stateDir)
 		: await LocalRoomStore.create({
@@ -50,18 +52,26 @@ async function host(args: string[]): Promise<void> {
 	const server = await startLocalRoomServer({
 		store,
 		port,
+		host: bind,
+		publicUrl: options["public-url"],
 		handlers: {
 			onConductorMessage: (text) => conductor.message(text),
-			onConductorSteer: (laneId, text) => conductor.steer(laneId, text),
+			onConductorCommand: (laneId, kind, text) => conductor.command(laneId, kind, text),
 		},
 	});
-	await conductor.initialize();
+	try {
+		await conductor.initialize();
+	} catch (cause) {
+		await server.close();
+		throw cause;
+	}
 	process.stdout.write(
 		[
 			"",
-			"MultiCodex local alpha ready",
-			`room: ${server.url}`,
-			`join: pnpm multicodex join ${server.url} --repo ${shellQuote(repo)} --name Builder --policy steer`,
+			"MultiCodex room ready",
+			`control: ${server.hostUrl}`,
+			`invite: npx --yes @vincentkoc/multicodex@latest join ${shellQuote(server.inviteUrl)} --repo . --name Builder --policy suggest`,
+			`dev join: pnpm multicodex join ${shellQuote(server.inviteUrl)} --repo . --name Builder --policy suggest`,
 			"conductor: local ACPx / Codex",
 			"runtime: no Crabfleet, Crabbox, server OpenAI key, or GitHub token",
 			"",
@@ -78,12 +88,18 @@ async function join(args: string[]): Promise<void> {
 	if (!["observe", "suggest", "steer"].includes(policy)) {
 		throw new Error("policy must be observe, suggest, or steer");
 	}
+	const codexPath = await resolveUserCodexPath({ explicit: options.codex });
+	if (!codexPath) {
+		throw new Error(
+			"user Codex not found outside package-local dependencies; install Codex or pass --codex",
+		);
+	}
 	const bridge = new BuilderBridge({
 		server,
 		repo: path.resolve(options.repo ?? "."),
 		displayName: options.name ?? process.env.USER ?? "Builder",
 		policy,
-		codexPath: options.codex ?? "codex",
+		codexPath,
 		noTui: Boolean(options["no-tui"]),
 		prompt: options.prompt,
 		fresh: Boolean(options.fresh),
@@ -96,12 +112,22 @@ async function join(args: string[]): Promise<void> {
 
 async function doctor(): Promise<void> {
 	const checks: Array<[string, boolean, string]> = [];
-	checks.push(["Node", Number(process.versions.node.split(".")[0]) >= 22, process.version]);
-	try {
-		const { stdout } = await execFileAsync("codex", ["--version"]);
-		checks.push(["Codex", true, stdout.trim()]);
-	} catch {
-		checks.push(["Codex", false, "not found"]);
+	const [nodeMajor = 0, nodeMinor = 0] = process.versions.node.split(".").map(Number);
+	checks.push([
+		"Node",
+		nodeMajor > 22 || (nodeMajor === 22 && nodeMinor >= 13),
+		`${process.version} (requires >=22.13.0)`,
+	]);
+	const codexPath = await resolveUserCodexPath();
+	if (!codexPath) {
+		checks.push(["Codex", false, "user install not found outside package-local dependencies"]);
+	} else {
+		try {
+			const { stdout } = await execFileAsync(codexPath, ["--version"]);
+			checks.push(["Codex", true, stdout.trim()]);
+		} catch {
+			checks.push(["Codex", false, "not found"]);
+		}
 	}
 	checks.push(["WebSocket", typeof WebSocket === "function", "Node WebSocket client"]);
 	for (const [name, ok, detail] of checks)
@@ -133,15 +159,15 @@ function parseArgs(args: string[]): Record<string, string | undefined> {
 }
 
 function help(): void {
-	process.stdout.write(`MultiCodex local-first alpha
+	process.stdout.write(`MultiCodex self-contained room
 
 Usage:
   multicodex doctor
-  multicodex host --repo . [--port 7331] [--title "Room"]
-  multicodex join <room-url> --repo . --name Builder [--policy suggest|steer]
+  multicodex host --repo . [--port 7331] [--bind 127.0.0.1] [--public-url <url>]
+  multicodex join <invite-url> --repo . --name Builder [--policy observe|suggest|steer]
   multicodex status [room-url]
 
-Alpha-only options:
+Options:
   --no-tui           connect the bridge without launching the normal Codex TUI
   --prompt <text>    start a builder turn after connecting
   --fresh            create a new lane instead of resuming local lane state

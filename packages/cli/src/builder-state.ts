@@ -63,7 +63,16 @@ export class BuilderStateStore {
 }
 
 export function normalizeServer(server: string): string {
-	return new URL(server).toString().replace(/\/$/, "");
+	return parseRoomEndpoint(server).server;
+}
+
+export function parseRoomEndpoint(server: string): { server: string; inviteToken?: string } {
+	const url = new URL(server);
+	const fragment = new URLSearchParams(url.hash.replace(/^#/, ""));
+	const inviteToken = url.searchParams.get("invite") ?? fragment.get("invite") ?? undefined;
+	url.searchParams.delete("invite");
+	url.hash = "";
+	return { server: url.toString().replace(/\/$/, ""), inviteToken };
 }
 
 function digest(value: string): string {

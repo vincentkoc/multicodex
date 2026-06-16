@@ -2,9 +2,13 @@
 
 ## Product
 
-MultiCodex is the collaboration layer above Crabfleet. Keep runtime and terminal
-transport in Crabfleet; keep rooms, chat, plans, tasks, and conductor behavior
-here.
+MultiCodex is a self-contained multiplayer control room for normal local Codex
+sessions. Keep the default runtime host-local: the host process owns the room
+server and ACPx conductor, while each participant bridge owns its loopback
+Codex app-server, policy, normal TUI, and local credentials.
+
+Crabfleet and the earlier Cloudflare Worker remain legacy compatibility
+surfaces. Do not make them required by the CLI-first product.
 
 ## Commands
 
@@ -17,12 +21,15 @@ pnpm build
 
 ## Boundaries
 
-- Keep the room event log in D1 as the product source of truth.
-- Use one `RoomHub` Durable Object per room for ordered WebSocket fanout.
-- Never expose OpenAI, GitHub, or Crabfleet service credentials to browsers.
-- Every Crabfleet read or mutation must include the room root session ID.
-- Conductor actions must be visible in room activity.
-- Destructive or goal-changing actions require host approval.
+- Keep local room and lane state durable, atomic, redacted, and capability
+  scoped.
+- Keep Codex app-server listeners on loopback.
+- Never expose local Codex, repository, or service credentials to browsers.
+- Keep host, invite, and lane capabilities distinct.
+- Conductor and participant actions must be visible in room activity.
+- Participant policy remains authoritative for suggestions and steering.
+- Removing a lane revokes it and disconnects only its managed processes.
+- Do not kill unrelated local Codex, terminal, or app-server processes.
 - Use ASCII in source and documentation.
 
 ## Frontend

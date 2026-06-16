@@ -1,14 +1,31 @@
 {
-	"name": "multicodex",
+	"name": "@vincentkoc/multicodex",
 	"version": "0.1.0",
-	"private": true,
-	"bin": {
-		"multicodex": "packages/cli/bin/multicodex.mjs"
+	"private": false,
+	"description": "A self-contained multiplayer control room for normal local Codex sessions",
+	"homepage": "https://github.com/vincentkoc/multicodex#readme",
+	"bugs": {
+		"url": "https://github.com/vincentkoc/multicodex/issues"
 	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/vincentkoc/multicodex.git"
+	},
+	"bin": {
+		"multicodex": "dist/cli.mjs"
+	},
+	"files": [
+		"dist/cli.mjs",
+		"README.md"
+	],
 	"type": "module",
+	"publishConfig": {
+		"access": "public"
+	},
 	"scripts": {
 		"alpha:host": "node --experimental-strip-types packages/cli/src/index.ts host --repo .",
-		"build": "wrangler types && vite build && tsc --noEmit",
+		"build": "pnpm build:cli && pnpm smoke:cli && pnpm legacy:build",
+		"build:cli": "node scripts/build-cli.mjs",
 		"check": "pnpm typecheck && pnpm test && pnpm lint && pnpm format",
 		"db:local": "wrangler d1 migrations apply DB --local",
 		"deploy": "pnpm build && wrangler d1 migrations apply DB --remote && wrangler deploy",
@@ -16,11 +33,15 @@
 		"format": "oxfmt --check .",
 		"format:fix": "oxfmt .",
 		"lint": "oxlint .",
+		"legacy:build": "wrangler types && vite build && tsc --noEmit",
 		"multicodex": "node --experimental-strip-types packages/cli/src/index.ts",
+		"prepack": "pnpm build:cli",
+		"smoke:cli": "node dist/cli.mjs --help",
 		"test": "node --test --experimental-strip-types tests/*.test.ts",
 		"typecheck": "wrangler types && tsc --noEmit"
 	},
 	"dependencies": {
+		"@agentclientprotocol/codex-acp": "0.0.46",
 		"acpx": "0.10.0",
 		"lucide-preact": "^0.468.0",
 		"preact": "^10.29.2"
@@ -28,11 +49,15 @@
 	"devDependencies": {
 		"@preact/preset-vite": "^2.10.5",
 		"@types/node": "^24.0.0",
+		"esbuild": "0.28.1",
 		"oxfmt": "^0.54.0",
 		"oxlint": "^1.69.0",
 		"typescript": "^5.9.3",
 		"vite": "^8.0.16",
 		"wrangler": "^4.100.0"
+	},
+	"engines": {
+		"node": ">=22.13.0"
 	},
 	"packageManager": "pnpm@10.23.0"
 }

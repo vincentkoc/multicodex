@@ -8,7 +8,7 @@ import {
 	type AcpRuntimeHandle,
 } from "acpx/runtime";
 
-import type { AlphaRoomSnapshot } from "../../protocol/src/index.ts";
+import type { AlphaRoomSnapshot, LaneCommandKind } from "../../protocol/src/index.ts";
 import type { LocalRoomStore } from "./local-room.ts";
 
 export class LocalConductor {
@@ -30,7 +30,6 @@ export class LocalConductor {
 	}
 
 	async initialize(): Promise<void> {
-		await this.store.addConductorMessage("system", "starting host-local ACPx conductor");
 		this.handle = await this.runtime.ensureSession({
 			sessionKey: `multicodex:${this.store.snapshot().id}:conductor`,
 			agent: "codex",
@@ -55,12 +54,16 @@ export class LocalConductor {
 	}
 
 	steer(laneId: string, text: string): Promise<void> {
+		return this.command(laneId, "steer_active_turn", text);
+	}
+
+	command(laneId: string, kind: LaneCommandKind, text: string): Promise<void> {
 		return this.enqueue(async () => {
 			const response = await this.turn(
-				`Room snapshot:\n${compactSnapshot(this.store.snapshot())}\n\nThe host asks you to send this visible steer to lane ${laneId}:\n${text}\n\nBriefly state why this steer helps.`,
+				`Room snapshot:\n${compactSnapshot(this.store.snapshot())}\n\nThe host asks you to deliver the visible ${kind} action to lane ${laneId}:\n${text}\n\nBriefly state why this action helps.`,
 			);
 			if (response) await this.store.addConductorMessage("conductor", response);
-			await this.store.queueCommand(laneId, "steer_active_turn", text);
+			await this.store.queueCommand(laneId, kind, text);
 		});
 	}
 
@@ -98,6 +101,7 @@ function compactSnapshot(snapshot: AlphaRoomSnapshot): string {
 			connected: lane.connected,
 			status: lane.status,
 			activeTurn: lane.currentTurnId,
+			removed: Boolean(lane.removedAt),
 		})),
 		recentEvents: snapshot.events.slice(-12).map((event) => ({
 			laneId: event.laneId,

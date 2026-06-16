@@ -22,6 +22,8 @@ type StoredRoom = Omit<AlphaRoomSnapshot, "lanes"> & {
 	lanes: StoredLane[];
 	commands: LaneCommand[];
 	eventIds: string[];
+	hostToken: string;
+	inviteToken: string;
 };
 
 export class LocalRoomStore {
@@ -52,6 +54,8 @@ export class LocalRoomStore {
 			conductorMessages: [],
 			commands: [],
 			eventIds: [],
+			hostToken: crypto.randomUUID(),
+			inviteToken: crypto.randomUUID(),
 		};
 		const store = new LocalRoomStore(statePath, state);
 		await store.save();
@@ -61,7 +65,12 @@ export class LocalRoomStore {
 	static async load(stateDir: string): Promise<LocalRoomStore> {
 		const statePath = path.join(stateDir, "room.json");
 		const state = JSON.parse(await fs.readFile(statePath, "utf8")) as StoredRoom;
-		return new LocalRoomStore(statePath, state);
+		state.hostToken ||= crypto.randomUUID();
+		state.inviteToken ||= crypto.randomUUID();
+		for (const lane of state.lanes) lane.removedAt ??= null;
+		const store = new LocalRoomStore(statePath, state);
+		await store.save();
+		return store;
 	}
 
 	snapshot(): AlphaRoomSnapshot {
@@ -78,6 +87,35 @@ export class LocalRoomStore {
 			events: this.state.events.slice(-300),
 			conductorMessages: this.state.conductorMessages.slice(-100),
 		};
+	}
+
+	hostConfig(publicUrl: string): {
+		inviteUrl: string;
+		joinCommand: string;
+		activeLanes: number;
+	} {
+		const inviteUrl = capabilityUrl(publicUrl, "invite", this.state.inviteToken);
+		return {
+			inviteUrl,
+			joinCommand: `npx --yes @vincentkoc/multicodex@latest join ${shellQuote(inviteUrl)} --repo .`,
+			activeLanes: this.state.lanes.filter((lane) => !lane.removedAt).length,
+		};
+	}
+
+	hostUrl(publicUrl: string): string {
+		return capabilityUrl(publicUrl, "host", this.state.hostToken);
+	}
+
+	inviteUrl(publicUrl: string): string {
+		return capabilityUrl(publicUrl, "invite", this.state.inviteToken);
+	}
+
+	authorizeHost(token: string): boolean {
+		return token === this.state.hostToken;
+	}
+
+	authorizeInvite(token: string): boolean {
+		return token === this.state.inviteToken;
 	}
 
 	async join(input: {
@@ -100,6 +138,7 @@ export class LocalRoomStore {
 			status: "joining",
 			joinedAt: now,
 			updatedAt: now,
+			removedAt: null,
 		};
 		this.state.lanes.push(lane);
 		await this.save();
@@ -116,8 +155,11 @@ export class LocalRoomStore {
 			policy: LanePolicy;
 		},
 	): Promise<{ lane: AlphaLane }> {
-		const lane = this.authorizeLane(laneId, token);
+		const lane = this.state.lanes.find(
+			(candidate) => candidate.id === laneId && candidate.token === token,
+		);
 		if (!lane) throw new RoomError(401, "valid lane capability required");
+		if (lane.removedAt) throw new RoomError(410, "lane removed by host");
 		lane.displayName = input.displayName;
 		lane.repo = input.repo;
 		lane.policy = input.policy;
@@ -129,12 +171,15 @@ export class LocalRoomStore {
 	}
 
 	authorizeLane(laneId: string, token: string): StoredLane | null {
-		return this.state.lanes.find((lane) => lane.id === laneId && lane.token === token) ?? null;
+		return (
+			this.state.lanes.find(
+				(lane) => lane.id === laneId && lane.token === token && !lane.removedAt,
+			) ?? null
+		);
 	}
 
 	async appendEvents(laneId: string, token: string, events: LaneEvent[]): Promise<number> {
-		const lane = this.authorizeLane(laneId, token);
-		if (!lane) throw new RoomError(401, "valid lane capability required");
+		const lane = this.requireLane(laneId, token);
 		for (const event of events) {
 			if (
 				event.version !== protocolVersion ||
@@ -161,8 +206,7 @@ export class LocalRoomStore {
 	}
 
 	commandsAfter(laneId: string, token: string, after: number): LaneCommand[] {
-		const lane = this.authorizeLane(laneId, token);
-		if (!lane) throw new RoomError(401, "valid lane capability required");
+		this.requireLane(laneId, token);
 		return this.state.commands.filter(
 			(command) => command.laneId === laneId && command.sequence > after,
 		);
@@ -171,6 +215,7 @@ export class LocalRoomStore {
 	async queueCommand(laneId: string, kind: LaneCommandKind, text: string): Promise<LaneCommand> {
 		const lane = this.state.lanes.find((candidate) => candidate.id === laneId);
 		if (!lane) throw new RoomError(404, "lane not found");
+		if (lane.removedAt) throw new RoomError(410, "lane removed by host");
 		if (!policyAllows(lane.policy, kind)) {
 			throw new RoomError(409, `${kind} requires ${requiredPolicyForCommand(kind)} policy`);
 		}
@@ -192,22 +237,62 @@ export class LocalRoomStore {
 		lane.updatedAt = now;
 		this.state.commands.push(command);
 		this.state.commands.splice(0, Math.max(0, this.state.commands.length - 500));
-		await this.addConductorMessage(
-			"conductor",
-			`${kind.replaceAll("_", " ")} -> ${lane.displayName}: ${text}`,
-		);
+		await this.save();
 		return command;
 	}
 
-	async addConductorMessage(author: ConductorMessage["author"], body: string): Promise<void> {
+	async removeLane(laneId: string): Promise<void> {
+		const lane = this.state.lanes.find((candidate) => candidate.id === laneId);
+		if (!lane) throw new RoomError(404, "lane not found");
+		if (lane.removedAt) return;
+		const now = Date.now();
+		lane.removedAt = now;
+		lane.connected = false;
+		lane.currentTurnId = null;
+		lane.status = "removed by host";
+		lane.updatedAt = now;
+		await this.addConductorMessage("system", `${lane.displayName} removed by host`);
+	}
+
+	async addParticipantMessage(laneId: string, token: string, body: string): Promise<string> {
+		const lane = this.requireLane(laneId, token);
+		await this.addConductorMessage("participant", body, {
+			authorName: lane.displayName,
+			laneId: lane.id,
+		});
+		return lane.displayName;
+	}
+
+	async addConductorMessage(
+		author: ConductorMessage["author"],
+		body: string,
+		detail?: Pick<ConductorMessage, "authorName" | "laneId">,
+	): Promise<void> {
+		const previous = this.state.conductorMessages.at(-1);
+		if (
+			previous?.author === author &&
+			previous.body === body &&
+			previous.authorName === detail?.authorName &&
+			previous.laneId === detail?.laneId
+		) {
+			return;
+		}
 		this.state.conductorMessages.push({
 			id: `message_${crypto.randomUUID()}`,
 			author,
+			...detail,
 			body,
 			at: Date.now(),
 		});
 		this.state.conductorMessages.splice(0, Math.max(0, this.state.conductorMessages.length - 300));
 		await this.save();
+	}
+
+	private requireLane(laneId: string, token: string): StoredLane {
+		const lane = this.state.lanes.find((candidate) => candidate.id === laneId);
+		if (!lane || lane.token !== token) throw new RoomError(401, "valid lane capability required");
+		if (lane.removedAt) throw new RoomError(410, "lane removed by host");
+		return lane;
 	}
 
 	private async save(): Promise<void> {
@@ -222,28 +307,44 @@ export class LocalRoomStore {
 
 export type LocalRoomHandlers = {
 	onConductorMessage: (text: string) => Promise<void>;
-	onConductorSteer: (laneId: string, text: string) => Promise<void>;
+	onConductorCommand: (laneId: string, kind: LaneCommandKind, text: string) => Promise<void>;
 };
 
 export async function startLocalRoomServer(input: {
 	store: LocalRoomStore;
 	port: number;
+	host?: string;
+	publicUrl?: string;
 	handlers: LocalRoomHandlers;
-}): Promise<{ url: string; close: () => Promise<void> }> {
+}): Promise<{
+	url: string;
+	hostUrl: string;
+	inviteUrl: string;
+	close: () => Promise<void>;
+}> {
+	const host = input.host ?? "127.0.0.1";
+	if (["0.0.0.0", "::"].includes(host) && !input.publicUrl) {
+		throw new RoomError(400, "--public-url is required when binding to all interfaces");
+	}
+	if (input.publicUrl) new URL(input.publicUrl);
+	let publicUrl = "";
 	const server = http.createServer((request, response) => {
-		void handleRequest(input.store, input.handlers, request, response).catch((cause) => {
+		void handleRequest(input.store, input.handlers, publicUrl, request, response).catch((cause) => {
 			const error = cause instanceof RoomError ? cause : new RoomError(500, errorMessage(cause));
 			sendJson(response, error.status, { error: error.message });
 		});
 	});
 	await new Promise<void>((resolve, reject) => {
 		server.once("error", reject);
-		server.listen(input.port, "127.0.0.1", resolve);
+		server.listen(input.port, host, resolve);
 	});
 	const address = server.address();
 	const port = typeof address === "object" && address ? address.port : input.port;
+	publicUrl = advertisedUrl(host, port, input.publicUrl);
 	return {
-		url: `http://127.0.0.1:${port}`,
+		url: publicUrl,
+		hostUrl: input.store.hostUrl(publicUrl),
+		inviteUrl: input.store.inviteUrl(publicUrl),
 		close: async () => {
 			await new Promise<void>((resolve, reject) =>
 				server.close((cause) => (cause ? reject(cause) : resolve())),
@@ -255,6 +356,7 @@ export async function startLocalRoomServer(input: {
 async function handleRequest(
 	store: LocalRoomStore,
 	handlers: LocalRoomHandlers,
+	publicUrl: string,
 	request: IncomingMessage,
 	response: ServerResponse,
 ): Promise<void> {
@@ -267,7 +369,15 @@ async function handleRequest(
 		sendJson(response, 200, store.snapshot());
 		return;
 	}
+	if (request.method === "GET" && url.pathname === "/api/host/config") {
+		requireHost(store, request);
+		sendJson(response, 200, store.hostConfig(publicUrl));
+		return;
+	}
 	if (request.method === "POST" && url.pathname === "/api/join") {
+		if (!store.authorizeInvite(bearer(request))) {
+			throw new RoomError(401, "valid room invite required");
+		}
 		const body = await readJson(request);
 		const policy = body.policy;
 		if (!["observe", "suggest", "steer"].includes(String(policy))) {
@@ -312,7 +422,22 @@ async function handleRequest(
 		sendJson(response, 200, { commands: store.commandsAfter(laneId, bearer(request), after) });
 		return;
 	}
+	const laneMessageMatch = url.pathname.match(/^\/api\/lanes\/([^/]+)\/message$/);
+	if (request.method === "POST" && laneMessageMatch) {
+		const laneId = decodeURIComponent(laneMessageMatch[1]!);
+		const body = await readJson(request);
+		const text = requiredString(body.text, "text");
+		const displayName = await store.addParticipantMessage(laneId, bearer(request), text);
+		void handlers
+			.onConductorMessage(`${displayName}: ${text}`)
+			.catch((cause) =>
+				store.addConductorMessage("system", `conductor failed: ${errorMessage(cause)}`),
+			);
+		sendJson(response, 202, { accepted: true });
+		return;
+	}
 	if (request.method === "POST" && url.pathname === "/api/conductor/message") {
+		requireHost(store, request);
 		const body = await readJson(request);
 		const text = requiredString(body.text, "text");
 		await store.addConductorMessage("host", text);
@@ -324,13 +449,35 @@ async function handleRequest(
 		sendJson(response, 202, { accepted: true });
 		return;
 	}
+	const removeMatch = url.pathname.match(/^\/api\/lanes\/([^/]+)$/);
+	if (request.method === "DELETE" && removeMatch) {
+		requireHost(store, request);
+		await store.removeLane(decodeURIComponent(removeMatch[1]!));
+		sendJson(response, 200, { removed: true });
+		return;
+	}
+	if (request.method === "POST" && url.pathname === "/api/conductor/command") {
+		requireHost(store, request);
+		const body = await readJson(request);
+		const laneId = requiredString(body.laneId, "laneId");
+		const kind = requiredCommandKind(body.kind);
+		const text = requiredString(body.text, "text");
+		void handlers
+			.onConductorCommand(laneId, kind, text)
+			.catch((cause) =>
+				store.addConductorMessage("system", `conductor command failed: ${errorMessage(cause)}`),
+			);
+		sendJson(response, 202, { accepted: true });
+		return;
+	}
 	if (request.method === "POST" && url.pathname === "/api/conductor/steer") {
+		requireHost(store, request);
 		const body = await readJson(request);
 		const laneId = requiredString(body.laneId, "laneId");
 		const text = requiredString(body.text, "text");
 		await store.addConductorMessage("host", `requested steer -> ${laneId}: ${text}`);
 		void handlers
-			.onConductorSteer(laneId, text)
+			.onConductorCommand(laneId, "steer_active_turn", text)
 			.catch((cause) =>
 				store.addConductorMessage("system", `conductor steer failed: ${errorMessage(cause)}`),
 			);
@@ -392,6 +539,44 @@ function bearer(request: IncomingMessage): string {
 	const value = request.headers.authorization;
 	if (!value?.startsWith("Bearer ")) throw new RoomError(401, "lane capability required");
 	return value.slice("Bearer ".length);
+}
+
+function requireHost(store: LocalRoomStore, request: IncomingMessage): void {
+	if (!store.authorizeHost(bearer(request))) throw new RoomError(401, "host capability required");
+}
+
+function requiredCommandKind(value: unknown): LaneCommandKind {
+	if (
+		![
+			"suggest",
+			"start_followup",
+			"steer_active_turn",
+			"request_status",
+			"request_interrupt",
+		].includes(String(value))
+	) {
+		throw new RoomError(400, "valid command kind required");
+	}
+	return value as LaneCommandKind;
+}
+
+function advertisedUrl(host: string, port: number, configured?: string): string {
+	if (configured) return new URL(configured).toString().replace(/\/$/, "");
+	if (["0.0.0.0", "::"].includes(host)) {
+		throw new RoomError(400, "--public-url is required when binding to all interfaces");
+	}
+	const displayHost = host.includes(":") ? `[${host}]` : host;
+	return `http://${displayHost}:${port}`;
+}
+
+function capabilityUrl(base: string, kind: "host" | "invite", token: string): string {
+	const url = new URL(base);
+	url.hash = new URLSearchParams({ [kind]: token }).toString();
+	return url.toString();
+}
+
+function shellQuote(value: string): string {
+	return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
