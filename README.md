@@ -135,19 +135,3 @@ multicodex join -> lane capability -> room server
 
 Crabfleet, Crabbox, server OpenAI keys, server GitHub tokens, and hosted
 terminals are not required by the self-contained product.
-
-The repository still contains the earlier Cloudflare/Crabfleet event-room
-implementation while the local-first replacement lands. It is not the default
-MultiCodex runtime.
-
-## Legacy Worker Development
-
-The earlier Worker product remains testable during replacement:
-
-```bash
-pnpm db:local
-pnpm dev
-```
-
-`pnpm dev` enables simulation only for the local Wrangler process. Production
-keeps simulation explicitly disabled.
