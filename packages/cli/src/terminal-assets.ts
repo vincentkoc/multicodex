@@ -1,37 +1,27 @@
 import fs from "node:fs/promises";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { readGhosttyAsset } from "@openclaw/libterminal/node";
+
 type TerminalAsset = {
-	body: Buffer;
+	body: Uint8Array;
 	contentType: string;
 };
 
-const ghosttyModulePath = fileURLToPath(import.meta.resolve("ghostty-web"));
-const ghosttyDistPath = path.dirname(ghosttyModulePath);
-const terminalAssets = new Map<string, { path: string; contentType: string }>([
-	[
-		"/vendor/ghostty-web.js",
-		{ path: ghosttyModulePath, contentType: "text/javascript; charset=utf-8" },
-	],
-	[
-		"/vendor/ghostty-vt.wasm",
-		{
-			path: fileURLToPath(import.meta.resolve("ghostty-web/ghostty-vt.wasm")),
-			contentType: "application/wasm",
-		},
-	],
-	[
-		"/vendor/__vite-browser-external-2447137e.js",
-		{
-			path: path.join(ghosttyDistPath, "__vite-browser-external-2447137e.js"),
-			contentType: "text/javascript; charset=utf-8",
-		},
-	],
+const libterminalBrowserPath = fileURLToPath(import.meta.resolve("@openclaw/libterminal/browser"));
+const libterminalIndexPath = fileURLToPath(import.meta.resolve("@openclaw/libterminal"));
+const libterminalAssets = new Map([
+	["/vendor/libterminal/browser.js", libterminalBrowserPath],
+	["/vendor/libterminal/index.js", libterminalIndexPath],
 ]);
 
 export async function readTerminalAsset(pathname: string): Promise<TerminalAsset | null> {
-	const asset = terminalAssets.get(pathname);
-	if (!asset) return null;
-	return { body: await fs.readFile(asset.path), contentType: asset.contentType };
+	const libterminalAsset = libterminalAssets.get(pathname);
+	if (libterminalAsset) {
+		return {
+			body: await fs.readFile(libterminalAsset),
+			contentType: "text/javascript; charset=utf-8",
+		};
+	}
+	return readGhosttyAsset(pathname);
 }
