@@ -379,7 +379,7 @@ test("host creates visible single-use named invites that can be revoked", async 
 		};
 		assert.equal(claimed.lane.displayName, "Queenie");
 		assert.equal(claimed.lane.policy, "steer");
-		assert.equal(claimed.lane.terminalMirror, true);
+		assert.equal(claimed.lane.terminalMirror, false);
 		const reused = await fetch(new URL("/api/join", server.url), {
 			method: "POST",
 			headers: {

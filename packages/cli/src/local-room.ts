@@ -190,7 +190,7 @@ export class LocalRoomStore {
 				displayName: invite.displayName,
 				repo: input.repo,
 				policy: invite.policy,
-				terminalMirror: invite.terminalMirror,
+				terminalMirror: invite.terminalMirror && input.terminalMirror === true,
 			});
 			invite.claimedLaneId = joined.lane.id;
 			await this.save();
