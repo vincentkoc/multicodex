@@ -81,6 +81,17 @@ export type AlphaLane = {
 	removedAt: number | null;
 };
 
+export type RoomInvite = {
+	id: string;
+	displayName: string;
+	policy: LanePolicy;
+	terminalMirror: boolean;
+	createdAt: number;
+	claimedAt: number | null;
+	claimedLaneId: string | null;
+	revokedAt: number | null;
+};
+
 export type ConductorMessage = {
 	id: string;
 	author: "host" | "conductor" | "system" | "participant";
@@ -96,6 +107,7 @@ export type AlphaRoomSnapshot = {
 	title: string;
 	repo: string;
 	createdAt: number;
+	invites: RoomInvite[];
 	lanes: AlphaLane[];
 	events: LaneEvent[];
 	conductorMessages: ConductorMessage[];

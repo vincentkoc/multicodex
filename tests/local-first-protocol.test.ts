@@ -45,6 +45,8 @@ test("local room renders the live lane and host control surfaces", () => {
 	assert.match(html, /\/api\/lanes\/.*\/terminal/);
 	assert.match(html, /\/vendor\/ghostty-web\.js/);
 	assert.match(html, /id="add-person"/);
+	assert.match(html, /\/api\/invites/);
+	assert.match(html, /invite ready - waiting to join/);
 	assert.match(html, /id="command-form"/);
 	assert.match(html, /sessionStorage\.getItem\('multicodex-host-token'\)/);
 	assert.match(html, /sessionStorage\.getItem\('multicodex-lane-token'\)/);
@@ -309,6 +311,121 @@ test("local room server separates invite, host, and lane capabilities", async ()
 	}
 });
 
+test("host creates visible single-use named invites that can be revoked", async () => {
+	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-invites-"));
+	const store = await LocalRoomStore.create({ stateDir, title: "invites", repo: "repo" });
+	const server = await startLocalRoomServer({
+		store,
+		port: 0,
+		handlers: {
+			onConductorMessage: async () => undefined,
+			onConductorCommand: async () => undefined,
+		},
+	});
+	try {
+		const hostToken = new URL(server.hostUrl).hash.replace(/^#host=/, "");
+		const create = async (displayName: string) => {
+			const response = await fetch(new URL("/api/invites", server.url), {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${hostToken}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ displayName, policy: "steer", terminalMirror: true }),
+			});
+			assert.equal(response.status, 201);
+			return response.json() as Promise<{
+				invite: { id: string };
+				inviteUrl: string;
+				joinCommand: string;
+			}>;
+		};
+		const named = await create("Queenie");
+		assert.match(named.joinCommand, /--name 'Queenie' --policy steer --terminal-mirror/);
+		assert.equal(store.snapshot().invites[0]?.displayName, "Queenie");
+		assert.equal(
+			JSON.stringify(store.snapshot()).includes(parseRoomEndpoint(named.inviteUrl).inviteToken!),
+			false,
+		);
+		const hostConfig = (await (
+			await fetch(new URL("/api/host/config", server.url), {
+				headers: { authorization: `Bearer ${hostToken}` },
+			})
+		).json()) as { invites: Array<{ id: string; joinCommand: string }> };
+		assert.equal(
+			hostConfig.invites.find((invite) => invite.id === named.invite.id)?.joinCommand,
+			named.joinCommand,
+		);
+
+		const claim = await fetch(new URL("/api/join", server.url), {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${parseRoomEndpoint(named.inviteUrl).inviteToken}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({
+				displayName: "Wrong name",
+				repo: "repo",
+				policy: "observe",
+				terminalMirror: false,
+			}),
+		});
+		assert.equal(claim.status, 201);
+		const claimed = (await claim.json()) as {
+			lane: { displayName: string; policy: string; terminalMirror: boolean };
+		};
+		assert.equal(claimed.lane.displayName, "Queenie");
+		assert.equal(claimed.lane.policy, "steer");
+		assert.equal(claimed.lane.terminalMirror, true);
+		const reused = await fetch(new URL("/api/join", server.url), {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${parseRoomEndpoint(named.inviteUrl).inviteToken}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({
+				displayName: "Queenie",
+				repo: "repo",
+				policy: "steer",
+				terminalMirror: true,
+			}),
+		});
+		assert.equal(reused.status, 410);
+
+		const revoked = await create("Vincent");
+		const revoke = await fetch(new URL(`/api/invites/${revoked.invite.id}`, server.url), {
+			method: "DELETE",
+			headers: { authorization: `Bearer ${hostToken}` },
+		});
+		assert.equal(revoke.status, 200);
+		const afterRevoke = (await (
+			await fetch(new URL("/api/host/config", server.url), {
+				headers: { authorization: `Bearer ${hostToken}` },
+			})
+		).json()) as { invites: Array<{ id: string }> };
+		assert.equal(
+			afterRevoke.invites.some((invite) => invite.id === revoked.invite.id),
+			false,
+		);
+		const revokedJoin = await fetch(new URL("/api/join", server.url), {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${parseRoomEndpoint(revoked.inviteUrl).inviteToken}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({
+				displayName: "Vincent",
+				repo: "repo",
+				policy: "steer",
+				terminalMirror: true,
+			}),
+		});
+		assert.equal(revokedJoin.status, 410);
+	} finally {
+		await server.close();
+	}
+});
+
 test("terminal mirror is opt-in, ephemeral, and capability scoped", async () => {
 	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-terminal-"));
 	const store = await LocalRoomStore.create({ stateDir, title: "terminal", repo: "repo" });
@@ -343,10 +460,16 @@ test("terminal mirror is opt-in, ephemeral, and capability scoped", async () => 
 		const terminalUrl = new URL(`/api/lanes/${lane.lane.id}/terminal`, server.url);
 		const rejected = await fetch(terminalUrl);
 		assert.equal(rejected.status, 403);
-		const crossLaneRejected = await fetch(terminalUrl, {
+		const crossLaneStream = await fetch(terminalUrl, {
 			headers: { authorization: `Bearer ${otherLane.token}` },
 		});
-		assert.equal(crossLaneRejected.status, 403);
+		assert.equal(crossLaneStream.status, 200);
+		await crossLaneStream.body!.cancel();
+		await store.removeLane(otherLane.lane.id);
+		const removedParticipantRejected = await fetch(terminalUrl, {
+			headers: { authorization: `Bearer ${otherLane.token}` },
+		});
+		assert.equal(removedParticipantRejected.status, 403);
 		const resized = await fetch(new URL(`/api/lanes/${lane.lane.id}/terminal-size`, server.url), {
 			method: "POST",
 			headers: {

@@ -25,8 +25,8 @@ npx --yes @vincentkoc/multicodex@latest doctor
 npx --yes @vincentkoc/multicodex@latest host --repo . --title "OpenAI event build"
 ```
 
-Open the printed control URL. Use **add a person** to copy a named invite
-command:
+Open the printed control URL. Use **invite teammate** to create a visible,
+single-use named invite command:
 
 ```bash
 npx --yes @vincentkoc/multicodex@latest join '<invite-url>' \
@@ -61,8 +61,8 @@ room server and conductor still run on the host machine.
 The control room keeps the team rail, selected lane activity, and conductor
 conversation visible together.
 
-- add people with named copyable invite commands;
-- remove a lane and revoke its capability;
+- create, recopy, and revoke named single-use teammate invites;
+- remove a participant lane and revoke its capability;
 - inspect coalesced messages, plans, commands, file changes, approvals, and
   turn state;
 - ask the host-local conductor a room question;
@@ -92,7 +92,7 @@ invite, and each lane.
 - A lane capability resumes one lane, publishes its events, and receives its
   permitted commands.
 - `--terminal-mirror` explicitly shares that lane's rendered terminal output
-  with the host and that participant only.
+  with the host and every active room participant.
 - Terminal bytes are held in a bounded in-memory replay buffer and are never
   written into room state or persisted to disk.
 - Terminal mirrors are read-only. Conductor steering still uses visible,
