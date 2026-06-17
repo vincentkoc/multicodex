@@ -37,8 +37,8 @@
 	},
 	"dependencies": {
 		"@agentclientprotocol/codex-acp": "0.0.46",
+		"@openclaw/libterminal": "0.1.0",
 		"acpx": "0.10.0",
-		"ghostty-web": "0.4.0",
 		"node-pty": "1.1.0"
 	},
 	"devDependencies": {

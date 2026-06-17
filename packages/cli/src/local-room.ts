@@ -801,7 +801,7 @@ function sendJson(response: ServerResponse, status: number, body: unknown): void
 function sendBinary(
 	response: ServerResponse,
 	status: number,
-	body: Buffer,
+	body: Uint8Array,
 	contentType: string,
 ): void {
 	response.writeHead(status, {
