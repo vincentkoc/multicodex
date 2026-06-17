@@ -113,6 +113,10 @@ export class TerminalMirrorPublisher {
 		this.stopped = true;
 		this.publisherStopped = true;
 		await this.publisher.stop().catch(() => undefined);
+		await fetch(this.endpoint, {
+			method: "DELETE",
+			headers: { authorization: `Bearer ${this.token}` },
+		}).catch(() => undefined);
 	}
 
 	resize(columns: number, rows: number): void {

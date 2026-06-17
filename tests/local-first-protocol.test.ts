@@ -16,6 +16,7 @@ import { ActivityDeltaBuffer } from "../packages/cli/src/builder.ts";
 import { resolveUserCodexPath } from "../packages/cli/src/codex-path.ts";
 import { LocalRoomStore, startLocalRoomServer } from "../packages/cli/src/local-room.ts";
 import { startMirroredTui } from "../packages/cli/src/pty-tui.ts";
+import { TerminalMirrorPublisher } from "../packages/cli/src/terminal-mirror.ts";
 import { localRoomHtml } from "../packages/cli/src/ui.ts";
 
 test("lane policies keep live steering explicit", () => {
@@ -522,21 +523,14 @@ test("terminal mirror is opt-in, ephemeral, and capability scoped", async () => 
 		);
 		assert.equal(store.snapshot().lanes[0]?.terminalMirror, true);
 
-		const optedOut = await fetch(new URL(`/api/lanes/${lane.lane.id}/resume`, server.url), {
-			method: "POST",
-			headers: {
-				authorization: `Bearer ${lane.token}`,
-				"content-type": "application/json",
-			},
-			body: JSON.stringify({
-				displayName: "Builder",
-				repo: "repo",
-				policy: "suggest",
-				terminalMirror: false,
-			}),
-		});
-		assert.equal(optedOut.status, 200);
-		assert.equal((await reader.read()).done, true);
+		const publisher = new TerminalMirrorPublisher(server.url, lane.lane.id, lane.token);
+		await publisher.stop();
+		const closed = await Promise.race([
+			reader.read(),
+			new Promise<{ done: false }>((resolve) => setTimeout(() => resolve({ done: false }), 500)),
+		]);
+		assert.equal(closed.done, true);
+		assert.equal(store.snapshot().lanes[0]?.terminalMirror, false);
 		const revoked = await fetch(terminalUrl, {
 			headers: { authorization: `Bearer ${hostToken}` },
 		});

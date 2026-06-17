@@ -297,6 +297,15 @@ export class LocalRoomStore {
 		await this.save();
 	}
 
+	async disableTerminalMirror(laneId: string, token: string): Promise<void> {
+		const lane = this.requireLane(laneId, token);
+		lane.terminalMirror = false;
+		lane.terminalColumns = null;
+		lane.terminalRows = null;
+		lane.updatedAt = Date.now();
+		await this.save();
+	}
+
 	async appendEvents(laneId: string, token: string, events: LaneEvent[]): Promise<number> {
 		const lane = this.requireLane(laneId, token);
 		for (const event of events) {
@@ -595,6 +604,12 @@ async function handleRequest(
 			}
 			for await (const chunk of request) terminalHub.publish(laneId, Buffer.from(chunk));
 			sendJson(response, 202, { accepted: true });
+			return;
+		}
+		if (request.method === "DELETE") {
+			await store.disableTerminalMirror(laneId, token);
+			terminalHub.closeLane(laneId);
+			sendJson(response, 200, { disabled: true });
 			return;
 		}
 	}
