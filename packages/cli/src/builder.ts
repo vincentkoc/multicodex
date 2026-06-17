@@ -22,6 +22,8 @@ import {
 	parseRoomEndpoint,
 	type PersistedBuilderState,
 } from "./builder-state.ts";
+import { startMirroredTui } from "./pty-tui.ts";
+import { TerminalMirrorPublisher } from "./terminal-mirror.ts";
 
 type JoinResponse = {
 	room: { id: string };
@@ -37,6 +39,7 @@ export class BuilderBridge {
 		policy: LanePolicy;
 		codexPath: string;
 		noTui: boolean;
+		terminalMirror: boolean;
 		prompt?: string;
 		fresh: boolean;
 		statePath?: string;
@@ -53,7 +56,7 @@ export class BuilderBridge {
 	private spool: LaneEvent[] = [];
 	private client: CodexAppServerClient | null = null;
 	private appServerStop: (() => void) | null = null;
-	private tuiChild: ChildProcess | null = null;
+	private tuiChild: { kill: () => unknown } | null = null;
 	private stopping = false;
 	private waitingForTuiThread = false;
 	private pendingTuiThreadId: string | null = null;
@@ -138,7 +141,7 @@ export class BuilderBridge {
 		this.resolveStopped = null;
 		this.client?.close();
 		this.appServerStop?.();
-		if (this.tuiChild && !this.tuiChild.killed) this.tuiChild.kill("SIGTERM");
+		this.tuiChild?.kill();
 	}
 
 	private async joinOrResume(): Promise<void> {
@@ -158,6 +161,7 @@ export class BuilderBridge {
 						displayName: this.input.displayName,
 						repo: this.input.repo,
 						policy: this.input.policy,
+						terminalMirror: this.input.terminalMirror,
 					}),
 				},
 			);
@@ -191,6 +195,7 @@ export class BuilderBridge {
 				displayName: this.input.displayName,
 				repo: this.input.repo,
 				policy: this.input.policy,
+				terminalMirror: this.input.terminalMirror,
 			}),
 		});
 		const payload = (await response.json()) as JoinResponse & { error?: string };
@@ -376,14 +381,30 @@ export class BuilderBridge {
 			? ["resume", "--remote", endpoint, "-C", this.input.repo, this.threadId]
 			: ["--remote", endpoint, "-C", this.input.repo];
 		if (this.input.prompt) args.push(this.input.prompt);
-		const child = spawn(this.input.codexPath, args, {
-			stdio: "inherit",
+		if (!this.input.terminalMirror) {
+			const child = spawn(this.input.codexPath, args, { stdio: "inherit" });
+			this.tuiChild = child;
+			try {
+				await waitForChild(child);
+			} finally {
+				this.tuiChild = null;
+			}
+			return;
+		}
+		const publisher = new TerminalMirrorPublisher(this.input.server, this.laneId, this.token);
+		const tui = await startMirroredTui({
+			command: this.input.codexPath,
+			args,
+			cwd: this.input.repo,
+			onOutput: (data) => publisher.write(data),
+			onResize: (columns, rows) => publisher.resize(columns, rows),
 		});
-		this.tuiChild = child;
+		this.tuiChild = tui;
 		try {
-			await waitForChild(child);
+			await tui.done;
 		} finally {
 			this.tuiChild = null;
+			await publisher.stop();
 		}
 	}
 

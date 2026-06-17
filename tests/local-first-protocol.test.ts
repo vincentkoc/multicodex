@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { GHOSTTY_ASSET_PATHS } from "@openclaw/libterminal/node";
+
 import {
 	createLaneEvent,
 	policyAllows,
@@ -13,6 +15,8 @@ import { BuilderStateStore, parseRoomEndpoint } from "../packages/cli/src/builde
 import { ActivityDeltaBuffer } from "../packages/cli/src/builder.ts";
 import { resolveUserCodexPath } from "../packages/cli/src/codex-path.ts";
 import { LocalRoomStore, startLocalRoomServer } from "../packages/cli/src/local-room.ts";
+import { startMirroredTui } from "../packages/cli/src/pty-tui.ts";
+import { TerminalMirrorPublisher } from "../packages/cli/src/terminal-mirror.ts";
 import { localRoomHtml } from "../packages/cli/src/ui.ts";
 
 test("lane policies keep live steering explicit", () => {
@@ -40,7 +44,13 @@ test("builder activity buffers stream deltas into readable events", () => {
 test("local room renders the live lane and host control surfaces", () => {
 	const html = localRoomHtml();
 	assert.match(html, /id="terminal-stream"/);
+	assert.match(html, /id="ghostty-terminal"/);
+	assert.match(html, /\/api\/lanes\/.*\/terminal/);
+	assert.ok(html.includes(GHOSTTY_ASSET_PATHS.module));
+	assert.match(html, /\/vendor\/libterminal\/browser\.js/);
 	assert.match(html, /id="add-person"/);
+	assert.match(html, /\/api\/invites/);
+	assert.match(html, /invite ready - waiting to join/);
 	assert.match(html, /id="command-form"/);
 	assert.match(html, /sessionStorage\.getItem\('multicodex-host-token'\)/);
 	assert.match(html, /sessionStorage\.getItem\('multicodex-lane-token'\)/);
@@ -71,6 +81,28 @@ test("Codex resolution ignores package-local adapter binaries", async () => {
 		await resolveUserCodexPath({ pathValue: [packageBin, userBin].join(path.delimiter) }),
 		path.join(userBin, "codex"),
 	);
+});
+
+test("terminal mirror launches a real local PTY", async () => {
+	let output = "";
+	let size: [number, number] | null = null;
+	const tui = await startMirroredTui({
+		command: process.execPath,
+		args: ["-e", "process.stdout.write('pty-proof')"],
+		cwd: process.cwd(),
+		onOutput: (data) => {
+			output += data;
+		},
+		onResize: (columns, rows) => {
+			size = [columns, rows];
+		},
+	});
+	await tui.done;
+	assert.match(output, /pty-proof/);
+	assert.deepEqual(size, [
+		Math.max(20, process.stdout.columns || 120),
+		Math.max(10, process.stdout.rows || 34),
+	]);
 });
 
 test("local room acknowledges replayed events once and rejects gaps", async () => {
@@ -281,6 +313,231 @@ test("local room server separates invite, host, and lane capabilities", async ()
 			headers: { authorization: `Bearer ${payload.token}` },
 		});
 		assert.equal(commands.status, 410);
+	} finally {
+		await server.close();
+	}
+});
+
+test("host creates visible single-use named invites that can be revoked", async () => {
+	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-invites-"));
+	const store = await LocalRoomStore.create({ stateDir, title: "invites", repo: "repo" });
+	const server = await startLocalRoomServer({
+		store,
+		port: 0,
+		handlers: {
+			onConductorMessage: async () => undefined,
+			onConductorCommand: async () => undefined,
+		},
+	});
+	try {
+		const hostToken = new URL(server.hostUrl).hash.replace(/^#host=/, "");
+		const create = async (displayName: string) => {
+			const response = await fetch(new URL("/api/invites", server.url), {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${hostToken}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ displayName, policy: "steer", terminalMirror: true }),
+			});
+			assert.equal(response.status, 201);
+			return response.json() as Promise<{
+				invite: { id: string };
+				inviteUrl: string;
+				joinCommand: string;
+			}>;
+		};
+		const named = await create("Queenie");
+		assert.match(named.joinCommand, /--name 'Queenie' --policy steer --terminal-mirror/);
+		assert.equal(store.snapshot().invites[0]?.displayName, "Queenie");
+		assert.equal(
+			JSON.stringify(store.snapshot()).includes(parseRoomEndpoint(named.inviteUrl).inviteToken!),
+			false,
+		);
+		const hostConfig = (await (
+			await fetch(new URL("/api/host/config", server.url), {
+				headers: { authorization: `Bearer ${hostToken}` },
+			})
+		).json()) as { invites: Array<{ id: string; joinCommand: string }> };
+		assert.equal(
+			hostConfig.invites.find((invite) => invite.id === named.invite.id)?.joinCommand,
+			named.joinCommand,
+		);
+
+		const claim = await fetch(new URL("/api/join", server.url), {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${parseRoomEndpoint(named.inviteUrl).inviteToken}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({
+				displayName: "Wrong name",
+				repo: "repo",
+				policy: "observe",
+				terminalMirror: false,
+			}),
+		});
+		assert.equal(claim.status, 201);
+		const claimed = (await claim.json()) as {
+			lane: { displayName: string; policy: string; terminalMirror: boolean };
+		};
+		assert.equal(claimed.lane.displayName, "Queenie");
+		assert.equal(claimed.lane.policy, "steer");
+		assert.equal(claimed.lane.terminalMirror, false);
+		const reused = await fetch(new URL("/api/join", server.url), {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${parseRoomEndpoint(named.inviteUrl).inviteToken}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({
+				displayName: "Queenie",
+				repo: "repo",
+				policy: "steer",
+				terminalMirror: true,
+			}),
+		});
+		assert.equal(reused.status, 410);
+
+		const revoked = await create("Vincent");
+		const revoke = await fetch(new URL(`/api/invites/${revoked.invite.id}`, server.url), {
+			method: "DELETE",
+			headers: { authorization: `Bearer ${hostToken}` },
+		});
+		assert.equal(revoke.status, 200);
+		const afterRevoke = (await (
+			await fetch(new URL("/api/host/config", server.url), {
+				headers: { authorization: `Bearer ${hostToken}` },
+			})
+		).json()) as { invites: Array<{ id: string }> };
+		assert.equal(
+			afterRevoke.invites.some((invite) => invite.id === revoked.invite.id),
+			false,
+		);
+		const revokedJoin = await fetch(new URL("/api/join", server.url), {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${parseRoomEndpoint(revoked.inviteUrl).inviteToken}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({
+				displayName: "Vincent",
+				repo: "repo",
+				policy: "steer",
+				terminalMirror: true,
+			}),
+		});
+		assert.equal(revokedJoin.status, 410);
+	} finally {
+		await server.close();
+	}
+});
+
+test("terminal mirror is opt-in, ephemeral, and capability scoped", async () => {
+	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-terminal-"));
+	const store = await LocalRoomStore.create({ stateDir, title: "terminal", repo: "repo" });
+	const lane = await store.join({
+		displayName: "Builder",
+		repo: "repo",
+		policy: "suggest",
+		terminalMirror: true,
+	});
+	const otherLane = await store.join({
+		displayName: "Other",
+		repo: "repo",
+		policy: "suggest",
+		terminalMirror: true,
+	});
+	const server = await startLocalRoomServer({
+		store,
+		port: 0,
+		handlers: {
+			onConductorMessage: async () => undefined,
+			onConductorCommand: async () => undefined,
+		},
+	});
+	try {
+		const ghosttyAsset = await fetch(new URL(GHOSTTY_ASSET_PATHS.module, server.url));
+		assert.equal(ghosttyAsset.status, 200);
+		assert.match(ghosttyAsset.headers.get("content-type") ?? "", /javascript/);
+		const ghosttyWasm = await fetch(new URL(GHOSTTY_ASSET_PATHS.wasm, server.url));
+		assert.equal(ghosttyWasm.status, 200);
+		assert.equal(ghosttyWasm.headers.get("content-type"), "application/wasm");
+		for (const pathname of ["/vendor/libterminal/browser.js", "/vendor/libterminal/index.js"]) {
+			const asset = await fetch(new URL(pathname, server.url));
+			assert.equal(asset.status, 200);
+			assert.match(asset.headers.get("content-type") ?? "", /javascript/);
+		}
+
+		const terminalUrl = new URL(`/api/lanes/${lane.lane.id}/terminal`, server.url);
+		const hostToken = new URL(server.hostUrl).hash.replace(/^#host=/, "");
+		const rejected = await fetch(terminalUrl);
+		assert.equal(rejected.status, 403);
+		const crossLaneStream = await fetch(terminalUrl, {
+			headers: { authorization: `Bearer ${otherLane.token}` },
+		});
+		assert.equal(crossLaneStream.status, 200);
+		const crossLaneReader = crossLaneStream.body!.getReader();
+		const removedViewer = await fetch(new URL(`/api/lanes/${otherLane.lane.id}`, server.url), {
+			method: "DELETE",
+			headers: { authorization: `Bearer ${hostToken}` },
+		});
+		assert.equal(removedViewer.status, 200);
+		assert.equal((await crossLaneReader.read()).done, true);
+		const removedParticipantRejected = await fetch(terminalUrl, {
+			headers: { authorization: `Bearer ${otherLane.token}` },
+		});
+		assert.equal(removedParticipantRejected.status, 403);
+		const resized = await fetch(new URL(`/api/lanes/${lane.lane.id}/terminal-size`, server.url), {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${lane.token}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ columns: 143, rows: 47 }),
+		});
+		assert.equal(resized.status, 202);
+		assert.equal(store.snapshot().lanes[0]?.terminalColumns, 143);
+		assert.equal(store.snapshot().lanes[0]?.terminalRows, 47);
+
+		const output = "\u001b[31mlive terminal\u001b[0m\r\n";
+		const published = await fetch(terminalUrl, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${lane.token}`,
+				"content-type": "application/octet-stream",
+			},
+			body: output,
+		});
+		assert.equal(published.status, 202);
+
+		const stream = await fetch(terminalUrl, {
+			headers: { authorization: `Bearer ${hostToken}` },
+		});
+		assert.equal(stream.status, 200);
+		const reader = stream.body!.getReader();
+		const replay = await reader.read();
+		assert.equal(new TextDecoder().decode(replay.value), output);
+
+		assert.equal(JSON.stringify(store.snapshot()).includes("live terminal"), false);
+		assert.equal(
+			(await fs.readFile(path.join(stateDir, "room.json"), "utf8")).includes("live terminal"),
+			false,
+		);
+		assert.equal(store.snapshot().lanes[0]?.terminalMirror, true);
+
+		const publisher = new TerminalMirrorPublisher(server.url, lane.lane.id, lane.token);
+		await publisher.stop();
+		const closed = await Promise.race([
+			reader.read(),
+			new Promise<{ done: false }>((resolve) => setTimeout(() => resolve({ done: false }), 500)),
+		]);
+		assert.equal(closed.done, true);
+		assert.equal(store.snapshot().lanes[0]?.terminalMirror, false);
+		const revoked = await fetch(terminalUrl, {
+			headers: { authorization: `Bearer ${hostToken}` },
+		});
+		assert.equal(revoked.status, 403);
 	} finally {
 		await server.close();
 	}

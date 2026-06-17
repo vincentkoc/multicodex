@@ -37,7 +37,9 @@
 	},
 	"dependencies": {
 		"@agentclientprotocol/codex-acp": "0.0.46",
-		"acpx": "0.10.0"
+		"@openclaw/libterminal": "0.1.0",
+		"acpx": "0.10.0",
+		"node-pty": "1.1.0"
 	},
 	"devDependencies": {
 		"@types/node": "^24.0.0",
@@ -47,7 +49,13 @@
 		"typescript": "^5.9.3"
 	},
 	"engines": {
-		"node": ">=22.13.0"
+		"node": "^22.18.0 || >=24.11.0"
 	},
-	"packageManager": "pnpm@10.23.0"
+	"packageManager": "pnpm@10.23.0",
+	"pnpm": {
+		"onlyBuiltDependencies": [
+			"esbuild",
+			"node-pty"
+		]
+	}
 }
