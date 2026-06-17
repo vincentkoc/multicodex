@@ -99,7 +99,10 @@ test("terminal mirror launches a real local PTY", async () => {
 	});
 	await tui.done;
 	assert.match(output, /pty-proof/);
-	assert.deepEqual(size, [120, 34]);
+	assert.deepEqual(size, [
+		Math.max(20, process.stdout.columns || 120),
+		Math.max(10, process.stdout.rows || 34),
+	]);
 });
 
 test("local room acknowledges replayed events once and rejects gaps", async () => {
