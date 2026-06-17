@@ -10,6 +10,7 @@ import {
 	type LaneCommandKind,
 	type LaneEvent,
 	type LanePolicy,
+	type RoomInvite,
 	policyAllows,
 	protocolVersion,
 	requiredPolicyForCommand,
@@ -19,8 +20,10 @@ import { TerminalMirrorHub } from "./terminal-mirror.ts";
 import { localRoomHtml } from "./ui.ts";
 
 type StoredLane = AlphaLane & { token: string };
+type StoredInvite = RoomInvite & { token: string };
 
-type StoredRoom = Omit<AlphaRoomSnapshot, "lanes"> & {
+type StoredRoom = Omit<AlphaRoomSnapshot, "invites" | "lanes"> & {
+	invites: StoredInvite[];
 	lanes: StoredLane[];
 	commands: LaneCommand[];
 	eventIds: string[];
@@ -51,6 +54,7 @@ export class LocalRoomStore {
 			title: input.title,
 			repo: input.repo,
 			createdAt: Date.now(),
+			invites: [],
 			lanes: [],
 			events: [],
 			conductorMessages: [],
@@ -69,6 +73,7 @@ export class LocalRoomStore {
 		const state = JSON.parse(await fs.readFile(statePath, "utf8")) as StoredRoom;
 		state.hostToken ||= crypto.randomUUID();
 		state.inviteToken ||= crypto.randomUUID();
+		state.invites ??= [];
 		for (const lane of state.lanes) {
 			lane.removedAt ??= null;
 			lane.terminalMirror ??= false;
@@ -87,6 +92,7 @@ export class LocalRoomStore {
 			title: this.state.title,
 			repo: publicRepoName(this.state.repo),
 			createdAt: this.state.createdAt,
+			invites: this.state.invites.map(({ token: _token, ...invite }) => invite),
 			lanes: this.state.lanes.map(({ token: _token, ...lane }) => ({
 				...lane,
 				repo: publicRepoName(lane.repo),
@@ -100,12 +106,19 @@ export class LocalRoomStore {
 		inviteUrl: string;
 		joinCommand: string;
 		activeLanes: number;
+		invites: Array<{ id: string; joinCommand: string }>;
 	} {
 		const inviteUrl = capabilityUrl(publicUrl, "invite", this.state.inviteToken);
 		return {
 			inviteUrl,
-			joinCommand: `npx --yes @vincentkoc/multicodex@latest join ${shellQuote(inviteUrl)} --repo . --terminal-mirror`,
+			joinCommand: joinCommand(inviteUrl),
 			activeLanes: this.state.lanes.filter((lane) => !lane.removedAt).length,
+			invites: this.state.invites
+				.filter((invite) => !invite.claimedAt && !invite.revokedAt)
+				.map((invite) => ({
+					id: invite.id,
+					joinCommand: joinCommand(capabilityUrl(publicUrl, "invite", invite.token), invite),
+				})),
 		};
 	}
 
@@ -123,6 +136,70 @@ export class LocalRoomStore {
 
 	authorizeInvite(token: string): boolean {
 		return token === this.state.inviteToken;
+	}
+
+	async createInvite(input: {
+		displayName: string;
+		policy: LanePolicy;
+		terminalMirror?: boolean;
+	}): Promise<{ invite: RoomInvite; token: string }> {
+		const invite: StoredInvite = {
+			id: `invite_${crypto.randomUUID()}`,
+			token: crypto.randomUUID(),
+			displayName: input.displayName,
+			policy: input.policy,
+			terminalMirror: input.terminalMirror !== false,
+			createdAt: Date.now(),
+			claimedAt: null,
+			claimedLaneId: null,
+			revokedAt: null,
+		};
+		this.state.invites.push(invite);
+		await this.save();
+		const { token, ...publicInvite } = invite;
+		return { invite: publicInvite, token };
+	}
+
+	async revokeInvite(inviteId: string): Promise<void> {
+		const invite = this.state.invites.find((candidate) => candidate.id === inviteId);
+		if (!invite) throw new RoomError(404, "invite not found");
+		if (invite.claimedAt) throw new RoomError(409, "invite already claimed");
+		if (invite.revokedAt) return;
+		invite.revokedAt = Date.now();
+		await this.save();
+	}
+
+	async joinFromInvite(
+		inviteToken: string,
+		input: {
+			displayName: string;
+			repo: string;
+			policy: LanePolicy;
+			terminalMirror?: boolean;
+		},
+	): Promise<{ lane: AlphaLane; token: string }> {
+		if (this.authorizeInvite(inviteToken)) return this.join(input);
+		const invite = this.state.invites.find((candidate) => candidate.token === inviteToken);
+		if (!invite) throw new RoomError(401, "valid room invite required");
+		if (invite.revokedAt) throw new RoomError(410, "invite revoked by host");
+		if (invite.claimedAt) throw new RoomError(410, "invite already claimed");
+		invite.claimedAt = Date.now();
+		await this.save();
+		try {
+			const joined = await this.join({
+				displayName: invite.displayName,
+				repo: input.repo,
+				policy: invite.policy,
+				terminalMirror: invite.terminalMirror,
+			});
+			invite.claimedLaneId = joined.lane.id;
+			await this.save();
+			return joined;
+		} catch (cause) {
+			invite.claimedAt = null;
+			await this.save();
+			throw cause;
+		}
 	}
 
 	async join(input: {
@@ -191,10 +268,14 @@ export class LocalRoomStore {
 		);
 	}
 
+	authorizeParticipant(token: string): boolean {
+		return this.state.lanes.some((lane) => lane.token === token && !lane.removedAt);
+	}
+
 	authorizeTerminalViewer(laneId: string, token: string): boolean {
 		const lane = this.state.lanes.find((candidate) => candidate.id === laneId);
 		if (!lane || lane.removedAt || !lane.terminalMirror) return false;
-		return token === this.state.hostToken || token === lane.token;
+		return token === this.state.hostToken || this.authorizeParticipant(token);
 	}
 
 	authorizeTerminalPublisher(laneId: string, token: string): boolean {
@@ -430,19 +511,36 @@ async function handleRequest(
 		sendJson(response, 200, store.hostConfig(publicUrl));
 		return;
 	}
-	if (request.method === "POST" && url.pathname === "/api/join") {
-		if (!store.authorizeInvite(bearer(request))) {
-			throw new RoomError(401, "valid room invite required");
-		}
+	if (request.method === "POST" && url.pathname === "/api/invites") {
+		requireHost(store, request);
 		const body = await readJson(request);
-		const policy = body.policy;
-		if (!["observe", "suggest", "steer"].includes(String(policy))) {
-			throw new RoomError(400, "policy must be observe, suggest, or steer");
-		}
-		const joined = await store.join({
+		const policy = requiredPolicy(body.policy);
+		const created = await store.createInvite({
+			displayName: requiredString(body.displayName, "displayName"),
+			policy,
+			terminalMirror: body.terminalMirror !== false,
+		});
+		const inviteUrl = capabilityUrl(publicUrl, "invite", created.token);
+		sendJson(response, 201, {
+			invite: created.invite,
+			inviteUrl,
+			joinCommand: joinCommand(inviteUrl, created.invite),
+		});
+		return;
+	}
+	const inviteMatch = url.pathname.match(/^\/api\/invites\/([^/]+)$/);
+	if (request.method === "DELETE" && inviteMatch) {
+		requireHost(store, request);
+		await store.revokeInvite(decodeURIComponent(inviteMatch[1]!));
+		sendJson(response, 200, { revoked: true });
+		return;
+	}
+	if (request.method === "POST" && url.pathname === "/api/join") {
+		const body = await readJson(request);
+		const joined = await store.joinFromInvite(bearer(request), {
 			displayName: requiredString(body.displayName, "displayName"),
 			repo: requiredString(body.repo, "repo"),
-			policy: policy as LanePolicy,
+			policy: requiredPolicy(body.policy),
 			terminalMirror: body.terminalMirror === true,
 		});
 		sendJson(response, 201, { room: store.snapshot(), ...joined });
@@ -451,16 +549,12 @@ async function handleRequest(
 	const resumeMatch = url.pathname.match(/^\/api\/lanes\/([^/]+)\/resume$/);
 	if (request.method === "POST" && resumeMatch) {
 		const body = await readJson(request);
-		const policy = body.policy;
-		if (!["observe", "suggest", "steer"].includes(String(policy))) {
-			throw new RoomError(400, "policy must be observe, suggest, or steer");
-		}
 		const laneId = decodeURIComponent(resumeMatch[1]!);
 		const terminalMirror = body.terminalMirror === true;
 		const resumed = await store.resumeLane(laneId, bearer(request), {
 			displayName: requiredString(body.displayName, "displayName"),
 			repo: requiredString(body.repo, "repo"),
-			policy: policy as LanePolicy,
+			policy: requiredPolicy(body.policy),
 			terminalMirror,
 		});
 		if (!terminalMirror) terminalHub.closeLane(laneId);
@@ -660,6 +754,13 @@ function requiredCommandKind(value: unknown): LaneCommandKind {
 	return value as LaneCommandKind;
 }
 
+function requiredPolicy(value: unknown): LanePolicy {
+	if (!["observe", "suggest", "steer"].includes(String(value))) {
+		throw new RoomError(400, "policy must be observe, suggest, or steer");
+	}
+	return value as LanePolicy;
+}
+
 function terminalDimension(value: number, minimum: number, maximum: number): number {
 	if (!Number.isFinite(value)) throw new RoomError(400, "valid terminal dimensions required");
 	return Math.min(maximum, Math.max(minimum, Math.trunc(value)));
@@ -682,6 +783,15 @@ function capabilityUrl(base: string, kind: "host" | "invite", token: string): st
 
 function shellQuote(value: string): string {
 	return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function joinCommand(
+	inviteUrl: string,
+	invite?: Pick<RoomInvite, "displayName" | "policy" | "terminalMirror">,
+): string {
+	const command = `npx --yes @vincentkoc/multicodex@latest join ${shellQuote(inviteUrl)} --repo .`;
+	if (!invite) return `${command} --terminal-mirror`;
+	return `${command} --name ${shellQuote(invite.displayName)} --policy ${invite.policy}${invite.terminalMirror ? " --terminal-mirror" : ""}`;
 }
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
