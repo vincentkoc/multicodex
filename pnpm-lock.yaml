@@ -11,12 +11,12 @@ importers:
       '@agentclientprotocol/codex-acp':
         specifier: 0.0.46
         version: 0.0.46(zod@4.4.3)
+      '@openclaw/libterminal':
+        specifier: 0.1.0
+        version: 0.1.0(node-pty@1.1.0)
       acpx:
         specifier: 0.10.0
         version: 0.10.0
-      ghostty-web:
-        specifier: 0.4.0
-        version: 0.4.0
       node-pty:
         specifier: 1.1.0
         version: 1.1.0
@@ -252,6 +252,15 @@ packages:
     engines: {node: '>=16'}
     cpu: [x64]
     os: [win32]
+
+  '@openclaw/libterminal@0.1.0':
+    resolution: {integrity: sha512-mqaiEmr6yyMfZYRHED2TdwEd6+Ubb3eMz9BmON3xVPhZ3jWVzXn3cePqLeKq7mkSaT//QgJAIPrVojfoMTUHGQ==}
+    engines: {node: ^22.18.0 || >=24.11.0}
+    peerDependencies:
+      node-pty: '>=1.0.0'
+    peerDependenciesMeta:
+      node-pty:
+        optional: true
 
   '@oxfmt/binding-android-arm-eabi@0.54.0':
     resolution: {integrity: sha512-NAtpl/SiaeU103e7/OmZw0MvUnsUUopW7hEm/ecegJg7YM0skQaA0IXEZoyTV6NUdiNPupdIUreRqUZTShbn/g==}
@@ -832,6 +841,12 @@ snapshots:
 
   '@openai/codex@0.137.0-win32-x64':
     optional: true
+
+  '@openclaw/libterminal@0.1.0(node-pty@1.1.0)':
+    dependencies:
+      ghostty-web: 0.4.0
+    optionalDependencies:
+      node-pty: 1.1.0
 
   '@oxfmt/binding-android-arm-eabi@0.54.0':
     optional: true
