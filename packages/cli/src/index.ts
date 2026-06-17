@@ -119,8 +119,10 @@ async function doctor(): Promise<void> {
 	const [nodeMajor = 0, nodeMinor = 0] = process.versions.node.split(".").map(Number);
 	checks.push([
 		"Node",
-		nodeMajor > 22 || (nodeMajor === 22 && nodeMinor >= 13),
-		`${process.version} (requires >=22.13.0)`,
+		nodeMajor > 24 ||
+			(nodeMajor === 24 && nodeMinor >= 11) ||
+			(nodeMajor === 22 && nodeMinor >= 18),
+		`${process.version} (requires ^22.18.0 or >=24.11.0)`,
 	]);
 	const codexPath = await resolveUserCodexPath();
 	if (!codexPath) {
