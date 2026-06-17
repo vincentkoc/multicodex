@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { GHOSTTY_ASSET_PATHS } from "@openclaw/libterminal/node";
+
 import {
 	createLaneEvent,
 	policyAllows,
@@ -43,7 +45,8 @@ test("local room renders the live lane and host control surfaces", () => {
 	assert.match(html, /id="terminal-stream"/);
 	assert.match(html, /id="ghostty-terminal"/);
 	assert.match(html, /\/api\/lanes\/.*\/terminal/);
-	assert.match(html, /\/vendor\/ghostty-web\.js/);
+	assert.ok(html.includes(GHOSTTY_ASSET_PATHS.module));
+	assert.match(html, /\/vendor\/libterminal\/browser\.js/);
 	assert.match(html, /id="add-person"/);
 	assert.match(html, /\/api\/invites/);
 	assert.match(html, /invite ready - waiting to join/);
@@ -450,12 +453,17 @@ test("terminal mirror is opt-in, ephemeral, and capability scoped", async () => 
 		},
 	});
 	try {
-		const ghosttyAsset = await fetch(new URL("/vendor/ghostty-web.js", server.url));
+		const ghosttyAsset = await fetch(new URL(GHOSTTY_ASSET_PATHS.module, server.url));
 		assert.equal(ghosttyAsset.status, 200);
 		assert.match(ghosttyAsset.headers.get("content-type") ?? "", /javascript/);
-		const ghosttyWasm = await fetch(new URL("/vendor/ghostty-vt.wasm", server.url));
+		const ghosttyWasm = await fetch(new URL(GHOSTTY_ASSET_PATHS.wasm, server.url));
 		assert.equal(ghosttyWasm.status, 200);
 		assert.equal(ghosttyWasm.headers.get("content-type"), "application/wasm");
+		for (const pathname of ["/vendor/libterminal/browser.js", "/vendor/libterminal/index.js"]) {
+			const asset = await fetch(new URL(pathname, server.url));
+			assert.equal(asset.status, 200);
+			assert.match(asset.headers.get("content-type") ?? "", /javascript/);
+		}
 
 		const terminalUrl = new URL(`/api/lanes/${lane.lane.id}/terminal`, server.url);
 		const rejected = await fetch(terminalUrl);
