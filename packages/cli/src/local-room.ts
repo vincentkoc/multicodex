@@ -360,10 +360,10 @@ export class LocalRoomStore {
 		return command;
 	}
 
-	async removeLane(laneId: string): Promise<void> {
+	async removeLane(laneId: string): Promise<string> {
 		const lane = this.state.lanes.find((candidate) => candidate.id === laneId);
 		if (!lane) throw new RoomError(404, "lane not found");
-		if (lane.removedAt) return;
+		if (lane.removedAt) return lane.token;
 		const now = Date.now();
 		lane.removedAt = now;
 		lane.connected = false;
@@ -371,6 +371,7 @@ export class LocalRoomStore {
 		lane.status = "removed by host";
 		lane.updatedAt = now;
 		await this.addConductorMessage("system", `${lane.displayName} removed by host`);
+		return lane.token;
 	}
 
 	async addParticipantMessage(laneId: string, token: string, body: string): Promise<string> {
@@ -585,7 +586,7 @@ async function handleRequest(
 			if (!store.authorizeTerminalViewer(laneId, token)) {
 				throw new RoomError(403, "terminal mirror unavailable");
 			}
-			terminalHub.subscribe(laneId, response);
+			terminalHub.subscribe(laneId, token, response);
 			return;
 		}
 		if (request.method === "POST") {
@@ -640,7 +641,8 @@ async function handleRequest(
 	if (request.method === "DELETE" && removeMatch) {
 		requireHost(store, request);
 		const laneId = decodeURIComponent(removeMatch[1]!);
-		await store.removeLane(laneId);
+		const removedToken = await store.removeLane(laneId);
+		terminalHub.closeViewer(removedToken);
 		terminalHub.closeLane(laneId);
 		sendJson(response, 200, { removed: true });
 		return;

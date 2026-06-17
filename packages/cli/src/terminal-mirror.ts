@@ -13,12 +13,13 @@ const PUBLISH_BATCH_BYTES = 64 * 1024;
 
 export class TerminalMirrorHub {
 	private readonly lanes = new Map<string, TerminalFanout>();
+	private readonly viewers = new Map<string, Set<TerminalSubscription>>();
 
 	publish(laneId: string, data: Uint8Array): void {
 		this.lane(laneId).publish(data);
 	}
 
-	subscribe(laneId: string, response: ServerResponse): void {
+	subscribe(laneId: string, viewerToken: string, response: ServerResponse): void {
 		response.writeHead(200, {
 			"content-type": "application/octet-stream",
 			"cache-control": "no-store",
@@ -27,8 +28,18 @@ export class TerminalMirrorHub {
 		});
 		response.flushHeaders();
 		const subscription = this.lane(laneId).subscribe(crypto.randomUUID());
+		this.viewer(viewerToken).add(subscription);
 		response.once("close", () => subscription.close("viewer disconnected"));
-		void streamSubscription(subscription, response).catch(() => response.destroy());
+		void streamSubscription(subscription, response)
+			.catch(() => response.destroy())
+			.finally(() => this.removeViewerSubscription(viewerToken, subscription));
+	}
+
+	closeViewer(viewerToken: string): void {
+		const subscriptions = this.viewers.get(viewerToken);
+		if (!subscriptions) return;
+		this.viewers.delete(viewerToken);
+		for (const subscription of subscriptions) subscription.close("viewer capability revoked");
 	}
 
 	closeLane(laneId: string): void {
@@ -40,6 +51,7 @@ export class TerminalMirrorHub {
 
 	closeAll(): void {
 		for (const laneId of this.lanes.keys()) this.closeLane(laneId);
+		this.viewers.clear();
 	}
 
 	private lane(laneId: string): TerminalFanout {
@@ -53,6 +65,22 @@ export class TerminalMirrorHub {
 			this.lanes.set(laneId, lane);
 		}
 		return lane;
+	}
+
+	private viewer(viewerToken: string): Set<TerminalSubscription> {
+		let subscriptions = this.viewers.get(viewerToken);
+		if (!subscriptions) {
+			subscriptions = new Set();
+			this.viewers.set(viewerToken, subscriptions);
+		}
+		return subscriptions;
+	}
+
+	private removeViewerSubscription(viewerToken: string, subscription: TerminalSubscription): void {
+		const subscriptions = this.viewers.get(viewerToken);
+		if (!subscriptions) return;
+		subscriptions.delete(subscription);
+		if (subscriptions.size === 0) this.viewers.delete(viewerToken);
 	}
 }
 

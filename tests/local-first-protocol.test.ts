@@ -466,14 +466,20 @@ test("terminal mirror is opt-in, ephemeral, and capability scoped", async () => 
 		}
 
 		const terminalUrl = new URL(`/api/lanes/${lane.lane.id}/terminal`, server.url);
+		const hostToken = new URL(server.hostUrl).hash.replace(/^#host=/, "");
 		const rejected = await fetch(terminalUrl);
 		assert.equal(rejected.status, 403);
 		const crossLaneStream = await fetch(terminalUrl, {
 			headers: { authorization: `Bearer ${otherLane.token}` },
 		});
 		assert.equal(crossLaneStream.status, 200);
-		await crossLaneStream.body!.cancel();
-		await store.removeLane(otherLane.lane.id);
+		const crossLaneReader = crossLaneStream.body!.getReader();
+		const removedViewer = await fetch(new URL(`/api/lanes/${otherLane.lane.id}`, server.url), {
+			method: "DELETE",
+			headers: { authorization: `Bearer ${hostToken}` },
+		});
+		assert.equal(removedViewer.status, 200);
+		assert.equal((await crossLaneReader.read()).done, true);
 		const removedParticipantRejected = await fetch(terminalUrl, {
 			headers: { authorization: `Bearer ${otherLane.token}` },
 		});
@@ -501,7 +507,6 @@ test("terminal mirror is opt-in, ephemeral, and capability scoped", async () => 
 		});
 		assert.equal(published.status, 202);
 
-		const hostToken = new URL(server.hostUrl).hash.replace(/^#host=/, "");
 		const stream = await fetch(terminalUrl, {
 			headers: { authorization: `Bearer ${hostToken}` },
 		});
