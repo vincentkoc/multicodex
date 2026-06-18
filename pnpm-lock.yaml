@@ -12,8 +12,8 @@ importers:
         specifier: 0.0.46
         version: 0.0.46(zod@4.4.3)
       '@openclaw/libterminal':
-        specifier: 0.1.0
-        version: 0.1.0(node-pty@1.1.0)
+        specifier: 0.1.2
+        version: 0.1.2(node-pty@1.1.0)
       acpx:
         specifier: 0.10.0
         version: 0.10.0
@@ -253,8 +253,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@openclaw/libterminal@0.1.0':
-    resolution: {integrity: sha512-mqaiEmr6yyMfZYRHED2TdwEd6+Ubb3eMz9BmON3xVPhZ3jWVzXn3cePqLeKq7mkSaT//QgJAIPrVojfoMTUHGQ==}
+  '@openclaw/libterminal@0.1.2':
+    resolution: {integrity: sha512-a0efrWM8EMEUrPJ9gWgsEeWD/WstJbNjgTTUwq4sxJCyuDDWOjjvz1KjrCGZ83B+0gMstYXcQAFR7f9/URQpQQ==}
     engines: {node: ^22.18.0 || >=24.11.0}
     peerDependencies:
       node-pty: '>=1.0.0'
@@ -842,7 +842,7 @@ snapshots:
   '@openai/codex@0.137.0-win32-x64':
     optional: true
 
-  '@openclaw/libterminal@0.1.0(node-pty@1.1.0)':
+  '@openclaw/libterminal@0.1.2(node-pty@1.1.0)':
     dependencies:
       ghostty-web: 0.4.0
     optionalDependencies:
