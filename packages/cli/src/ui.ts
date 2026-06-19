@@ -51,7 +51,7 @@ export function localRoomHtml(): string {
       <div class="connection status" id="connection">connecting...</div>
     </aside>
     <aside class="preview-pane" id="preview-pane">
-      <div class="preview-toolbar"><div class="preview-copy"><strong id="preview-title">lane preview</strong><span id="preview-url"></span></div><div class="preview-actions"><button class="icon-button" id="refresh-preview" title="refresh preview">r</button><a class="icon-button" id="open-preview-external" title="open preview in a new tab" target="_blank" rel="noopener">o</a><button class="icon-button" id="close-preview" title="close preview">x</button></div></div>
+      <div class="preview-toolbar"><div class="preview-copy"><strong id="preview-title">lane preview</strong><span id="preview-url"></span></div><div class="preview-actions"><button class="icon-button" id="refresh-preview" type="button" title="refresh preview" aria-label="refresh preview">&#8635;</button><a class="icon-button" id="open-preview-external" title="open preview in a new tab" aria-label="open preview in a new tab" target="_blank" rel="noopener">&#8599;</a><button class="icon-button" id="close-preview" type="button" title="close preview" aria-label="close preview">&#215;</button></div></div>
       <iframe class="preview-frame" id="preview-frame" title="lane preview" sandbox="allow-scripts allow-forms allow-modals allow-popups allow-same-origin"></iframe>
     </aside>
   </div>

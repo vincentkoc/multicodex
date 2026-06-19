@@ -80,6 +80,13 @@ test("local room renders the live lane and host control surfaces", () => {
 	assert.match(html, /id="action-button"/);
 	assert.match(html, /id="lane-stats"/);
 	assert.match(html, /id="preview-pane"/);
+	assert.match(html, /id="refresh-preview"[^>]*aria-label="refresh preview"[^>]*>&#8635;/);
+	assert.match(
+		html,
+		/id="open-preview-external"[^>]*aria-label="open preview in a new tab"[^>]*>&#8599;/,
+	);
+	assert.match(html, /id="close-preview"[^>]*aria-label="close preview"[^>]*>&#215;/);
+	assert.doesNotMatch(html, /id="refresh-preview"[^>]*>r</);
 	assert.match(html, /conductor-collapsed/);
 	assert.match(html, /function syncPreview/);
 	assert.match(html, /previewDismissedLaneId/);
