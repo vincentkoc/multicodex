@@ -81,6 +81,10 @@ test("local room renders the live lane and host control surfaces", () => {
 	assert.match(html, /id="lane-stats"/);
 	assert.match(html, /id="preview-pane"/);
 	assert.match(html, /conductor-collapsed/);
+	assert.match(html, /function syncPreview/);
+	assert.match(html, /previewDismissedLaneId/);
+	assert.match(html, /renderStats\(\);syncPreview\(\)/);
+	assert.match(html, /closePreview\(false\)/);
 	assert.match(html, /name="terminalControl"/);
 	assert.match(html, /\/terminal-input/);
 	assert.match(html, /\/terminal-view-size/);
