@@ -72,6 +72,7 @@ test("local room renders the live lane and host control surfaces", () => {
 	);
 	assert.match(html, /autoFit:false/);
 	assert.doesNotMatch(html, /requestAnimationFrame\(\(\)=>terminal\.fit/);
+	assert.doesNotMatch(html, /\.terminal-live\{contain:layout paint/);
 	assert.ok(html.includes(GHOSTTY_ASSET_PATHS.module));
 	assert.match(html, /\/vendor\/libterminal\/browser\.js/);
 	assert.match(html, /\/vendor\/multicodex-terminal-stream\.js\?v=0\.3\.3/);
