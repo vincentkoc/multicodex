@@ -1,11 +1,8 @@
 import { spawn } from "node:child_process";
-import { join } from "node:path";
+import { createRequire } from "node:module";
 
-const executable = join(
-	"node_modules",
-	".bin",
-	process.platform === "win32" ? "esbuild.cmd" : "esbuild",
-);
+const require = createRequire(import.meta.url);
+const executable = require.resolve("esbuild/bin/esbuild");
 
 const child = spawn(
 	executable,
@@ -20,7 +17,6 @@ const child = spawn(
 	],
 	{
 		stdio: "inherit",
-		shell: process.platform === "win32",
 	},
 );
 
