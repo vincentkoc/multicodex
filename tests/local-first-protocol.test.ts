@@ -66,6 +66,7 @@ test("local room renders the live lane and host control surfaces", () => {
 	assert.match(html, /id="terminal-stream"/);
 	assert.match(html, /id="ghostty-terminal"/);
 	assert.match(html, /\/api\/lanes\/.*\/terminal/);
+	assert.match(html, /autoFit:true/);
 	assert.ok(html.includes(GHOSTTY_ASSET_PATHS.module));
 	assert.match(html, /\/vendor\/libterminal\/browser\.js/);
 	assert.match(html, /\/vendor\/multicodex-terminal-stream\.js/);
