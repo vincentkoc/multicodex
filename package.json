@@ -1,6 +1,6 @@
 {
 	"name": "@vincentkoc/multicodex",
-	"version": "0.3.3",
+	"version": "0.3.4",
 	"private": false,
 	"description": "A self-contained multiplayer control room for normal local Codex sessions",
 	"homepage": "https://github.com/vincentkoc/multicodex#readme",
