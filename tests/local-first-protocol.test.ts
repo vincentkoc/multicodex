@@ -100,10 +100,10 @@ test("local room renders the live lane and host control surfaces", () => {
 	assert.match(html, /name="terminalControl"/);
 	assert.match(html, /\/terminal-input/);
 	assert.match(html, /\/terminal-redraw/);
-	assert.match(html, /\/terminal-view-size/);
+	assert.doesNotMatch(html, /\/terminal-view-size/);
 	assert.match(html, /function canTerminalControl/);
 	assert.match(html, /function queueTerminalInput/);
-	assert.match(html, /function queueTerminalResize/);
+	assert.match(html, /function queueTerminalResize\(\)\{\}/);
 	assert.match(html, /function requestTerminalRedraw/);
 	assert.match(html, /function reconnectLiveTerminal/);
 	assert.match(html, /terminalAutoScroll=true/);
