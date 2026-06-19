@@ -16,7 +16,12 @@ import {
 	requiredPolicyForCommand,
 } from "../../protocol/src/index.ts";
 import { readTerminalAsset } from "./terminal-assets.ts";
-import { TerminalControlHub, TerminalMirrorHub, TerminalViewportHub } from "./terminal-mirror.ts";
+import {
+	TerminalControlHub,
+	TerminalMirrorHub,
+	TerminalRedrawHub,
+	TerminalViewportHub,
+} from "./terminal-mirror.ts";
 import { localRoomHtml } from "./ui.ts";
 
 type StoredLane = AlphaLane & { token: string };
@@ -552,6 +557,7 @@ export async function startLocalRoomServer(input: {
 	let publicUrl = "";
 	const terminalHub = new TerminalMirrorHub();
 	const terminalControlHub = new TerminalControlHub();
+	const terminalRedrawHub = new TerminalRedrawHub();
 	const terminalViewportHub = new TerminalViewportHub();
 	const server = http.createServer((request, response) => {
 		void handleRequest(
@@ -559,6 +565,7 @@ export async function startLocalRoomServer(input: {
 			input.handlers,
 			terminalHub,
 			terminalControlHub,
+			terminalRedrawHub,
 			terminalViewportHub,
 			publicUrl,
 			request,
@@ -583,6 +590,7 @@ export async function startLocalRoomServer(input: {
 		close: async () => {
 			terminalHub.closeAll();
 			terminalControlHub.closeAll();
+			terminalRedrawHub.closeAll();
 			terminalViewportHub.closeAll();
 			await new Promise<void>((resolve, reject) =>
 				server.close((cause) => (cause ? reject(cause) : resolve())),
@@ -596,6 +604,7 @@ async function handleRequest(
 	handlers: LocalRoomHandlers,
 	terminalHub: TerminalMirrorHub,
 	terminalControlHub: TerminalControlHub,
+	terminalRedrawHub: TerminalRedrawHub,
 	terminalViewportHub: TerminalViewportHub,
 	publicUrl: string,
 	request: IncomingMessage,
@@ -684,6 +693,7 @@ async function handleRequest(
 		if (!terminalMirror) {
 			terminalHub.closeLane(laneId);
 			terminalControlHub.closeLane(laneId);
+			terminalRedrawHub.closeLane(laneId);
 			terminalViewportHub.closeLane(laneId);
 		}
 		sendJson(response, 200, { room: store.snapshot(), ...resumed });
@@ -743,6 +753,26 @@ async function handleRequest(
 			return;
 		}
 	}
+	const terminalRedrawMatch = url.pathname.match(/^\/api\/lanes\/([^/]+)\/terminal-redraw$/);
+	if (terminalRedrawMatch) {
+		const laneId = decodeURIComponent(terminalRedrawMatch[1]!);
+		const token = optionalBearer(request);
+		if (request.method === "GET") {
+			if (!store.authorizeTerminalViewportBridge(laneId, token)) {
+				throw new RoomError(403, "terminal mirror unavailable");
+			}
+			terminalRedrawHub.subscribe(laneId, response);
+			return;
+		}
+		if (request.method === "POST") {
+			if (!store.authorizeTerminalViewer(laneId, token)) {
+				throw new RoomError(403, "terminal mirror unavailable");
+			}
+			terminalRedrawHub.publish(laneId);
+			sendJson(response, 202, { accepted: true });
+			return;
+		}
+	}
 	const terminalMatch = url.pathname.match(/^\/api\/lanes\/([^/]+)\/terminal$/);
 	if (terminalMatch) {
 		const laneId = decodeURIComponent(terminalMatch[1]!);
@@ -766,6 +796,7 @@ async function handleRequest(
 			await store.disableTerminalMirror(laneId, token);
 			terminalHub.closeLane(laneId);
 			terminalControlHub.closeLane(laneId);
+			terminalRedrawHub.closeLane(laneId);
 			terminalViewportHub.closeLane(laneId);
 			sendJson(response, 200, { disabled: true });
 			return;
@@ -842,6 +873,8 @@ async function handleRequest(
 		terminalHub.closeViewer(removedToken);
 		terminalHub.closeLane(laneId);
 		terminalControlHub.closeLane(laneId);
+		terminalRedrawHub.closeLane(laneId);
+		terminalViewportHub.closeLane(laneId);
 		sendJson(response, 200, { removed: true });
 		return;
 	}

@@ -99,10 +99,12 @@ test("local room renders the live lane and host control surfaces", () => {
 	assert.match(html, /closePreview\(false\)/);
 	assert.match(html, /name="terminalControl"/);
 	assert.match(html, /\/terminal-input/);
+	assert.match(html, /\/terminal-redraw/);
 	assert.match(html, /\/terminal-view-size/);
 	assert.match(html, /function canTerminalControl/);
 	assert.match(html, /function queueTerminalInput/);
 	assert.match(html, /function queueTerminalResize/);
+	assert.match(html, /function requestTerminalRedraw/);
 	assert.match(html, /function reconnectLiveTerminal/);
 	assert.doesNotMatch(html, /queueTerminalResize\(lane\.id,\{columns:terminal\.terminal\.cols/);
 	assert.match(html, /live mirror reconnecting/);
@@ -747,6 +749,21 @@ test("terminal mirror is opt-in, ephemeral, and capability scoped", async () => 
 		assert.equal(store.snapshot().lanes[0]?.terminalViewColumns, 120);
 		assert.equal(store.snapshot().lanes[0]?.terminalViewRows, 38);
 		await viewportReader.cancel();
+
+		const redrawUrl = new URL(`/api/lanes/${lane.lane.id}/terminal-redraw`, server.url);
+		const redraw = await fetch(redrawUrl, {
+			headers: { authorization: `Bearer ${lane.token}` },
+		});
+		assert.equal(redraw.status, 200);
+		const redrawReader = redraw.body!.getReader();
+		assert.match(new TextDecoder().decode((await redrawReader.read()).value), /^: {4096}\n\n$/);
+		const redrawRequested = await fetch(redrawUrl, {
+			method: "POST",
+			headers: { authorization: `Bearer ${lane.token}` },
+		});
+		assert.equal(redrawRequested.status, 202);
+		assert.equal(await readSseEvent(redrawReader, "redraw"), "\u0001");
+		await redrawReader.cancel();
 
 		const output = "\u001b[31mlive terminal\u001b[0m\r\n";
 		const published = await fetch(terminalUrl, {

@@ -439,8 +439,17 @@ export class BuilderBridge {
 				}
 			},
 		);
+		const redraw = new TerminalEventSubscriber(
+			this.input.server,
+			this.laneId,
+			this.token,
+			"/terminal-redraw",
+			"redraw",
+			() => tui.write("\f"),
+		);
 		controller?.start();
 		viewport.start();
+		redraw.start();
 		this.tuiChild = tui;
 		try {
 			await tui.done;
@@ -448,6 +457,7 @@ export class BuilderBridge {
 			this.tuiChild = null;
 			controller?.stop();
 			viewport.stop();
+			redraw.stop();
 			await publisher.stop();
 		}
 	}
@@ -559,8 +569,8 @@ class TerminalEventSubscriber {
 		server: string,
 		laneId: string,
 		token: string,
-		pathname: "/terminal-input" | "/terminal-view-size",
-		event: "input" | "resize",
+		pathname: "/terminal-input" | "/terminal-redraw" | "/terminal-view-size",
+		event: "input" | "redraw" | "resize",
 		onEvent: (bytes: Uint8Array) => void,
 	) {
 		this.endpoint = new URL(`/api/lanes/${encodeURIComponent(laneId)}${pathname}`, server);

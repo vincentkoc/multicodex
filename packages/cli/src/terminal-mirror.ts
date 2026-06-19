@@ -175,7 +175,7 @@ export class TerminalViewportHub {
 				Buffer.from(JSON.stringify(initialSize)).toString("base64"),
 			);
 		}
-		const subscription = this.lane(laneId).subscribe(crypto.randomUUID(), { replay: false });
+		const subscription = this.lane(laneId).subscribe(crypto.randomUUID());
 		response.once("close", () => subscription.close("terminal viewport bridge disconnected"));
 		void streamSubscription(subscription, response, "resize").catch(() => response.destroy());
 	}
@@ -195,7 +195,53 @@ export class TerminalViewportHub {
 		let lane = this.lanes.get(laneId);
 		if (!lane) {
 			lane = new TerminalFanout({
-				replayBytes: 0,
+				replayBytes: 1,
+				subscriberBufferBytes: 16 * 1024,
+				slowSubscriberPolicy: "disconnect",
+			});
+			this.lanes.set(laneId, lane);
+		}
+		return lane;
+	}
+}
+
+export class TerminalRedrawHub {
+	private readonly lanes = new Map<string, TerminalFanout>();
+
+	publish(laneId: string): void {
+		this.lane(laneId).publish(new Uint8Array([1]));
+	}
+
+	subscribe(laneId: string, response: ServerResponse): void {
+		response.writeHead(200, {
+			"content-type": "text/event-stream",
+			"cache-control": "no-cache, no-transform",
+			"x-content-type-options": "nosniff",
+			"x-accel-buffering": "no",
+		});
+		response.flushHeaders();
+		response.write(PROXY_FLUSH_PREAMBLE);
+		const subscription = this.lane(laneId).subscribe(crypto.randomUUID());
+		response.once("close", () => subscription.close("terminal redraw bridge disconnected"));
+		void streamSubscription(subscription, response, "redraw").catch(() => response.destroy());
+	}
+
+	closeLane(laneId: string): void {
+		const lane = this.lanes.get(laneId);
+		if (!lane) return;
+		lane.close("terminal redraw closed");
+		this.lanes.delete(laneId);
+	}
+
+	closeAll(): void {
+		for (const laneId of this.lanes.keys()) this.closeLane(laneId);
+	}
+
+	private lane(laneId: string): TerminalFanout {
+		let lane = this.lanes.get(laneId);
+		if (!lane) {
+			lane = new TerminalFanout({
+				replayBytes: 1,
 				subscriberBufferBytes: 16 * 1024,
 				slowSubscriberPolicy: "disconnect",
 			});
@@ -268,7 +314,7 @@ export class TerminalMirrorPublisher {
 async function streamSubscription(
 	subscription: TerminalSubscription,
 	response: ServerResponse,
-	event: "input" | "resize" | "terminal",
+	event: "input" | "redraw" | "resize" | "terminal",
 ): Promise<void> {
 	try {
 		for await (const chunk of subscription) {
