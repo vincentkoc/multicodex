@@ -617,6 +617,12 @@ test("terminal mirror is opt-in, ephemeral, and capability scoped", async () => 
 			const asset = await fetch(new URL(pathname, server.url));
 			assert.equal(asset.status, 200);
 			assert.match(asset.headers.get("content-type") ?? "", /javascript/);
+			if (pathname === "/vendor/multicodex-terminal-stream.js") {
+				const source = await asset.text();
+				await assert.doesNotReject(
+					() => import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`),
+				);
+			}
 		}
 
 		const terminalUrl = new URL(`/api/lanes/${lane.lane.id}/terminal`, server.url);

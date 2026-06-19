@@ -14,7 +14,7 @@ const libterminalProtocolPath = fileURLToPath(
 	import.meta.resolve("@openclaw/libterminal/protocol"),
 );
 const terminalStreamBrowserPath = fileURLToPath(
-	new URL("./terminal-stream-client.ts", import.meta.url),
+	new URL("./terminal-stream-client.js", import.meta.url),
 );
 const libterminalAssets = new Map([
 	["/vendor/libterminal/browser.js", libterminalBrowserPath],

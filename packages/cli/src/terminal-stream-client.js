@@ -1,6 +1,6 @@
-export function terminalEventBytes(body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
-	let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-	return new ReadableStream<Uint8Array>({
+export function terminalEventBytes(body) {
+	let reader = null;
+	return new ReadableStream({
 		async start(controller) {
 			const streamReader = body.getReader();
 			reader = streamReader;
@@ -28,10 +28,7 @@ export function terminalEventBytes(body: ReadableStream<Uint8Array>): ReadableSt
 	});
 }
 
-function forwardTerminalFrames(
-	buffered: string,
-	controller: ReadableStreamDefaultController<Uint8Array>,
-): string {
+function forwardTerminalFrames(buffered, controller) {
 	while (true) {
 		const boundary = buffered.indexOf("\n\n");
 		if (boundary < 0) return buffered;
@@ -51,7 +48,7 @@ function forwardTerminalFrames(
 	}
 }
 
-function base64Bytes(value: string): Uint8Array {
+function base64Bytes(value) {
 	const decoded = atob(value);
 	return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
 }

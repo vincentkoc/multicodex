@@ -16,6 +16,7 @@
 	},
 	"files": [
 		"dist/cli.mjs",
+		"dist/terminal-stream-client.js",
 		"README.md",
 		"skills/multicodex/SKILL.md"
 	],
