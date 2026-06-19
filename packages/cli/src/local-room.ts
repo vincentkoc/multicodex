@@ -561,7 +561,13 @@ async function handleRequest(
 	if (request.method === "GET") {
 		const asset = await readTerminalAsset(url.pathname);
 		if (asset) {
-			sendBinary(response, 200, asset.body, asset.contentType);
+			sendBinary(
+				response,
+				200,
+				asset.body,
+				asset.contentType,
+				url.pathname === "/vendor/multicodex-terminal-stream.js" ? "no-store" : undefined,
+			);
 			return;
 		}
 	}
@@ -946,11 +952,12 @@ function sendBinary(
 	status: number,
 	body: Uint8Array,
 	contentType: string,
+	cacheControl = "public, max-age=31536000, immutable",
 ): void {
 	response.writeHead(status, {
 		"content-type": contentType,
 		"content-length": String(body.byteLength),
-		"cache-control": "public, max-age=31536000, immutable",
+		"cache-control": cacheControl,
 		"x-content-type-options": "nosniff",
 	});
 	response.end(body);

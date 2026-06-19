@@ -69,7 +69,7 @@ test("local room renders the live lane and host control surfaces", () => {
 	assert.match(html, /requestAnimationFrame\(\(\)=>terminal\.fit\(\)\)/);
 	assert.ok(html.includes(GHOSTTY_ASSET_PATHS.module));
 	assert.match(html, /\/vendor\/libterminal\/browser\.js/);
-	assert.match(html, /\/vendor\/multicodex-terminal-stream\.js/);
+	assert.match(html, /\/vendor\/multicodex-terminal-stream\.js\?v=0\.3\.3/);
 	assert.match(html, /id="invite-dialog"/);
 	assert.match(html, /id="invite-form"/);
 	assert.match(html, /id="invite-command"/);
@@ -618,6 +618,7 @@ test("terminal mirror is opt-in, ephemeral, and capability scoped", async () => 
 			assert.equal(asset.status, 200);
 			assert.match(asset.headers.get("content-type") ?? "", /javascript/);
 			if (pathname === "/vendor/multicodex-terminal-stream.js") {
+				assert.equal(asset.headers.get("cache-control"), "no-store");
 				const source = await asset.text();
 				await assert.doesNotReject(
 					() => import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`),
