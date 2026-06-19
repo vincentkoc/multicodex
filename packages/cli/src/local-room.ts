@@ -16,7 +16,7 @@ import {
 	requiredPolicyForCommand,
 } from "../../protocol/src/index.ts";
 import { readTerminalAsset } from "./terminal-assets.ts";
-import { TerminalMirrorHub } from "./terminal-mirror.ts";
+import { TerminalControlHub, TerminalMirrorHub } from "./terminal-mirror.ts";
 import { localRoomHtml } from "./ui.ts";
 
 type StoredLane = AlphaLane & { token: string };
@@ -77,9 +77,12 @@ export class LocalRoomStore {
 		for (const lane of state.lanes) {
 			lane.removedAt ??= null;
 			lane.terminalMirror ??= false;
+			lane.terminalControl ??= false;
+			lane.previewUrl ??= null;
 			lane.terminalColumns ??= null;
 			lane.terminalRows ??= null;
 		}
+		for (const invite of state.invites) invite.terminalControl ??= false;
 		const store = new LocalRoomStore(statePath, state);
 		await store.save();
 		return store;
@@ -142,6 +145,7 @@ export class LocalRoomStore {
 		displayName: string;
 		policy: LanePolicy;
 		terminalMirror?: boolean;
+		terminalControl?: boolean;
 	}): Promise<{ invite: RoomInvite; token: string }> {
 		const invite: StoredInvite = {
 			id: `invite_${crypto.randomUUID()}`,
@@ -149,6 +153,7 @@ export class LocalRoomStore {
 			displayName: input.displayName,
 			policy: input.policy,
 			terminalMirror: input.terminalMirror !== false,
+			terminalControl: input.terminalControl === true && input.terminalMirror !== false,
 			createdAt: Date.now(),
 			claimedAt: null,
 			claimedLaneId: null,
@@ -176,6 +181,8 @@ export class LocalRoomStore {
 			repo: string;
 			policy: LanePolicy;
 			terminalMirror?: boolean;
+			terminalControl?: boolean;
+			previewUrl?: string | null;
 		},
 	): Promise<{ lane: AlphaLane; token: string }> {
 		if (this.authorizeInvite(inviteToken)) return this.join(input);
@@ -191,6 +198,12 @@ export class LocalRoomStore {
 				repo: input.repo,
 				policy: invite.policy,
 				terminalMirror: invite.terminalMirror && input.terminalMirror === true,
+				terminalControl:
+					invite.terminalControl === true &&
+					invite.terminalMirror &&
+					input.terminalMirror === true &&
+					input.terminalControl === true,
+				previewUrl: input.previewUrl,
 			});
 			invite.claimedLaneId = joined.lane.id;
 			await this.save();
@@ -207,6 +220,8 @@ export class LocalRoomStore {
 		repo: string;
 		policy: LanePolicy;
 		terminalMirror?: boolean;
+		terminalControl?: boolean;
+		previewUrl?: string | null;
 	}): Promise<{ lane: AlphaLane; token: string }> {
 		const now = Date.now();
 		const lane: StoredLane = {
@@ -216,6 +231,8 @@ export class LocalRoomStore {
 			repo: input.repo,
 			policy: input.policy,
 			terminalMirror: Boolean(input.terminalMirror),
+			terminalControl: Boolean(input.terminalControl && input.terminalMirror),
+			previewUrl: input.previewUrl ?? null,
 			terminalColumns: null,
 			terminalRows: null,
 			connected: false,
@@ -242,6 +259,8 @@ export class LocalRoomStore {
 			repo: string;
 			policy: LanePolicy;
 			terminalMirror?: boolean;
+			terminalControl?: boolean;
+			previewUrl?: string | null;
 		},
 	): Promise<{ lane: AlphaLane }> {
 		const lane = this.state.lanes.find(
@@ -253,6 +272,9 @@ export class LocalRoomStore {
 		lane.repo = input.repo;
 		lane.policy = input.policy;
 		lane.terminalMirror = Boolean(input.terminalMirror);
+		lane.terminalControl =
+			lane.terminalControl && lane.terminalMirror && input.terminalControl === true;
+		if (input.previewUrl !== undefined) lane.previewUrl = input.previewUrl;
 		lane.updatedAt = Date.now();
 		lane.status = "reconnecting";
 		await this.save();
@@ -283,6 +305,25 @@ export class LocalRoomStore {
 		return Boolean(lane?.terminalMirror);
 	}
 
+	authorizeTerminalControlBridge(laneId: string, token: string): boolean {
+		const lane = this.authorizeLane(laneId, token);
+		return Boolean(lane?.connected && lane.terminalMirror && lane.terminalControl);
+	}
+
+	authorizeTerminalController(laneId: string, token: string): StoredLane | null {
+		const lane = this.state.lanes.find((candidate) => candidate.id === laneId);
+		if (
+			!lane ||
+			lane.removedAt ||
+			!lane.connected ||
+			!lane.terminalMirror ||
+			!lane.terminalControl
+		) {
+			return null;
+		}
+		return token === this.state.hostToken ? lane : null;
+	}
+
 	async updateTerminalSize(
 		laneId: string,
 		token: string,
@@ -300,8 +341,16 @@ export class LocalRoomStore {
 	async disableTerminalMirror(laneId: string, token: string): Promise<void> {
 		const lane = this.requireLane(laneId, token);
 		lane.terminalMirror = false;
+		lane.terminalControl = false;
 		lane.terminalColumns = null;
 		lane.terminalRows = null;
+		lane.updatedAt = Date.now();
+		await this.save();
+	}
+
+	async updatePreviewUrl(laneId: string, token: string, previewUrl: string | null): Promise<void> {
+		const lane = this.requireLane(laneId, token);
+		lane.previewUrl = previewUrl;
 		lane.updatedAt = Date.now();
 		await this.save();
 	}
@@ -435,7 +484,7 @@ export class LocalRoomStore {
 }
 
 export type LocalRoomHandlers = {
-	onConductorMessage: (text: string) => Promise<void>;
+	onConductorMessage: (text: string, source: "host" | "participant") => Promise<void>;
 	onConductorCommand: (laneId: string, kind: LaneCommandKind, text: string) => Promise<void>;
 };
 
@@ -458,11 +507,13 @@ export async function startLocalRoomServer(input: {
 	if (input.publicUrl) new URL(input.publicUrl);
 	let publicUrl = "";
 	const terminalHub = new TerminalMirrorHub();
+	const terminalControlHub = new TerminalControlHub();
 	const server = http.createServer((request, response) => {
 		void handleRequest(
 			input.store,
 			input.handlers,
 			terminalHub,
+			terminalControlHub,
 			publicUrl,
 			request,
 			response,
@@ -485,6 +536,7 @@ export async function startLocalRoomServer(input: {
 		inviteUrl: input.store.inviteUrl(publicUrl),
 		close: async () => {
 			terminalHub.closeAll();
+			terminalControlHub.closeAll();
 			await new Promise<void>((resolve, reject) =>
 				server.close((cause) => (cause ? reject(cause) : resolve())),
 			);
@@ -496,6 +548,7 @@ async function handleRequest(
 	store: LocalRoomStore,
 	handlers: LocalRoomHandlers,
 	terminalHub: TerminalMirrorHub,
+	terminalControlHub: TerminalControlHub,
 	publicUrl: string,
 	request: IncomingMessage,
 	response: ServerResponse,
@@ -529,6 +582,7 @@ async function handleRequest(
 			displayName: requiredString(body.displayName, "displayName"),
 			policy,
 			terminalMirror: body.terminalMirror !== false,
+			terminalControl: body.terminalControl === true,
 		});
 		const inviteUrl = capabilityUrl(publicUrl, "invite", created.token);
 		sendJson(response, 201, {
@@ -552,6 +606,8 @@ async function handleRequest(
 			repo: requiredString(body.repo, "repo"),
 			policy: requiredPolicy(body.policy),
 			terminalMirror: body.terminalMirror === true,
+			terminalControl: body.terminalControl === true,
+			previewUrl: previewUrlFromBody(body) ?? null,
 		});
 		sendJson(response, 201, { room: store.snapshot(), ...joined });
 		return;
@@ -561,14 +617,30 @@ async function handleRequest(
 		const body = await readJson(request);
 		const laneId = decodeURIComponent(resumeMatch[1]!);
 		const terminalMirror = body.terminalMirror === true;
+		const terminalControl = body.terminalControl === true;
+		const previewUrl = previewUrlFromBody(body);
 		const resumed = await store.resumeLane(laneId, bearer(request), {
 			displayName: requiredString(body.displayName, "displayName"),
 			repo: requiredString(body.repo, "repo"),
 			policy: requiredPolicy(body.policy),
 			terminalMirror,
+			terminalControl,
+			previewUrl,
 		});
-		if (!terminalMirror) terminalHub.closeLane(laneId);
+		if (!terminalMirror) {
+			terminalHub.closeLane(laneId);
+			terminalControlHub.closeLane(laneId);
+		}
 		sendJson(response, 200, { room: store.snapshot(), ...resumed });
+		return;
+	}
+	const previewMatch = url.pathname.match(/^\/api\/lanes\/([^/]+)\/preview$/);
+	if (request.method === "POST" && previewMatch) {
+		const body = await readJson(request);
+		const previewUrl = previewUrlFromBody(body);
+		if (previewUrl === undefined) throw new RoomError(400, "previewUrl is required");
+		await store.updatePreviewUrl(decodeURIComponent(previewMatch[1]!), bearer(request), previewUrl);
+		sendJson(response, 202, { accepted: true });
 		return;
 	}
 	const eventMatch = url.pathname.match(/^\/api\/lanes\/([^/]+)\/events$/);
@@ -586,6 +658,35 @@ async function handleRequest(
 		const after = Number(url.searchParams.get("after") ?? "0");
 		sendJson(response, 200, { commands: store.commandsAfter(laneId, bearer(request), after) });
 		return;
+	}
+	const terminalInputMatch = url.pathname.match(/^\/api\/lanes\/([^/]+)\/terminal-input$/);
+	if (terminalInputMatch) {
+		const laneId = decodeURIComponent(terminalInputMatch[1]!);
+		const token = optionalBearer(request);
+		if (request.method === "GET") {
+			if (!store.authorizeTerminalControlBridge(laneId, token)) {
+				throw new RoomError(403, "terminal control unavailable");
+			}
+			terminalControlHub.subscribe(laneId, response);
+			return;
+		}
+		if (request.method === "POST") {
+			const lane = store.authorizeTerminalController(laneId, token);
+			if (!lane) throw new RoomError(403, "terminal control unavailable");
+			const input = await readBytes(request, 64 * 1024);
+			if (input.byteLength === 0) throw new RoomError(400, "terminal input required");
+			if (!terminalControlHub.publish(laneId, input)) {
+				throw new RoomError(409, "terminal control bridge unavailable");
+			}
+			if (terminalControlHub.markActive(laneId)) {
+				await store.addConductorMessage(
+					"system",
+					`host terminal control active for ${lane.displayName}`,
+				);
+			}
+			sendJson(response, 202, { accepted: true });
+			return;
+		}
 	}
 	const terminalMatch = url.pathname.match(/^\/api\/lanes\/([^/]+)\/terminal$/);
 	if (terminalMatch) {
@@ -609,6 +710,7 @@ async function handleRequest(
 		if (request.method === "DELETE") {
 			await store.disableTerminalMirror(laneId, token);
 			terminalHub.closeLane(laneId);
+			terminalControlHub.closeLane(laneId);
 			sendJson(response, 200, { disabled: true });
 			return;
 		}
@@ -632,7 +734,7 @@ async function handleRequest(
 		const text = requiredString(body.text, "text");
 		const displayName = await store.addParticipantMessage(laneId, bearer(request), text);
 		void handlers
-			.onConductorMessage(`${displayName}: ${text}`)
+			.onConductorMessage(`${displayName}: ${text}`, "participant")
 			.catch((cause) =>
 				store.addConductorMessage("system", `conductor failed: ${errorMessage(cause)}`),
 			);
@@ -645,7 +747,7 @@ async function handleRequest(
 		const text = requiredString(body.text, "text");
 		await store.addConductorMessage("host", text);
 		void handlers
-			.onConductorMessage(text)
+			.onConductorMessage(text, "host")
 			.catch((cause) =>
 				store.addConductorMessage("system", `conductor failed: ${errorMessage(cause)}`),
 			);
@@ -659,6 +761,7 @@ async function handleRequest(
 		const removedToken = await store.removeLane(laneId);
 		terminalHub.closeViewer(removedToken);
 		terminalHub.closeLane(laneId);
+		terminalControlHub.closeLane(laneId);
 		sendJson(response, 200, { removed: true });
 		return;
 	}
@@ -721,19 +824,24 @@ class RoomError extends Error {
 }
 
 async function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
+	const bytes = await readBytes(request, 256_000);
+	try {
+		return JSON.parse(bytes.toString("utf8") || "{}") as Record<string, unknown>;
+	} catch {
+		throw new RoomError(400, "valid JSON required");
+	}
+}
+
+async function readBytes(request: IncomingMessage, maximum: number): Promise<Buffer> {
 	const chunks: Buffer[] = [];
 	let size = 0;
 	for await (const chunk of request) {
 		const buffer = Buffer.from(chunk);
 		size += buffer.length;
-		if (size > 256_000) throw new RoomError(413, "request too large");
+		if (size > maximum) throw new RoomError(413, "request too large");
 		chunks.push(buffer);
 	}
-	try {
-		return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as Record<string, unknown>;
-	} catch {
-		throw new RoomError(400, "valid JSON required");
-	}
+	return Buffer.concat(chunks);
 }
 
 function requiredString(value: unknown, name: string): string {
@@ -783,6 +891,24 @@ function terminalDimension(value: number, minimum: number, maximum: number): num
 	return Math.min(maximum, Math.max(minimum, Math.trunc(value)));
 }
 
+function previewUrlFromBody(value: Record<string, unknown>): string | null | undefined {
+	if (!("previewUrl" in value)) return undefined;
+	if (value.previewUrl === null || value.previewUrl === "") return null;
+	if (typeof value.previewUrl !== "string" || value.previewUrl.length > 2_048) {
+		throw new RoomError(400, "valid previewUrl required");
+	}
+	let preview: URL;
+	try {
+		preview = new URL(value.previewUrl);
+	} catch {
+		throw new RoomError(400, "valid previewUrl required");
+	}
+	if (!["http:", "https:"].includes(preview.protocol) || preview.username || preview.password) {
+		throw new RoomError(400, "previewUrl must be an http or https URL without credentials");
+	}
+	return preview.toString();
+}
+
 function advertisedUrl(host: string, port: number, configured?: string): string {
 	if (configured) return new URL(configured).toString().replace(/\/$/, "");
 	if (["0.0.0.0", "::"].includes(host)) {
@@ -804,11 +930,11 @@ function shellQuote(value: string): string {
 
 function joinCommand(
 	inviteUrl: string,
-	invite?: Pick<RoomInvite, "displayName" | "policy" | "terminalMirror">,
+	invite?: Pick<RoomInvite, "displayName" | "policy" | "terminalMirror" | "terminalControl">,
 ): string {
 	const command = `npx --yes @vincentkoc/multicodex@latest join ${shellQuote(inviteUrl)} --repo .`;
 	if (!invite) return `${command} --terminal-mirror`;
-	return `${command} --name ${shellQuote(invite.displayName)} --policy ${invite.policy}${invite.terminalMirror ? " --terminal-mirror" : ""}`;
+	return `${command} --name ${shellQuote(invite.displayName)} --policy ${invite.policy}${invite.terminalMirror ? " --terminal-mirror" : ""}${invite.terminalControl ? " --terminal-control" : ""}`;
 }
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {

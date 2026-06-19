@@ -14,10 +14,30 @@ import {
 import { BuilderStateStore, parseRoomEndpoint } from "../packages/cli/src/builder-state.ts";
 import { ActivityDeltaBuffer } from "../packages/cli/src/builder.ts";
 import { resolveUserCodexPath } from "../packages/cli/src/codex-path.ts";
+import { routeConductorCommand } from "../packages/cli/src/conductor.ts";
 import { LocalRoomStore, startLocalRoomServer } from "../packages/cli/src/local-room.ts";
 import { startMirroredTui } from "../packages/cli/src/pty-tui.ts";
 import { TerminalMirrorPublisher } from "../packages/cli/src/terminal-mirror.ts";
 import { localRoomHtml } from "../packages/cli/src/ui.ts";
+
+async function readTerminalEvent(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
+	return readSseEvent(reader, "terminal");
+}
+
+async function readSseEvent(
+	reader: ReadableStreamDefaultReader<Uint8Array>,
+	event: string,
+): Promise<string> {
+	const decoder = new TextDecoder();
+	let buffered = "";
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) throw new Error("terminal stream ended before a terminal frame arrived");
+		buffered += decoder.decode(value, { stream: true });
+		const match = buffered.match(new RegExp(`event: ${event}\\ndata: ([^\\n]+)\\n\\n`));
+		if (match) return Buffer.from(match[1]!, "base64").toString();
+	}
+}
 
 test("lane policies keep live steering explicit", () => {
 	assert.equal(policyAllows("observe", "suggest"), false);
@@ -48,10 +68,26 @@ test("local room renders the live lane and host control surfaces", () => {
 	assert.match(html, /\/api\/lanes\/.*\/terminal/);
 	assert.ok(html.includes(GHOSTTY_ASSET_PATHS.module));
 	assert.match(html, /\/vendor\/libterminal\/browser\.js/);
-	assert.match(html, /id="add-person"/);
+	assert.match(html, /\/vendor\/multicodex-terminal-stream\.js/);
+	assert.match(html, /id="invite-dialog"/);
+	assert.match(html, /id="invite-form"/);
+	assert.match(html, /id="invite-command"/);
+	assert.doesNotMatch(html, /id="add-person"/);
 	assert.match(html, /\/api\/invites/);
 	assert.match(html, /invite ready - waiting to join/);
 	assert.match(html, /id="command-form"/);
+	assert.match(html, /id="action-button"/);
+	assert.match(html, /id="lane-stats"/);
+	assert.match(html, /id="preview-pane"/);
+	assert.match(html, /conductor-collapsed/);
+	assert.match(html, /name="terminalControl"/);
+	assert.match(html, /\/terminal-input/);
+	assert.match(html, /function canTerminalControl/);
+	assert.match(html, /function queueTerminalInput/);
+	assert.match(html, /function syncCommandControls/);
+	assert.match(html, /activeLanes\(\)\.some\(candidate=>candidate\.terminalMirror/);
+	assert.match(html, /lane policy does not allow conductor actions/);
+	assert.match(html, /lane\.currentTurnId&&lane\.terminalMirror&&lane\.connected/);
 	assert.match(html, /sessionStorage\.getItem\('multicodex-host-token'\)/);
 	assert.match(html, /sessionStorage\.getItem\('multicodex-lane-token'\)/);
 	assert.match(html, /\/api\/conductor\/command/);
@@ -105,6 +141,31 @@ test("terminal mirror launches a real local PTY", async () => {
 	]);
 });
 
+test("mirrored PTYs accept host-controlled input", async () => {
+	let output = "";
+	let ready!: () => void;
+	const started = new Promise<void>((resolve) => {
+		ready = resolve;
+	});
+	const tui = await startMirroredTui({
+		command: process.execPath,
+		args: [
+			"-e",
+			"process.stdin.once('data',data=>{process.stdout.write(data);process.exit(0)});process.stdout.write('ready')",
+		],
+		cwd: process.cwd(),
+		onOutput: (data) => {
+			output += data;
+			if (output.includes("ready")) ready();
+		},
+		onResize: () => undefined,
+	});
+	await started;
+	tui.write("pty-input\n");
+	await tui.done;
+	assert.match(output, /pty-input/);
+});
+
 test("local room acknowledges replayed events once and rejects gaps", async () => {
 	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-alpha-"));
 	const store = await LocalRoomStore.create({ stateDir, title: "alpha", repo: "repo" });
@@ -154,6 +215,35 @@ test("conductor commands are ordered per local lane", async () => {
 		[1, 2],
 	);
 	assert.equal(commands[1]?.requiredPolicy, "steer");
+});
+
+test("conductor starts idle lanes instead of steering a missing turn", async () => {
+	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-alpha-"));
+	const store = await LocalRoomStore.create({ stateDir, title: "alpha", repo: "repo" });
+	const { lane, token } = await store.join({
+		displayName: "Builder",
+		repo: "repo",
+		policy: "steer",
+	});
+	assert.deepEqual(routeConductorCommand(store.snapshot(), lane.id, "steer_active_turn"), {
+		kind: "start_followup",
+		reroutedFromIdleSteer: true,
+	});
+
+	await store.appendEvents(lane.id, token, [
+		createLaneEvent({
+			roomId: store.snapshot().id,
+			laneId: lane.id,
+			sequence: 1,
+			kind: "turn.started",
+			summary: "started",
+			payload: { turnId: "turn_1" },
+		}),
+	]);
+	assert.deepEqual(routeConductorCommand(store.snapshot(), lane.id, "steer_active_turn"), {
+		kind: "steer_active_turn",
+		reroutedFromIdleSteer: false,
+	});
 });
 
 test("lane capability resumes the same lane and event sequence", async () => {
@@ -433,6 +523,60 @@ test("host creates visible single-use named invites that can be revoked", async 
 	}
 });
 
+test("participants can attach an http preview to only their own lane", async () => {
+	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-preview-"));
+	const store = await LocalRoomStore.create({ stateDir, title: "preview", repo: "repo" });
+	const server = await startLocalRoomServer({
+		store,
+		port: 0,
+		handlers: {
+			onConductorMessage: async () => undefined,
+			onConductorCommand: async () => undefined,
+		},
+	});
+	try {
+		const lane = await store.join({
+			displayName: "Preview builder",
+			repo: "repo",
+			policy: "suggest",
+			terminalMirror: false,
+		});
+		const attach = await fetch(new URL(`/api/lanes/${lane.lane.id}/preview`, server.url), {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${lane.token}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ previewUrl: "http://127.0.0.1:4173/game/" }),
+		});
+		assert.equal(attach.status, 202);
+		assert.equal(store.snapshot().lanes[0]?.previewUrl, "http://127.0.0.1:4173/game/");
+
+		const invalid = await fetch(new URL(`/api/lanes/${lane.lane.id}/preview`, server.url), {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${lane.token}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ previewUrl: "file:///tmp/game.html" }),
+		});
+		assert.equal(invalid.status, 400);
+
+		const hostToken = new URL(server.hostUrl).hash.replace(/^#host=/, "");
+		const hostAttempt = await fetch(new URL(`/api/lanes/${lane.lane.id}/preview`, server.url), {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${hostToken}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ previewUrl: "https://example.test/" }),
+		});
+		assert.equal(hostAttempt.status, 401);
+	} finally {
+		await server.close();
+	}
+});
+
 test("terminal mirror is opt-in, ephemeral, and capability scoped", async () => {
 	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-terminal-"));
 	const store = await LocalRoomStore.create({ stateDir, title: "terminal", repo: "repo" });
@@ -463,7 +607,12 @@ test("terminal mirror is opt-in, ephemeral, and capability scoped", async () => 
 		const ghosttyWasm = await fetch(new URL(GHOSTTY_ASSET_PATHS.wasm, server.url));
 		assert.equal(ghosttyWasm.status, 200);
 		assert.equal(ghosttyWasm.headers.get("content-type"), "application/wasm");
-		for (const pathname of ["/vendor/libterminal/browser.js", "/vendor/libterminal/index.js"]) {
+		for (const pathname of [
+			"/vendor/libterminal/browser.js",
+			"/vendor/libterminal/index.js",
+			"/vendor/libterminal/protocol.js",
+			"/vendor/multicodex-terminal-stream.js",
+		]) {
 			const asset = await fetch(new URL(pathname, server.url));
 			assert.equal(asset.status, 200);
 			assert.match(asset.headers.get("content-type") ?? "", /javascript/);
@@ -478,6 +627,7 @@ test("terminal mirror is opt-in, ephemeral, and capability scoped", async () => 
 		});
 		assert.equal(crossLaneStream.status, 200);
 		const crossLaneReader = crossLaneStream.body!.getReader();
+		assert.match(new TextDecoder().decode((await crossLaneReader.read()).value), /^: {4096}\n\n$/);
 		const removedViewer = await fetch(new URL(`/api/lanes/${otherLane.lane.id}`, server.url), {
 			method: "DELETE",
 			headers: { authorization: `Bearer ${hostToken}` },
@@ -515,9 +665,10 @@ test("terminal mirror is opt-in, ephemeral, and capability scoped", async () => 
 			headers: { authorization: `Bearer ${hostToken}` },
 		});
 		assert.equal(stream.status, 200);
+		assert.equal(stream.headers.get("content-type"), "text/event-stream");
+		assert.equal(stream.headers.get("cache-control"), "no-cache, no-transform");
 		const reader = stream.body!.getReader();
-		const replay = await reader.read();
-		assert.equal(new TextDecoder().decode(replay.value), output);
+		assert.equal(await readTerminalEvent(reader), output);
 
 		assert.equal(JSON.stringify(store.snapshot()).includes("live terminal"), false);
 		assert.equal(
@@ -536,6 +687,106 @@ test("terminal mirror is opt-in, ephemeral, and capability scoped", async () => 
 		assert.equal(store.snapshot().lanes[0]?.terminalMirror, false);
 		const revoked = await fetch(terminalUrl, {
 			headers: { authorization: `Bearer ${hostToken}` },
+		});
+		assert.equal(revoked.status, 403);
+	} finally {
+		await server.close();
+	}
+});
+
+test("terminal control requires a participant opt-in and an active local bridge", async () => {
+	const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "multicodex-terminal-control-"));
+	const store = await LocalRoomStore.create({ stateDir, title: "terminal control", repo: "repo" });
+	const invite = await store.createInvite({
+		displayName: "Controller",
+		policy: "steer",
+		terminalMirror: true,
+		terminalControl: true,
+	});
+	const joined = await store.joinFromInvite(invite.token, {
+		displayName: "Controller",
+		repo: "repo",
+		policy: "steer",
+		terminalMirror: true,
+		terminalControl: true,
+	});
+	assert.equal(joined.lane.terminalControl, true);
+	const noControl = await store.join({
+		displayName: "Observer",
+		repo: "repo",
+		policy: "steer",
+		terminalMirror: true,
+	});
+	await store.appendEvents(joined.lane.id, joined.token, [
+		createLaneEvent({
+			roomId: store.snapshot().id,
+			laneId: joined.lane.id,
+			sequence: 1,
+			kind: "lane.connected",
+			summary: "connected",
+		}),
+	]);
+	const server = await startLocalRoomServer({
+		store,
+		port: 0,
+		handlers: {
+			onConductorMessage: async () => undefined,
+			onConductorCommand: async () => undefined,
+		},
+	});
+	try {
+		const hostToken = new URL(server.hostUrl).hash.replace(/^#host=/, "");
+		const inputUrl = new URL(`/api/lanes/${joined.lane.id}/terminal-input`, server.url);
+		const denied = await fetch(inputUrl, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${noControl.token}`,
+				"content-type": "application/octet-stream",
+			},
+			body: "blocked",
+		});
+		assert.equal(denied.status, 403);
+		const unavailable = await fetch(inputUrl, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${hostToken}`,
+				"content-type": "application/octet-stream",
+			},
+			body: "before bridge",
+		});
+		assert.equal(unavailable.status, 409);
+
+		const stream = await fetch(inputUrl, {
+			headers: { authorization: `Bearer ${joined.token}` },
+		});
+		assert.equal(stream.status, 200);
+		const reader = stream.body!.getReader();
+		assert.match(new TextDecoder().decode((await reader.read()).value), /^: {4096}\n\n$/);
+		const accepted = await fetch(inputUrl, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${hostToken}`,
+				"content-type": "application/octet-stream",
+			},
+			body: "host input",
+		});
+		assert.equal(accepted.status, 202);
+		assert.equal(await readSseEvent(reader, "input"), "host input");
+		assert.equal(JSON.stringify(store.snapshot()).includes("host input"), false);
+		assert.equal(
+			store.snapshot().conductorMessages.at(-1)?.body,
+			"host terminal control active for Controller",
+		);
+		await reader.cancel();
+
+		await store.disableTerminalMirror(joined.lane.id, joined.token);
+		const revoked = await fetch(inputUrl, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${hostToken}`,
+				"content-type": "application/octet-stream",
+			},
+			body: "after revoke",
 		});
 		assert.equal(revoked.status, 403);
 	} finally {

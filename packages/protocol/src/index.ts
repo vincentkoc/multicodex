@@ -68,6 +68,8 @@ export type AlphaLane = {
 	repo: string;
 	policy: LanePolicy;
 	terminalMirror: boolean;
+	terminalControl: boolean;
+	previewUrl: string | null;
 	terminalColumns: number | null;
 	terminalRows: number | null;
 	connected: boolean;
@@ -86,6 +88,7 @@ export type RoomInvite = {
 	displayName: string;
 	policy: LanePolicy;
 	terminalMirror: boolean;
+	terminalControl: boolean;
 	createdAt: number;
 	claimedAt: number | null;
 	claimedLaneId: string | null;

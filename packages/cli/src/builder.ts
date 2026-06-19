@@ -40,6 +40,8 @@ export class BuilderBridge {
 		codexPath: string;
 		noTui: boolean;
 		terminalMirror: boolean;
+		terminalControl: boolean;
+		previewUrl?: string;
 		prompt?: string;
 		fresh: boolean;
 		statePath?: string;
@@ -56,7 +58,8 @@ export class BuilderBridge {
 	private spool: LaneEvent[] = [];
 	private client: CodexAppServerClient | null = null;
 	private appServerStop: (() => void) | null = null;
-	private tuiChild: { kill: () => unknown } | null = null;
+	private tuiChild: { kill: () => unknown; write?: (data: string) => void } | null = null;
+	private terminalControl = false;
 	private stopping = false;
 	private waitingForTuiThread = false;
 	private pendingTuiThreadId: string | null = null;
@@ -87,7 +90,7 @@ export class BuilderBridge {
 
 	async run(): Promise<void> {
 		await this.joinOrResume();
-		const appServer = await startCodexAppServer(this.input.codexPath);
+		const appServer = await startCodexAppServer(this.input.codexPath, this.laneEnvironment());
 		this.appServerStop = appServer.stop;
 		this.client = new CodexAppServerClient(appServer.endpoint);
 		await this.client.connect();
@@ -162,12 +165,15 @@ export class BuilderBridge {
 						repo: this.input.repo,
 						policy: this.input.policy,
 						terminalMirror: this.input.terminalMirror,
+						terminalControl: this.input.terminalControl,
+						...(this.input.previewUrl === undefined ? {} : { previewUrl: this.input.previewUrl }),
 					}),
 				},
 			);
 			const payload = (await response.json()) as JoinResponse & { error?: string };
 			if (response.ok) {
 				this.roomId = payload.room.id;
+				this.terminalControl = payload.lane.terminalControl;
 				this.sequence = Math.max(this.sequence, payload.lane.lastEventSequence);
 				this.spool = this.spool.filter(
 					(event) =>
@@ -196,6 +202,8 @@ export class BuilderBridge {
 				repo: this.input.repo,
 				policy: this.input.policy,
 				terminalMirror: this.input.terminalMirror,
+				terminalControl: this.input.terminalControl,
+				...(this.input.previewUrl === undefined ? {} : { previewUrl: this.input.previewUrl }),
 			}),
 		});
 		const payload = (await response.json()) as JoinResponse & { error?: string };
@@ -203,6 +211,7 @@ export class BuilderBridge {
 		this.roomId = payload.room.id;
 		this.laneId = payload.lane.id;
 		this.token = payload.token;
+		this.terminalControl = payload.lane.terminalControl;
 		await this.persistState();
 	}
 
@@ -380,9 +389,10 @@ export class BuilderBridge {
 		const args = this.threadId
 			? ["resume", "--remote", endpoint, "-C", this.input.repo, this.threadId]
 			: ["--remote", endpoint, "-C", this.input.repo];
+		const tuiEnvironment = this.laneEnvironment();
 		if (this.input.prompt) args.push(this.input.prompt);
 		if (!this.input.terminalMirror) {
-			const child = spawn(this.input.codexPath, args, { stdio: "inherit" });
+			const child = spawn(this.input.codexPath, args, { stdio: "inherit", env: tuiEnvironment });
 			this.tuiChild = child;
 			try {
 				await waitForChild(child);
@@ -396,14 +406,23 @@ export class BuilderBridge {
 			command: this.input.codexPath,
 			args,
 			cwd: this.input.repo,
+			env: tuiEnvironment,
 			onOutput: (data) => publisher.write(data),
 			onResize: (columns, rows) => publisher.resize(columns, rows),
 		});
+		const inputDecoder = new TextDecoder();
+		const controller = this.terminalControl
+			? new TerminalInputSubscriber(this.input.server, this.laneId, this.token, (bytes) =>
+					tui.write(inputDecoder.decode(bytes, { stream: true })),
+				)
+			: null;
+		controller?.start();
 		this.tuiChild = tui;
 		try {
 			await tui.done;
 		} finally {
 			this.tuiChild = null;
+			controller?.stop();
 			await publisher.stop();
 		}
 	}
@@ -412,6 +431,13 @@ export class BuilderBridge {
 		const url = new URL(this.input.server);
 		url.hash = new URLSearchParams({ lane: this.laneId, token: this.token }).toString();
 		return url.toString();
+	}
+
+	private laneEnvironment(): NodeJS.ProcessEnv {
+		return {
+			...process.env,
+			MULTICODEX_LANE_URL: this.participantViewUrl(),
+		};
 	}
 
 	private captureTuiThread(thread: Record<string, unknown>): void {
@@ -496,6 +522,71 @@ export class BuilderBridge {
 	}
 }
 
+class TerminalInputSubscriber {
+	private readonly endpoint: URL;
+	private readonly token: string;
+	private readonly onInput: (bytes: Uint8Array) => void;
+	private controller: AbortController | null = null;
+	private stopped = false;
+
+	constructor(server: string, laneId: string, token: string, onInput: (bytes: Uint8Array) => void) {
+		this.endpoint = new URL(`/api/lanes/${encodeURIComponent(laneId)}/terminal-input`, server);
+		this.token = token;
+		this.onInput = onInput;
+	}
+
+	start(): void {
+		void this.run();
+	}
+
+	stop(): void {
+		this.stopped = true;
+		this.controller?.abort();
+		this.controller = null;
+	}
+
+	private async run(): Promise<void> {
+		while (!this.stopped) {
+			this.controller = new AbortController();
+			try {
+				const response = await fetch(this.endpoint, {
+					headers: { authorization: `Bearer ${this.token}` },
+					signal: this.controller.signal,
+				});
+				if (response.status === 403 || response.status === 410) return;
+				if (!response.ok || !response.body)
+					throw new Error(`terminal control failed (${response.status})`);
+				await this.consume(response.body);
+			} catch {
+				// The host can restart independently; reconnect while the lane remains active.
+			} finally {
+				this.controller = null;
+			}
+			if (!this.stopped) await delay(300);
+		}
+	}
+
+	private async consume(body: ReadableStream<Uint8Array>): Promise<void> {
+		const reader = body.getReader();
+		const decoder = new TextDecoder();
+		let buffered = "";
+		while (!this.stopped) {
+			const { done, value } = await reader.read();
+			if (done) return;
+			buffered += decoder.decode(value, { stream: true });
+			while (true) {
+				const boundary = buffered.indexOf("\n\n");
+				if (boundary < 0) break;
+				const frame = buffered.slice(0, boundary);
+				buffered = buffered.slice(boundary + 2);
+				if (!frame.startsWith("event: input\n")) continue;
+				const data = frame.match(/^data: ([^\n]+)$/m)?.[1];
+				if (data) this.onInput(Buffer.from(data, "base64"));
+			}
+		}
+	}
+}
+
 type ActivityEvent = {
 	kind: "agent.message" | "agent.plan";
 	summary: string;
@@ -547,4 +638,8 @@ async function waitForChild(child: ChildProcess): Promise<void> {
 		});
 		child.once("error", reject);
 	});
+}
+
+function delay(milliseconds: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

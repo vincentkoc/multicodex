@@ -165,7 +165,10 @@ export class CodexAppServerClient {
 	}
 }
 
-export async function startCodexAppServer(codexPath = "codex"): Promise<{
+export async function startCodexAppServer(
+	codexPath = "codex",
+	environment?: NodeJS.ProcessEnv,
+): Promise<{
 	endpoint: string;
 	child: ChildProcess;
 	stop: () => void;
@@ -174,6 +177,7 @@ export async function startCodexAppServer(codexPath = "codex"): Promise<{
 	const endpoint = `ws://127.0.0.1:${port}`;
 	const child = spawn(codexPath, ["app-server", "--listen", endpoint], {
 		stdio: ["ignore", "ignore", "pipe"],
+		env: environment,
 	});
 	let recentError = "";
 	child.stderr?.on("data", (chunk) => {

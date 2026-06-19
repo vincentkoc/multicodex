@@ -10,6 +10,7 @@ const MAX_REPLAY_BYTES = 512 * 1024;
 const MAX_VIEWER_BUFFER_BYTES = 1024 * 1024;
 const PUBLISH_INTERVAL_MS = 40;
 const PUBLISH_BATCH_BYTES = 64 * 1024;
+const PROXY_FLUSH_PREAMBLE = `:${" ".repeat(4 * 1024)}\n\n`;
 
 export class TerminalMirrorHub {
 	private readonly lanes = new Map<string, TerminalFanout>();
@@ -21,16 +22,20 @@ export class TerminalMirrorHub {
 
 	subscribe(laneId: string, viewerToken: string, response: ServerResponse): void {
 		response.writeHead(200, {
-			"content-type": "application/octet-stream",
-			"cache-control": "no-store",
+			// Browsers consume this as raw bytes, while public reverse proxies
+			// recognize this type as an unbuffered streaming response.
+			"content-type": "text/event-stream",
+			"cache-control": "no-cache, no-transform",
 			"x-content-type-options": "nosniff",
 			"x-accel-buffering": "no",
 		});
 		response.flushHeaders();
+		// Give public tunnel proxies a valid SSE frame large enough to flush.
+		response.write(PROXY_FLUSH_PREAMBLE);
 		const subscription = this.lane(laneId).subscribe(crypto.randomUUID());
 		this.viewer(viewerToken).add(subscription);
 		response.once("close", () => subscription.close("viewer disconnected"));
-		void streamSubscription(subscription, response)
+		void streamSubscription(subscription, response, "terminal")
 			.catch(() => response.destroy())
 			.finally(() => this.removeViewerSubscription(viewerToken, subscription));
 	}
@@ -81,6 +86,65 @@ export class TerminalMirrorHub {
 		if (!subscriptions) return;
 		subscriptions.delete(subscription);
 		if (subscriptions.size === 0) this.viewers.delete(viewerToken);
+	}
+}
+
+export class TerminalControlHub {
+	private readonly lanes = new Map<string, TerminalFanout>();
+	private readonly activeLanes = new Set<string>();
+
+	publish(laneId: string, data: Uint8Array): boolean {
+		const lane = this.lanes.get(laneId);
+		if (!lane || lane.subscriberCount === 0) return false;
+		lane.publish(data);
+		return true;
+	}
+
+	subscribe(laneId: string, response: ServerResponse): void {
+		response.writeHead(200, {
+			"content-type": "text/event-stream",
+			"cache-control": "no-cache, no-transform",
+			"x-content-type-options": "nosniff",
+			"x-accel-buffering": "no",
+		});
+		response.flushHeaders();
+		response.write(PROXY_FLUSH_PREAMBLE);
+		const subscription = this.lane(laneId).subscribe(crypto.randomUUID(), { replay: false });
+		response.once("close", () => subscription.close("terminal control bridge disconnected"));
+		void streamSubscription(subscription, response, "input")
+			.catch(() => response.destroy())
+			.finally(() => this.activeLanes.delete(laneId));
+	}
+
+	markActive(laneId: string): boolean {
+		if (this.activeLanes.has(laneId)) return false;
+		this.activeLanes.add(laneId);
+		return true;
+	}
+
+	closeLane(laneId: string): void {
+		const lane = this.lanes.get(laneId);
+		if (lane) lane.close("terminal control closed");
+		this.lanes.delete(laneId);
+		this.activeLanes.delete(laneId);
+	}
+
+	closeAll(): void {
+		for (const laneId of this.lanes.keys()) this.closeLane(laneId);
+		this.activeLanes.clear();
+	}
+
+	private lane(laneId: string): TerminalFanout {
+		let lane = this.lanes.get(laneId);
+		if (!lane) {
+			lane = new TerminalFanout({
+				replayBytes: 0,
+				subscriberBufferBytes: 256 * 1024,
+				slowSubscriberPolicy: "disconnect",
+			});
+			this.lanes.set(laneId, lane);
+		}
+		return lane;
 	}
 }
 
@@ -147,11 +211,13 @@ export class TerminalMirrorPublisher {
 async function streamSubscription(
 	subscription: TerminalSubscription,
 	response: ServerResponse,
+	event: "input" | "terminal",
 ): Promise<void> {
 	try {
 		for await (const chunk of subscription) {
 			if (response.destroyed || response.writableEnded) return;
-			if (!response.write(chunk)) await waitForDrainOrClose(response);
+			const frame = `event: ${event}\ndata: ${Buffer.from(chunk).toString("base64")}\n\n`;
+			if (!response.write(frame)) await waitForDrainOrClose(response);
 		}
 		if (!response.destroyed && !response.writableEnded) response.end();
 	} finally {

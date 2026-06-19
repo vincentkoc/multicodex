@@ -16,7 +16,8 @@
 	},
 	"files": [
 		"dist/cli.mjs",
-		"README.md"
+		"README.md",
+		"skills/multicodex/SKILL.md"
 	],
 	"type": "module",
 	"publishConfig": {

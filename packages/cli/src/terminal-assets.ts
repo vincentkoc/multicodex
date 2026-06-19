@@ -10,9 +10,17 @@ type TerminalAsset = {
 
 const libterminalBrowserPath = fileURLToPath(import.meta.resolve("@openclaw/libterminal/browser"));
 const libterminalIndexPath = fileURLToPath(import.meta.resolve("@openclaw/libterminal"));
+const libterminalProtocolPath = fileURLToPath(
+	import.meta.resolve("@openclaw/libterminal/protocol"),
+);
+const terminalStreamBrowserPath = fileURLToPath(
+	new URL("./terminal-stream-client.ts", import.meta.url),
+);
 const libterminalAssets = new Map([
 	["/vendor/libterminal/browser.js", libterminalBrowserPath],
 	["/vendor/libterminal/index.js", libterminalIndexPath],
+	["/vendor/libterminal/protocol.js", libterminalProtocolPath],
+	["/vendor/multicodex-terminal-stream.js", terminalStreamBrowserPath],
 ]);
 
 export async function readTerminalAsset(pathname: string): Promise<TerminalAsset | null> {

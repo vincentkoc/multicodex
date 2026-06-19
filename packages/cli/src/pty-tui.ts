@@ -5,20 +5,24 @@ import { attachLocalStdio, spawnLocalPty } from "@openclaw/libterminal/node";
 export type MirroredTui = {
 	done: Promise<void>;
 	kill: () => void;
+	write: (data: string) => void;
 };
 
 export async function startMirroredTui(input: {
 	command: string;
 	args: string[];
 	cwd: string;
+	env?: NodeJS.ProcessEnv;
 	onOutput: (data: string) => void;
 	onResize: (columns: number, rows: number) => void;
 }): Promise<MirroredTui> {
 	const outputDecoder = new TextDecoder();
+	const inputEncoder = new TextEncoder();
 	const terminal = await spawnLocalPty({
 		command: input.command,
 		args: input.args,
 		cwd: input.cwd,
+		env: normalizedEnvironment(input.env),
 		size: { columns: terminalColumns(), rows: terminalRows() },
 		onOutput: (bytes) => input.onOutput(outputDecoder.decode(bytes, { stream: true })),
 	});
@@ -37,7 +41,26 @@ export async function startMirroredTui(input: {
 			terminal.kill();
 			throw error;
 		});
-	return { done, kill: () => terminal.kill() };
+	return {
+		done,
+		kill: () => terminal.kill(),
+		write: (data) => {
+			// The PTY transport accepts bytes; browser terminal input arrives as text.
+			const write = terminal.write?.(inputEncoder.encode(data));
+			if (write) void write.catch(() => undefined);
+		},
+	};
+}
+
+function normalizedEnvironment(
+	environment: NodeJS.ProcessEnv | undefined,
+): Record<string, string> | undefined {
+	if (!environment) return undefined;
+	return Object.fromEntries(
+		Object.entries(environment).filter(
+			(entry): entry is [string, string] => typeof entry[1] === "string",
+		),
+	);
 }
 
 function terminalColumns(): number {
