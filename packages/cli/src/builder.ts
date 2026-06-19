@@ -433,7 +433,10 @@ export class BuilderBridge {
 			"resize",
 			(bytes) => {
 				const size = terminalViewSize(bytes);
-				if (size) tui.resize(size.columns, size.rows);
+				if (size) {
+					tui.resize(size.columns, size.rows);
+					publisher.resize(size.columns, size.rows);
+				}
 			},
 		);
 		controller?.start();

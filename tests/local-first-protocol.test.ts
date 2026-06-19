@@ -66,7 +66,12 @@ test("local room renders the live lane and host control surfaces", () => {
 	assert.match(html, /id="terminal-stream"/);
 	assert.match(html, /id="ghostty-terminal"/);
 	assert.match(html, /\/api\/lanes\/.*\/terminal/);
-	assert.match(html, /requestAnimationFrame\(\(\)=>\{terminal\.fit\(\);queueTerminalResize/);
+	assert.match(
+		html,
+		/const columns=lane\.terminalColumns\|\|lane\.terminalViewColumns\|\|120,rows=lane\.terminalRows\|\|lane\.terminalViewRows\|\|34/,
+	);
+	assert.match(html, /autoFit:false/);
+	assert.doesNotMatch(html, /requestAnimationFrame\(\(\)=>terminal\.fit/);
 	assert.ok(html.includes(GHOSTTY_ASSET_PATHS.module));
 	assert.match(html, /\/vendor\/libterminal\/browser\.js/);
 	assert.match(html, /\/vendor\/multicodex-terminal-stream\.js\?v=0\.3\.3/);
@@ -99,10 +104,7 @@ test("local room renders the live lane and host control surfaces", () => {
 	assert.match(html, /function queueTerminalInput/);
 	assert.match(html, /function queueTerminalResize/);
 	assert.match(html, /function reconnectLiveTerminal/);
-	assert.match(
-		html,
-		/queueTerminalResize\(lane\.id,\{columns:terminal\.terminal\.cols,rows:terminal\.terminal\.rows\},true\)/,
-	);
+	assert.doesNotMatch(html, /queueTerminalResize\(lane\.id,\{columns:terminal\.terminal\.cols/);
 	assert.match(html, /live mirror reconnecting/);
 	assert.match(html, /function syncCommandControls/);
 	assert.match(html, /activeLanes\(\)\.some\(candidate=>candidate\.terminalMirror/);
@@ -115,6 +117,17 @@ test("local room renders the live lane and host control surfaces", () => {
 	const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
 	assert.ok(script);
 	assert.doesNotThrow(() => new Function(script));
+});
+
+test("mirrored bridges report applied viewer geometry as their source size", async () => {
+	const builder = await fs.readFile(
+		path.join(process.cwd(), "packages/cli/src/builder.ts"),
+		"utf8",
+	);
+	assert.match(
+		builder,
+		/tui\.resize\(size\.columns, size\.rows\);\s+publisher\.resize\(size\.columns, size\.rows\)/,
+	);
 });
 
 test("invite fragments are separated from the room server URL", () => {
