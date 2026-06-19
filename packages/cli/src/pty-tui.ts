@@ -6,6 +6,7 @@ export type MirroredTui = {
 	done: Promise<void>;
 	kill: () => void;
 	write: (data: string) => void;
+	resize: (columns: number, rows: number) => void;
 };
 
 export async function startMirroredTui(input: {
@@ -26,9 +27,22 @@ export async function startMirroredTui(input: {
 		size: { columns: terminalColumns(), rows: terminalRows() },
 		onOutput: (bytes) => input.onOutput(outputDecoder.decode(bytes, { stream: true })),
 	});
-	const attached = attachLocalStdio(terminal, {
-		onResize: ({ columns, rows }) => input.onResize(columns, rows),
+	let initialResizeComplete = false;
+	let resolveInitialResize!: () => void;
+	const initialResize = new Promise<void>((resolve) => {
+		resolveInitialResize = resolve;
 	});
+	const attached = attachLocalStdio(terminal, {
+		onResize: ({ columns, rows }) => {
+			input.onResize(columns, rows);
+			if (!initialResizeComplete) {
+				initialResizeComplete = true;
+				resolveInitialResize();
+			}
+		},
+	});
+	void attached.catch(() => undefined).then(resolveInitialResize);
+	await Promise.race([initialResize, terminal.exit.then(() => undefined)]);
 	const done = Promise.all([terminal.exit, attached])
 		.then(([exit]) => {
 			const trailingOutput = outputDecoder.decode();
@@ -48,6 +62,10 @@ export async function startMirroredTui(input: {
 			// The PTY transport accepts bytes; browser terminal input arrives as text.
 			const write = terminal.write?.(inputEncoder.encode(data));
 			if (write) void write.catch(() => undefined);
+		},
+		resize: (columns, rows) => {
+			const resize = terminal.resize?.({ columns, rows });
+			if (resize) void resize.catch(() => undefined);
 		},
 	};
 }

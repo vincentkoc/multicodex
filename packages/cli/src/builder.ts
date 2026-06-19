@@ -58,7 +58,11 @@ export class BuilderBridge {
 	private spool: LaneEvent[] = [];
 	private client: CodexAppServerClient | null = null;
 	private appServerStop: (() => void) | null = null;
-	private tuiChild: { kill: () => unknown; write?: (data: string) => void } | null = null;
+	private tuiChild: {
+		kill: () => unknown;
+		write?: (data: string) => void;
+		resize?: (columns: number, rows: number) => void;
+	} | null = null;
 	private terminalControl = false;
 	private stopping = false;
 	private waitingForTuiThread = false;
@@ -412,17 +416,35 @@ export class BuilderBridge {
 		});
 		const inputDecoder = new TextDecoder();
 		const controller = this.terminalControl
-			? new TerminalInputSubscriber(this.input.server, this.laneId, this.token, (bytes) =>
-					tui.write(inputDecoder.decode(bytes, { stream: true })),
+			? new TerminalEventSubscriber(
+					this.input.server,
+					this.laneId,
+					this.token,
+					"/terminal-input",
+					"input",
+					(bytes) => tui.write(inputDecoder.decode(bytes, { stream: true })),
 				)
 			: null;
+		const viewport = new TerminalEventSubscriber(
+			this.input.server,
+			this.laneId,
+			this.token,
+			"/terminal-view-size",
+			"resize",
+			(bytes) => {
+				const size = terminalViewSize(bytes);
+				if (size) tui.resize(size.columns, size.rows);
+			},
+		);
 		controller?.start();
+		viewport.start();
 		this.tuiChild = tui;
 		try {
 			await tui.done;
 		} finally {
 			this.tuiChild = null;
 			controller?.stop();
+			viewport.stop();
 			await publisher.stop();
 		}
 	}
@@ -522,17 +544,26 @@ export class BuilderBridge {
 	}
 }
 
-class TerminalInputSubscriber {
+class TerminalEventSubscriber {
 	private readonly endpoint: URL;
 	private readonly token: string;
-	private readonly onInput: (bytes: Uint8Array) => void;
+	private readonly event: string;
+	private readonly onEvent: (bytes: Uint8Array) => void;
 	private controller: AbortController | null = null;
 	private stopped = false;
 
-	constructor(server: string, laneId: string, token: string, onInput: (bytes: Uint8Array) => void) {
-		this.endpoint = new URL(`/api/lanes/${encodeURIComponent(laneId)}/terminal-input`, server);
+	constructor(
+		server: string,
+		laneId: string,
+		token: string,
+		pathname: "/terminal-input" | "/terminal-view-size",
+		event: "input" | "resize",
+		onEvent: (bytes: Uint8Array) => void,
+	) {
+		this.endpoint = new URL(`/api/lanes/${encodeURIComponent(laneId)}${pathname}`, server);
 		this.token = token;
-		this.onInput = onInput;
+		this.event = event;
+		this.onEvent = onEvent;
 	}
 
 	start(): void {
@@ -555,7 +586,7 @@ class TerminalInputSubscriber {
 				});
 				if (response.status === 403 || response.status === 410) return;
 				if (!response.ok || !response.body)
-					throw new Error(`terminal control failed (${response.status})`);
+					throw new Error(`terminal ${this.event} stream failed (${response.status})`);
 				await this.consume(response.body);
 			} catch {
 				// The host can restart independently; reconnect while the lane remains active.
@@ -579,11 +610,27 @@ class TerminalInputSubscriber {
 				if (boundary < 0) break;
 				const frame = buffered.slice(0, boundary);
 				buffered = buffered.slice(boundary + 2);
-				if (!frame.startsWith("event: input\n")) continue;
+				if (!frame.startsWith(`event: ${this.event}\n`)) continue;
 				const data = frame.match(/^data: ([^\n]+)$/m)?.[1];
-				if (data) this.onInput(Buffer.from(data, "base64"));
+				if (data) this.onEvent(Buffer.from(data, "base64"));
 			}
 		}
+	}
+}
+
+function terminalViewSize(bytes: Uint8Array): { columns: number; rows: number } | null {
+	try {
+		const value = JSON.parse(new TextDecoder().decode(bytes)) as {
+			columns?: unknown;
+			rows?: unknown;
+		};
+		const columns = Number(value.columns);
+		const rows = Number(value.rows);
+		if (!Number.isInteger(columns) || !Number.isInteger(rows)) return null;
+		if (columns < 20 || columns > 400 || rows < 10 || rows > 200) return null;
+		return { columns, rows };
+	} catch {
+		return null;
 	}
 }
 

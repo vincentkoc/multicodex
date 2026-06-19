@@ -16,7 +16,7 @@ import {
 	requiredPolicyForCommand,
 } from "../../protocol/src/index.ts";
 import { readTerminalAsset } from "./terminal-assets.ts";
-import { TerminalControlHub, TerminalMirrorHub } from "./terminal-mirror.ts";
+import { TerminalControlHub, TerminalMirrorHub, TerminalViewportHub } from "./terminal-mirror.ts";
 import { localRoomHtml } from "./ui.ts";
 
 type StoredLane = AlphaLane & { token: string };
@@ -81,6 +81,8 @@ export class LocalRoomStore {
 			lane.previewUrl ??= null;
 			lane.terminalColumns ??= null;
 			lane.terminalRows ??= null;
+			lane.terminalViewColumns ??= null;
+			lane.terminalViewRows ??= null;
 		}
 		for (const invite of state.invites) invite.terminalControl ??= false;
 		const store = new LocalRoomStore(statePath, state);
@@ -235,6 +237,8 @@ export class LocalRoomStore {
 			previewUrl: input.previewUrl ?? null,
 			terminalColumns: null,
 			terminalRows: null,
+			terminalViewColumns: null,
+			terminalViewRows: null,
 			connected: false,
 			threadId: null,
 			currentTurnId: null,
@@ -274,6 +278,12 @@ export class LocalRoomStore {
 		lane.terminalMirror = Boolean(input.terminalMirror);
 		lane.terminalControl =
 			lane.terminalControl && lane.terminalMirror && input.terminalControl === true;
+		if (!lane.terminalMirror) {
+			lane.terminalColumns = null;
+			lane.terminalRows = null;
+			lane.terminalViewColumns = null;
+			lane.terminalViewRows = null;
+		}
 		if (input.previewUrl !== undefined) lane.previewUrl = input.previewUrl;
 		lane.updatedAt = Date.now();
 		lane.status = "reconnecting";
@@ -324,6 +334,20 @@ export class LocalRoomStore {
 		return token === this.state.hostToken ? lane : null;
 	}
 
+	authorizeTerminalViewportBridge(laneId: string, token: string): boolean {
+		const lane = this.authorizeLane(laneId, token);
+		return Boolean(lane?.terminalMirror);
+	}
+
+	terminalViewport(laneId: string): { columns: number; rows: number } | null {
+		const lane = this.state.lanes.find((candidate) => candidate.id === laneId);
+		if (!lane?.terminalMirror) return null;
+		if (lane.terminalViewColumns && lane.terminalViewRows) {
+			return { columns: lane.terminalViewColumns, rows: lane.terminalViewRows };
+		}
+		return null;
+	}
+
 	async updateTerminalSize(
 		laneId: string,
 		token: string,
@@ -338,12 +362,32 @@ export class LocalRoomStore {
 		await this.save();
 	}
 
+	async updateTerminalViewSize(
+		laneId: string,
+		token: string,
+		columns: number,
+		rows: number,
+	): Promise<{ columns: number; rows: number }> {
+		const lane = this.state.lanes.find((candidate) => candidate.id === laneId);
+		if (!lane || lane.removedAt || !lane.terminalMirror) {
+			throw new RoomError(403, "terminal mirror unavailable");
+		}
+		if (token !== this.state.hostToken) throw new RoomError(401, "host capability required");
+		lane.terminalViewColumns = terminalDimension(columns, 20, 400);
+		lane.terminalViewRows = terminalDimension(rows, 10, 200);
+		lane.updatedAt = Date.now();
+		await this.save();
+		return { columns: lane.terminalViewColumns, rows: lane.terminalViewRows };
+	}
+
 	async disableTerminalMirror(laneId: string, token: string): Promise<void> {
 		const lane = this.requireLane(laneId, token);
 		lane.terminalMirror = false;
 		lane.terminalControl = false;
 		lane.terminalColumns = null;
 		lane.terminalRows = null;
+		lane.terminalViewColumns = null;
+		lane.terminalViewRows = null;
 		lane.updatedAt = Date.now();
 		await this.save();
 	}
@@ -508,12 +552,14 @@ export async function startLocalRoomServer(input: {
 	let publicUrl = "";
 	const terminalHub = new TerminalMirrorHub();
 	const terminalControlHub = new TerminalControlHub();
+	const terminalViewportHub = new TerminalViewportHub();
 	const server = http.createServer((request, response) => {
 		void handleRequest(
 			input.store,
 			input.handlers,
 			terminalHub,
 			terminalControlHub,
+			terminalViewportHub,
 			publicUrl,
 			request,
 			response,
@@ -537,6 +583,7 @@ export async function startLocalRoomServer(input: {
 		close: async () => {
 			terminalHub.closeAll();
 			terminalControlHub.closeAll();
+			terminalViewportHub.closeAll();
 			await new Promise<void>((resolve, reject) =>
 				server.close((cause) => (cause ? reject(cause) : resolve())),
 			);
@@ -549,6 +596,7 @@ async function handleRequest(
 	handlers: LocalRoomHandlers,
 	terminalHub: TerminalMirrorHub,
 	terminalControlHub: TerminalControlHub,
+	terminalViewportHub: TerminalViewportHub,
 	publicUrl: string,
 	request: IncomingMessage,
 	response: ServerResponse,
@@ -636,6 +684,7 @@ async function handleRequest(
 		if (!terminalMirror) {
 			terminalHub.closeLane(laneId);
 			terminalControlHub.closeLane(laneId);
+			terminalViewportHub.closeLane(laneId);
 		}
 		sendJson(response, 200, { room: store.snapshot(), ...resumed });
 		return;
@@ -717,6 +766,7 @@ async function handleRequest(
 			await store.disableTerminalMirror(laneId, token);
 			terminalHub.closeLane(laneId);
 			terminalControlHub.closeLane(laneId);
+			terminalViewportHub.closeLane(laneId);
 			sendJson(response, 200, { disabled: true });
 			return;
 		}
@@ -732,6 +782,30 @@ async function handleRequest(
 		);
 		sendJson(response, 202, { accepted: true });
 		return;
+	}
+	const terminalViewSizeMatch = url.pathname.match(/^\/api\/lanes\/([^/]+)\/terminal-view-size$/);
+	if (terminalViewSizeMatch) {
+		const laneId = decodeURIComponent(terminalViewSizeMatch[1]!);
+		const token = optionalBearer(request);
+		if (request.method === "GET") {
+			if (!store.authorizeTerminalViewportBridge(laneId, token)) {
+				throw new RoomError(403, "terminal mirror unavailable");
+			}
+			terminalViewportHub.subscribe(laneId, response, store.terminalViewport(laneId));
+			return;
+		}
+		if (request.method === "POST") {
+			const body = await readJson(request);
+			const size = await store.updateTerminalViewSize(
+				laneId,
+				token,
+				Number(body.columns),
+				Number(body.rows),
+			);
+			terminalViewportHub.publish(laneId, size.columns, size.rows);
+			sendJson(response, 202, { accepted: true });
+			return;
+		}
 	}
 	const laneMessageMatch = url.pathname.match(/^\/api\/lanes\/([^/]+)\/message$/);
 	if (request.method === "POST" && laneMessageMatch) {

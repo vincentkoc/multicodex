@@ -72,6 +72,8 @@ export type AlphaLane = {
 	previewUrl: string | null;
 	terminalColumns: number | null;
 	terminalRows: number | null;
+	terminalViewColumns: number | null;
+	terminalViewRows: number | null;
 	connected: boolean;
 	threadId: string | null;
 	currentTurnId: string | null;

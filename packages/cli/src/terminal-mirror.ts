@@ -148,6 +148,63 @@ export class TerminalControlHub {
 	}
 }
 
+export class TerminalViewportHub {
+	private readonly lanes = new Map<string, TerminalFanout>();
+
+	publish(laneId: string, columns: number, rows: number): void {
+		this.lane(laneId).publish(new TextEncoder().encode(JSON.stringify({ columns, rows })));
+	}
+
+	subscribe(
+		laneId: string,
+		response: ServerResponse,
+		initialSize: { columns: number; rows: number } | null,
+	): void {
+		response.writeHead(200, {
+			"content-type": "text/event-stream",
+			"cache-control": "no-cache, no-transform",
+			"x-content-type-options": "nosniff",
+			"x-accel-buffering": "no",
+		});
+		response.flushHeaders();
+		response.write(PROXY_FLUSH_PREAMBLE);
+		if (initialSize) {
+			writeSseEvent(
+				response,
+				"resize",
+				Buffer.from(JSON.stringify(initialSize)).toString("base64"),
+			);
+		}
+		const subscription = this.lane(laneId).subscribe(crypto.randomUUID(), { replay: false });
+		response.once("close", () => subscription.close("terminal viewport bridge disconnected"));
+		void streamSubscription(subscription, response, "resize").catch(() => response.destroy());
+	}
+
+	closeLane(laneId: string): void {
+		const lane = this.lanes.get(laneId);
+		if (!lane) return;
+		lane.close("terminal viewport closed");
+		this.lanes.delete(laneId);
+	}
+
+	closeAll(): void {
+		for (const laneId of this.lanes.keys()) this.closeLane(laneId);
+	}
+
+	private lane(laneId: string): TerminalFanout {
+		let lane = this.lanes.get(laneId);
+		if (!lane) {
+			lane = new TerminalFanout({
+				replayBytes: 0,
+				subscriberBufferBytes: 16 * 1024,
+				slowSubscriberPolicy: "disconnect",
+			});
+			this.lanes.set(laneId, lane);
+		}
+		return lane;
+	}
+}
+
 export class TerminalMirrorPublisher {
 	private readonly endpoint: URL;
 	private readonly sizeEndpoint: URL;
@@ -211,18 +268,23 @@ export class TerminalMirrorPublisher {
 async function streamSubscription(
 	subscription: TerminalSubscription,
 	response: ServerResponse,
-	event: "input" | "terminal",
+	event: "input" | "resize" | "terminal",
 ): Promise<void> {
 	try {
 		for await (const chunk of subscription) {
 			if (response.destroyed || response.writableEnded) return;
-			const frame = `event: ${event}\ndata: ${Buffer.from(chunk).toString("base64")}\n\n`;
-			if (!response.write(frame)) await waitForDrainOrClose(response);
+			if (!writeSseEvent(response, event, Buffer.from(chunk).toString("base64"))) {
+				await waitForDrainOrClose(response);
+			}
 		}
 		if (!response.destroyed && !response.writableEnded) response.end();
 	} finally {
 		subscription.close("viewer stream ended");
 	}
+}
+
+function writeSseEvent(response: ServerResponse, event: string, payload: string): boolean {
+	return response.write(`event: ${event}\ndata: ${payload}\n\n`);
 }
 
 function waitForDrainOrClose(response: ServerResponse): Promise<void> {

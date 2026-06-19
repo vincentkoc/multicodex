@@ -83,8 +83,10 @@ test("local room renders the live lane and host control surfaces", () => {
 	assert.match(html, /conductor-collapsed/);
 	assert.match(html, /name="terminalControl"/);
 	assert.match(html, /\/terminal-input/);
+	assert.match(html, /\/terminal-view-size/);
 	assert.match(html, /function canTerminalControl/);
 	assert.match(html, /function queueTerminalInput/);
+	assert.match(html, /function queueTerminalResize/);
 	assert.match(html, /function syncCommandControls/);
 	assert.match(html, /activeLanes\(\)\.some\(candidate=>candidate\.terminalMirror/);
 	assert.match(html, /lane policy does not allow conductor actions/);
@@ -165,6 +167,31 @@ test("mirrored PTYs accept host-controlled input", async () => {
 	tui.write("pty-input\n");
 	await tui.done;
 	assert.match(output, /pty-input/);
+});
+
+test("mirrored PTYs accept browser viewport resize", async () => {
+	let output = "";
+	let ready!: () => void;
+	const started = new Promise<void>((resolve) => {
+		ready = resolve;
+	});
+	const tui = await startMirroredTui({
+		command: process.execPath,
+		args: [
+			"-e",
+			"const{execFileSync}=require('child_process');setTimeout(()=>{process.on('SIGWINCH',()=>{process.stdout.write(execFileSync('sh',['-c','stty size < /dev/tty']).toString());process.exit(0)});process.stdout.write('ready')},100);setTimeout(()=>process.exit(1),1500)",
+		],
+		cwd: process.cwd(),
+		onOutput: (data) => {
+			output += data;
+			if (output.includes("ready")) ready();
+		},
+		onResize: () => undefined,
+	});
+	await started;
+	tui.resize(79, 25);
+	await tui.done;
+	assert.match(output, /25 79/);
 });
 
 test("local room acknowledges replayed events once and rejects gaps", async () => {
@@ -657,6 +684,39 @@ test("terminal mirror is opt-in, ephemeral, and capability scoped", async () => 
 		assert.equal(resized.status, 202);
 		assert.equal(store.snapshot().lanes[0]?.terminalColumns, 143);
 		assert.equal(store.snapshot().lanes[0]?.terminalRows, 47);
+
+		const viewportUrl = new URL(`/api/lanes/${lane.lane.id}/terminal-view-size`, server.url);
+		const viewport = await fetch(viewportUrl, {
+			headers: { authorization: `Bearer ${lane.token}` },
+		});
+		assert.equal(viewport.status, 200);
+		const viewportReader = viewport.body!.getReader();
+		assert.match(new TextDecoder().decode((await viewportReader.read()).value), /^: {4096}\n\n$/);
+		const viewportDenied = await fetch(viewportUrl, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${lane.token}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ columns: 120, rows: 38 }),
+		});
+		assert.equal(viewportDenied.status, 401);
+		const viewportUpdated = await fetch(viewportUrl, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${hostToken}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ columns: 120, rows: 38 }),
+		});
+		assert.equal(viewportUpdated.status, 202);
+		assert.deepEqual(JSON.parse(await readSseEvent(viewportReader, "resize")), {
+			columns: 120,
+			rows: 38,
+		});
+		assert.equal(store.snapshot().lanes[0]?.terminalViewColumns, 120);
+		assert.equal(store.snapshot().lanes[0]?.terminalViewRows, 38);
+		await viewportReader.cancel();
 
 		const output = "\u001b[31mlive terminal\u001b[0m\r\n";
 		const published = await fetch(terminalUrl, {
