@@ -106,6 +106,9 @@ test("local room renders the live lane and host control surfaces", () => {
 	assert.match(html, /function queueTerminalResize/);
 	assert.match(html, /function requestTerminalRedraw/);
 	assert.match(html, /function reconnectLiveTerminal/);
+	assert.match(html, /terminalAutoScroll=true/);
+	assert.match(html, /function followTerminalOutput/);
+	assert.match(html, /pipeThrough\(new TransformStream/);
 	assert.doesNotMatch(html, /queueTerminalResize\(lane\.id,\{columns:terminal\.terminal\.cols/);
 	assert.match(html, /live mirror reconnecting/);
 	assert.match(html, /function syncCommandControls/);
