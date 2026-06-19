@@ -66,7 +66,7 @@ test("local room renders the live lane and host control surfaces", () => {
 	assert.match(html, /id="terminal-stream"/);
 	assert.match(html, /id="ghostty-terminal"/);
 	assert.match(html, /\/api\/lanes\/.*\/terminal/);
-	assert.match(html, /requestAnimationFrame\(\(\)=>terminal\.fit\(\)\)/);
+	assert.match(html, /requestAnimationFrame\(\(\)=>\{terminal\.fit\(\);queueTerminalResize/);
 	assert.ok(html.includes(GHOSTTY_ASSET_PATHS.module));
 	assert.match(html, /\/vendor\/libterminal\/browser\.js/);
 	assert.match(html, /\/vendor\/multicodex-terminal-stream\.js\?v=0\.3\.3/);
@@ -98,6 +98,12 @@ test("local room renders the live lane and host control surfaces", () => {
 	assert.match(html, /function canTerminalControl/);
 	assert.match(html, /function queueTerminalInput/);
 	assert.match(html, /function queueTerminalResize/);
+	assert.match(html, /function reconnectLiveTerminal/);
+	assert.match(
+		html,
+		/queueTerminalResize\(lane\.id,\{columns:terminal\.terminal\.cols,rows:terminal\.terminal\.rows\},true\)/,
+	);
+	assert.match(html, /live mirror reconnecting/);
 	assert.match(html, /function syncCommandControls/);
 	assert.match(html, /activeLanes\(\)\.some\(candidate=>candidate\.terminalMirror/);
 	assert.match(html, /lane policy does not allow conductor actions/);
