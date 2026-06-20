@@ -60,6 +60,9 @@ npx --yes @vincentkoc/multicodex@latest preview set "$MULTICODEX_LANE_URL" \
   --url 'http://127.0.0.1:5173'
 ```
 
+For docs work, serve `docs/` with `pnpm docs:serve` and attach
+`http://127.0.0.1:4173` instead.
+
 Use a URL the room viewer can reach. For a shared Tailscale room, preserve
 existing Serve routes and use an unused HTTPS port for the preview:
 

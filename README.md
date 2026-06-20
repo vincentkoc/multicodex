@@ -117,6 +117,21 @@ tailscale serve --bg --https=8443 http://127.0.0.1:5173
 Attach the resulting `https://<machine>.ts.net:8443/` URL. Do not reset or
 replace another room's Tailscale Serve configuration.
 
+## Docs Preview
+
+The repo includes a browsable docs page at `docs/index.html`. It is the
+cleanest target for verifying the preview pane and reviewing docs changes
+before shipping them.
+
+```bash
+pnpm docs:serve
+npx --yes @vincentkoc/multicodex@latest preview set "$MULTICODEX_LANE_URL" \
+  --url http://127.0.0.1:4173
+```
+
+Use `--preview-url http://127.0.0.1:4173` on `join` if you want the preview
+attached from the start.
+
 ## What The Host Can Do
 
 The control room keeps the team rail, selected lane activity, and conductor

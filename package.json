@@ -28,6 +28,7 @@
 		"build": "pnpm build:cli && pnpm smoke:cli",
 		"build:cli": "node scripts/build-cli.mjs",
 		"check": "pnpm typecheck && pnpm test && pnpm lint && pnpm format",
+		"docs:serve": "python3 -m http.server 4173 -d docs",
 		"format": "oxfmt --check .",
 		"format:fix": "oxfmt .",
 		"lint": "oxlint .",
